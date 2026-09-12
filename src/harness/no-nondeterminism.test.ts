@@ -42,6 +42,10 @@ const EXEMPT = new Set([join(SRC, "vcs/defaults.ts")]);
  * schemas and its hand-written fixtures are scanned too: a fixture that read a
  * clock would make the oracle a different roadmap on every run.
  *
+ * The scheduler is scanned for the same reason the compiler is: it decides
+ * which rows run, and a frontier that depended on when it was computed would
+ * make a feature's delivery order a function of the clock.
+ *
  * The examples live one directory deeper than they used to — `examples/nwave/`
  * groups the three that model one consumer's waves — and the globs are
  * unchanged, because `**` spans any depth. They are deliberately NOT narrowed
@@ -49,7 +53,11 @@ const EXEMPT = new Set([join(SRC, "vcs/defaults.ts")]);
  * day it lands, not the day somebody remembers to add a glob for it.
  */
 const scanned = async (): Promise<string[]> => {
-  const files = new Set<string>([join(SRC, "core/workflow.ts"), join(SRC, "core/compile.ts")]);
+  const files = new Set<string>([
+    join(SRC, "core/workflow.ts"),
+    join(SRC, "core/compile.ts"),
+    join(SRC, "core/scheduler.ts"),
+  ]);
   for (const pattern of [
     "examples/**/graph.ts",
     "examples/**/classify.ts",
@@ -58,6 +66,8 @@ const scanned = async (): Promise<string[]> => {
     "examples/**/disjointness.ts",
     "examples/**/schema.ts",
     "examples/**/fixture.ts",
+    "examples/**/oracle.ts",
+    "examples/**/pipeline.ts",
     "artifacts/**/*.ts",
     "vcs/**/*.ts",
   ]) {
@@ -83,6 +93,9 @@ describe("no nondeterminism inside the graph", () => {
     expect(files).toContain("examples/nwave/roadmap/graph.ts");
     expect(files).toContain("examples/nwave/roadmap/shape.ts");
     expect(files).toContain("examples/nwave/roadmap/disjointness.ts");
+    expect(files).toContain("core/scheduler.ts");
+    expect(files).toContain("examples/nwave/deliver/oracle.ts");
+    expect(files).toContain("examples/nwave/deliver/pipeline.ts");
     expect(files).toContain("artifacts/store.ts");
     expect(files).toContain("vcs/registry.ts");
     expect(files).toContain("vcs/leases.ts");
@@ -90,7 +103,7 @@ describe("no nondeterminism inside the graph", () => {
     expect(files).toContain("vcs/executor.ts");
     expect(files).toContain("vcs/structural/typescript.ts");
     expect(files).not.toContain("vcs/defaults.ts");
-    expect(files.length).toBeGreaterThanOrEqual(22);
+    expect(files.length).toBeGreaterThanOrEqual(26);
   });
 
   test("no scanned file reads a clock or an RNG", async () => {

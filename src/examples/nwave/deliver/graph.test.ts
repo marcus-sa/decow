@@ -6,7 +6,7 @@
  * the same leaf again on the next iteration. `enumeratePaths` walks the
  * reachable decision tree instead, on two axes: every leaf decision, and every
  * outcome the effects it asked for may come back with, up to every loop's
- * bound. **447 paths**, and the count is finite only because every loop
+ * bound. **450 paths**, and the count is finite only because every loop
  * carries one.
  *
  * Zero model calls, no API key, no network. The stub journal throws on a miss
@@ -47,6 +47,7 @@ import {
   type State,
   type WriteOutcome,
 } from "./graph.ts";
+import type { OracleIndex, TestSymbol } from "./oracle.ts";
 import { deliverDefs, LEAF_DECISIONS, leafStepId, type LeafId } from "./steps.ts";
 
 /** A model binding that fails the test if anything reaches a model. */
@@ -67,6 +68,15 @@ const STEP = {
   id: "02-03",
   criteria: "a submitted allocation reaches Running through the production driver",
   design: "ExecDriver::start(&self, spec: &AllocSpec) -> Result<AllocHandle>",
+  authority: "ADR-0023 § the action-shim executor boundary",
+  acceptance: [
+    {
+      id: "02-03-AC-1",
+      text: "a submitted allocation reaches Running through the production driver",
+      oracleLocator: "tests/alloc.test.ts::a submitted allocation reaches Running",
+    },
+  ],
+  predictedTouches: ["ExecDriver::start"],
 };
 const EVIDENCE = "test result: FAILED. assertion failed: expected Running, got Pending";
 
@@ -85,12 +95,35 @@ const IMPACTED = ["test-submit-to-running", "test-exit-observer-writes-row"];
 const OWN_AT = "test-submit-to-running";
 const OTHER_TEST = "test-exit-observer-writes-row";
 
+/** The acceptance test the step's one obligation names, pending as authored. */
+const PENDING_AT: TestSymbol = {
+  id: OWN_AT,
+  version: 1,
+  body: 'test.skip("a submitted allocation reaches Running", () => {\n  /* … */\n})',
+};
+
 /**
- * The state every test starts from. `acceptanceTests` is what the `oracle`
- * writes once it has located them; until this graph has one, a caller stands
- * in for it, the same way `evidence` and `impacted` are stood in for.
+ * The inventory the `oracle` resolves against. A literal here rather than a
+ * real one: the walk must be answerable without a database, and the VCS-backed
+ * index is covered against a real temp project in `./oracle.test.ts`.
  */
-const seedState = (): State => ({ ...seed(STEP, EVIDENCE, IMPACTED), acceptanceTests: [OWN_AT] });
+const ORACLE: OracleIndex = {
+  locate: async (locator) =>
+    locator === STEP.acceptance[0]?.oracleLocator ? PENDING_AT : undefined,
+};
+
+/** An inventory that knows nothing, so every obligation is `missing-at`. */
+const EMPTY_ORACLE: OracleIndex = { locate: async () => undefined };
+
+/** An inventory whose acceptance test somebody already activated. */
+const ACTIVE_ORACLE: OracleIndex = {
+  locate: async () => ({
+    ...PENDING_AT,
+    body: 'test("a submitted allocation reaches Running", () => {\n  /* … */\n})',
+  }),
+};
+
+const seedState = (): State => seed(STEP, EVIDENCE, IMPACTED);
 
 /** One payload shape covers every leaf output schema; the graph reads none of them. */
 const PAYLOAD = {
@@ -154,10 +187,21 @@ const journalFor = (script: Script) =>
 const landsCleanly: EffectExecutor = async (effects) =>
   effects.map((effect) => ({ effect, outcome: "committed" as const, version: 1 }));
 
-/** A scripted executor: one write outcome per `replace-symbol`, in order. */
+/**
+ * A scripted executor: one write outcome per `replace-symbol`, in order —
+ * skipping the activation's own write, which lands cleanly. `activate-at`
+ * writes the acceptance test and `implement` writes the production symbol;
+ * these tests are about the second, and the two are told apart by which symbol
+ * they name rather than by counting.
+ */
 const writesLike = (outcomes: readonly WriteOutcome[]): EffectExecutor => {
   let n = 0;
-  return async (effects) => effects.map((effect) => writeResult(effect, outcomes[n++] ?? "committed"));
+  return async (effects) =>
+    effects.map((effect) =>
+      effect.type === "replace-symbol" && effect.symbolId === PENDING_AT.id
+        ? writeResult(effect, "committed")
+        : writeResult(effect, outcomes[n++] ?? "committed"),
+    );
 };
 
 const writeResult = (effect: Effect, outcome: WriteOutcome): EffectResult => {
@@ -174,6 +218,10 @@ const writeResult = (effect: Effect, outcome: WriteOutcome): EffectResult => {
   }
 };
 
+/** An executor that answers EVERY write the same way, activation included. */
+const writesEveryWriteAs = (outcome: WriteOutcome): EffectExecutor => async (effects) =>
+  effects.map((effect) => writeResult(effect, outcome));
+
 /** A scripted executor: one named suite outcome per `run-tests`, in order. */
 const testsLike = (names: readonly TestOutcomeName[]): EffectExecutor => {
   let n = 0;
@@ -186,7 +234,6 @@ const testsLike = (names: readonly TestOutcomeName[]): EffectExecutor => {
 };
 
 const HAPPY: Script = {
-  "activate-at": "activated",
   "run-tests.red": "red-observed",
   implement: "written",
   "select-tests": "no-extra",
@@ -195,8 +242,11 @@ const HAPPY: Script = {
   commit: "committed",
 };
 
-const start = (script: Script, execute: EffectExecutor = landsCleanly) =>
-  run<State>(deliverGraph(journalFor(script), defs), seedState(), execute);
+const start = (
+  script: Script,
+  execute: EffectExecutor = landsCleanly,
+  oracle: OracleIndex = ORACLE,
+) => run<State>(deliverGraph(journalFor(script), defs, oracle), seedState(), execute);
 
 /** The loop-count row of what a person reads, for asserting on a parked run. */
 const iterationsOf = (trail: readonly unknown[]) =>
@@ -208,7 +258,7 @@ const designGapOf = (trail: readonly unknown[]) =>
 
 describe("deliver graph", () => {
   test("the graph is structurally well-formed", () => {
-    expect(graphDefects(deliverGraph(journalFor(HAPPY), defs))).toEqual([]);
+    expect(graphDefects(deliverGraph(journalFor(HAPPY), defs, ORACLE))).toEqual([]);
   });
 
   test("the happy path runs RED, GREEN, the gates and COMMIT, in that order", async () => {
@@ -216,6 +266,8 @@ describe("deliver graph", () => {
 
     expect(outcome.kind === "terminal" && outcome.terminal.kind).toBe("accepted");
     expect(outcome.trace).toEqual([
+      "oracle",
+      "oracle.route",
       "activate-at",
       "activate.verdict",
       "run-tests.red",
@@ -248,14 +300,19 @@ describe("deliver graph", () => {
     expect(outcome.trace.indexOf("run-tests.red")).toBeLessThan(outcome.trace.indexOf("implement"));
   });
 
-  // 447 runs through the real engine. No model, no key, no network.
-  test("every leaf decision, write outcome and loop count reaches a declared outcome", async () => {
+  // 450 runs through the real engine. No model, no key, no network.
+  test("every leaf decision, effect outcome and loop count reaches a declared outcome", async () => {
     const seen = new Set<string>();
     const reasons = new Set<string>();
     const terminals = new Set<string>();
 
     const paths = await enumeratePaths(async (choose) => {
-      const wf = deliverGraph(chooseJournal(choose), defs);
+      // The `oracle` branch reads the INVENTORY, not a leaf's answer, so
+      // reaching its `missing-at` edge means varying the data — the same
+      // shape the roadmap walk has where two branches read pure functions of
+      // the roadmap. Two inventories: one that locates, one that does not.
+      const inventory = choose("oracle:inventory", [ORACLE, EMPTY_ORACLE]);
+      const wf = deliverGraph(chooseJournal(choose), defs, inventory);
       const outcome = await run<State>(wf, seedState(), scriptedExecutor(choose, DELIVER_SPACE));
 
       expect(isDeclaredOutcome(outcome)).toBe(true);
@@ -268,11 +325,11 @@ describe("deliver graph", () => {
     });
 
     // The bounds are what make this a number rather than an infinity.
-    expect(paths).toHaveLength(447);
+    expect(paths).toHaveLength(450);
 
     // Every node the graph declares was exercised, except the one that is only
     // reachable by answering a suspension. The resume tests below cover it.
-    const reachable = inspectGraph(deliverGraph(journalFor(HAPPY), defs)).reachable;
+    const reachable = inspectGraph(deliverGraph(journalFor(HAPPY), defs, ORACLE)).reachable;
     expect(reachable.filter((id) => !seen.has(id))).toEqual(["human.route"]);
 
     // Every declared reason a person can be handed actually occurs, including
@@ -330,7 +387,7 @@ describe("deliver graph", () => {
     // this test rebuilds the `cycle` node at 2 rather than asserting against
     // a bound that would make the claim vacuous.
     const script = { ...HAPPY, gates: "mutation-below-gate", "add-test": "added" };
-    const base = deliverGraph(journalFor(script), defs);
+    const base = deliverGraph(journalFor(script), defs, ORACLE);
     const twoCycles: Workflow<State> = {
       ...base,
       nodes: {
@@ -379,12 +436,90 @@ describe("deliver graph", () => {
     expect(visited(outcome.trace, "fix-lint")).toBe(false);
   });
 
+  test("the oracle locates the step's acceptance test and activates it before RED", async () => {
+    const asked: Effect[] = [];
+    const record: EffectExecutor = async (effects) => {
+      asked.push(...effects);
+      return effects.map((effect) =>
+        effect.type === "run-tests" ? TEST_OUTCOMES.committed(effect) : writeResult(effect, "committed"),
+      );
+    };
+    const outcome = await start(HAPPY, record);
+
+    expect(outcome.kind === "terminal" && outcome.terminal.kind).toBe("accepted");
+    // The activation is a write like any other, and it claims the version the
+    // inventory reported rather than a version the graph invented.
+    expect(asked[0]).toEqual({
+      type: "replace-symbol",
+      symbolId: PENDING_AT.id,
+      expectedVersion: PENDING_AT.version,
+      body: 'test("a submitted allocation reaches Running", () => {\n  /* … */\n})',
+    });
+    // And it happened before RED, which is the ordering the node exists for.
+    expect(outcome.trace.indexOf("activate-at")).toBeLessThan(outcome.trace.indexOf("run-tests.red"));
+    // The located ids are what `test.route` reads as this step's own.
+    expect(
+      outcome.kind === "terminal" && outcome.terminal.kind === "accepted"
+        ? outcome.terminal.state.acceptanceTests
+        : undefined,
+    ).toEqual([OWN_AT]);
+  });
+
+  test("an obligation with no acceptance test behind it goes to a person, unauthored", async () => {
+    // Nothing in this graph may write an assertion the step is then measured
+    // against; inventing one to have something to fail is the testing theatre
+    // `already-green` catches one node later.
+    const outcome = await start(HAPPY, landsCleanly, EMPTY_ORACLE);
+
+    expect(outcome.kind).toBe("suspended");
+    if (outcome.kind !== "suspended") return;
+    expect(outcome.reason).toBe("missing-acceptance-test");
+    expect(describeTrace(outcome.trace)).toBe("oracle -> oracle.route -> human");
+    expect(outcome.trail[7]).toMatchObject({ missingAt: ["02-03-AC-1"] });
+  });
+
+  test("a step with no obligations at all is the same finding by another route", async () => {
+    const bare = { ...STEP, acceptance: [] };
+    const outcome = await run<State>(
+      deliverGraph(journalFor(HAPPY), defs, ORACLE),
+      seed(bare, EVIDENCE, IMPACTED),
+      landsCleanly,
+    );
+    expect(outcome.kind === "suspended" && outcome.reason).toBe("missing-acceptance-test");
+  });
+
+  test("an acceptance test somebody already activated needs no write", async () => {
+    const asked: Effect[] = [];
+    const record: EffectExecutor = async (effects) => {
+      asked.push(...effects);
+      return effects.map((effect) =>
+        effect.type === "run-tests" ? TEST_OUTCOMES.committed(effect) : writeResult(effect, "committed"),
+      );
+    };
+    const outcome = await start(HAPPY, record, ACTIVE_ORACLE);
+
+    expect(outcome.kind === "terminal" && outcome.terminal.kind).toBe("accepted");
+    // A write that replaced a body with itself would spend a lease and a
+    // verification pass to change nothing, so the first write is implement's.
+    expect(asked.filter((e) => e.type === "replace-symbol")).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ symbolId: PAYLOAD.symbolId });
+  });
+
+  test("an activation the world refuses goes to a person; there is no loop to retry into", async () => {
+    for (const outcome of ["conflict", "rejected", "infra-failed"] as const) {
+      const parked = await start(HAPPY, writesEveryWriteAs(outcome));
+      expect(parked.kind === "suspended" && parked.reason).toBe("activation-failed");
+      expect(visited(parked.trace, "run-tests.red")).toBe(false);
+    }
+  });
+
   test("already-green at the first RED run parks as testing theatre, before any implement", async () => {
     const outcome = await start({ ...HAPPY, "run-tests.red": "already-green" });
     expect(outcome.kind === "suspended" && outcome.reason).toBe("already-green");
     expect(visited(outcome.trace, "cycle")).toBe(false);
     expect(describeTrace(outcome.trace)).toBe(
-      "activate-at -> activate.verdict -> run-tests.red -> red -> human",
+      "oracle -> oracle.route -> activate-at -> activate.verdict -> " +
+        "run-tests.red -> red -> human",
     );
   });
 
@@ -413,9 +548,16 @@ describe("deliver graph", () => {
 
   test("the in-memory executor cannot land replace-symbol, and the graph routes that", async () => {
     // memoryEffects has no VCS behind it, so replace-symbol comes back
-    // infra-failed. That is the honest outcome and it has its own edge.
-    const outcome = await start(HAPPY, memoryEffects().execute);
-    expect(outcome.kind === "suspended" && outcome.reason).toBe("write-infra-failed");
+    // infra-failed. That is the honest outcome and it has its own edge — and
+    // the first write of the run is the ACTIVATION, so that is the edge taken.
+    const activation = await start(HAPPY, memoryEffects().execute);
+    expect(activation.kind === "suspended" && activation.reason).toBe("activation-failed");
+    expect(visited(activation.trace, "run-tests.red")).toBe(false);
+
+    // With nothing to activate, the first write is `implement`'s, and the
+    // same executor routes that one to its own reason.
+    const write = await start(HAPPY, memoryEffects().execute, ACTIVE_ORACLE);
+    expect(write.kind === "suspended" && write.reason).toBe("write-infra-failed");
   });
 
   test("a selection above the floor is carried to the suite, and both decisions run it", async () => {
@@ -684,7 +826,7 @@ describe("the suite's outcome decides, and the branch is a pure function of it",
 
 describe("deliver graph, resumed by a person", () => {
   const park = async () => {
-    const wf = deliverGraph(journalFor({ ...HAPPY, "run-tests.red": "already-green" }), defs);
+    const wf = deliverGraph(journalFor({ ...HAPPY, "run-tests.red": "already-green" }), defs, ORACLE);
     const parked = await run<State>(wf, seedState(), landsCleanly);
     if (parked.kind !== "suspended") throw new Error("expected the run to park");
     return { wf, parked };
@@ -715,6 +857,7 @@ describe("deliver graph, resumed by a person", () => {
     const wf = deliverGraph(
       journalFor({ ...HAPPY, "run-tests.red": "already-green", commit: EXHAUSTED }),
       defs,
+      ORACLE,
     );
     const parked = await run<State>(wf, seedState(), landsCleanly);
     if (parked.kind !== "suspended") throw new Error("expected the run to park");
@@ -726,7 +869,7 @@ describe("deliver graph, resumed by a person", () => {
 });
 
 describe("deliver graph defects", () => {
-  const wf = deliverGraph(journalFor(HAPPY), defs);
+  const wf = deliverGraph(journalFor(HAPPY), defs, ORACLE);
   const withNode = (id: string, node: Node<State>): Workflow<State> => ({
     ...wf,
     nodes: { ...wf.nodes, [id]: node },

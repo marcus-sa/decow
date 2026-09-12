@@ -15,6 +15,11 @@
  * not a closed-enum decision — so their decision space is a singleton and the
  * routable outcome downstream is the effect's result or the validator's.
  *
+ * There is no leaf for "activate the acceptance test" either, and for the same
+ * kind of reason one step further: locating a test by its declared locator is
+ * a lookup and stripping a pending marker is a string operation. See
+ * `./oracle.ts`.
+ *
  * There is no leaf for "did the suite pass". There used to be, classifying
  * runner output the caller had seeded, and it was the wrong shape: a suite's
  * outcome is the outcome of running it, so the graph asks for a `run-tests`
@@ -35,6 +40,20 @@ import { verbatim } from "../../../checks/verbatim.ts";
 import type { Requirement } from "../../../core/requirement.ts";
 import { stepOutput, type ModelBinding, type StepDef } from "../../../core/step.ts";
 
+/**
+ * One acceptance obligation of the row, as the roadmap declared it.
+ * `oracleLocator` names where its assertion lives when the acceptance designer
+ * has already placed it; an obligation without one has no oracle for the
+ * `oracle` node to locate, which is the normal state of a roadmap authored
+ * before its tests were written.
+ */
+export const AcceptanceObligation = z.object({
+  id: z.string(),
+  text: z.string(),
+  oracleLocator: z.string().optional(),
+});
+export type AcceptanceObligation = z.infer<typeof AcceptanceObligation>;
+
 /** The roadmap row under delivery. Authored upstream; never inferred here. */
 export const StepUnderDelivery = z.object({
   id: z.string(),
@@ -42,6 +61,12 @@ export const StepUnderDelivery = z.object({
   criteria: z.string(),
   /** The public API surface the accepted design declares, verbatim. */
   design: z.string(),
+  /** A locator into the design source this step implements. */
+  authority: z.string(),
+  /** What the step must satisfy to be accepted. At least one. */
+  acceptance: z.array(AcceptanceObligation),
+  /** Symbol ids or paths the row predicted it would write. */
+  predictedTouches: z.array(z.string()),
 });
 export type StepUnderDelivery = z.infer<typeof StepUnderDelivery>;
 
@@ -65,7 +90,6 @@ export type LeafInput = z.infer<typeof LeafInput>;
 /* ------------------------------------------------------------------ leaves */
 
 export const LEAF_IDS = [
-  "activate-at",
   "run-tests.red",
   "implement",
   "select-tests",
@@ -127,7 +151,6 @@ export const GATE_OUTCOMES = [
 export type GateOutcome = (typeof GATE_OUTCOMES)[number];
 
 /** The generative leaves. One decision each: they did the work, or they did not. */
-export const ACTIVATE_OUTCOMES = ["activated"] as const;
 export const IMPLEMENT_OUTCOMES = ["written"] as const;
 export const REFACTOR_OUTCOMES = ["refactored"] as const;
 export const FIX_LINT_OUTCOMES = ["fixed"] as const;
@@ -136,7 +159,6 @@ export const COMMIT_OUTCOMES = ["committed"] as const;
 export const FIX_AT_OUTCOMES = ["fixed"] as const;
 export const DESIGN_GAP_OUTCOMES = ["surfaced"] as const;
 
-export type ActivateOutcome = (typeof ACTIVATE_OUTCOMES)[number];
 export type ImplementOutcome = (typeof IMPLEMENT_OUTCOMES)[number];
 export type RefactorOutcome = (typeof REFACTOR_OUTCOMES)[number];
 export type FixLintOutcome = (typeof FIX_LINT_OUTCOMES)[number];
@@ -147,7 +169,6 @@ export type DesignGapOutcome = (typeof DESIGN_GAP_OUTCOMES)[number];
 
 /** The decision space of each leaf, by id. One table, read by the harness too. */
 export const LEAF_DECISIONS = {
-  "activate-at": ACTIVATE_OUTCOMES,
   "run-tests.red": RED_OUTCOMES,
   implement: IMPLEMENT_OUTCOMES,
   "select-tests": SELECT_TESTS_OUTCOMES,
@@ -372,7 +393,6 @@ export const scopeIsTheStep = (decisions: readonly string[]): Requirement<LeafCt
  * decision spaces without either of them hardcoding the other.
  */
 const REQUIREMENTS: { [K in LeafId]: ((d: readonly string[]) => Requirement<LeafCtx>)[] } = {
-  "activate-at": [noInventedApi],
   "run-tests.red": [anchorMustBeVerbatim, vacuousAtIsTestingTheatre, outcomesAreDistinct],
   implement: [noInventedApi, minimalChange],
   "select-tests": [testsMayBeAddedNeverRemoved, selectionMatchesItsDecision],
@@ -389,8 +409,6 @@ const REQUIREMENTS: { [K in LeafId]: ((d: readonly string[]) => Requirement<Leaf
 /* ----------------------------------------------------------------- prompts */
 
 const SYSTEM: Record<LeafId, string> = {
-  "activate-at":
-    "You remove the pending marker from one acceptance test and change nothing else. Report `activated`.",
   "run-tests.red":
     "You classify the FIRST run of a newly activated acceptance test, before any production code. " +
     "Answer with one word. Quote the runner output verbatim in `anchor`.",
@@ -424,7 +442,6 @@ const SYSTEM: Record<LeafId, string> = {
 };
 
 const PROMPT: Record<LeafId, (i: LeafInput) => string> = {
-  "activate-at": (i) => `Step ${i.step.id}\n\nAcceptance criteria:\n${i.step.criteria}`,
   "run-tests.red": (i) => `Step ${i.step.id}\n\nRunner output:\n${i.evidence}`,
   implement: (i) =>
     `Step ${i.step.id}\n\nAcceptance criteria:\n${i.step.criteria}\n\n` +

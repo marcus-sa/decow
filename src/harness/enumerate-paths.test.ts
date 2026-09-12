@@ -1,7 +1,7 @@
 /**
  * The path walker, against a synthetic decider rather than a workflow.
  *
- * `enumeratePaths` is what makes the claim "447 paths, every one of them
+ * `enumeratePaths` is what makes the claim "450 paths, every one of them
  * reaches a declared outcome" checkable, so its own arithmetic is worth
  * pinning: it must visit each reachable combination exactly once, it must not
  * visit combinations a shorter path never reached, and it must refuse a

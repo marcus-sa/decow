@@ -18,7 +18,12 @@
  *   enum                enum declarations
  *   variable            const / let / var declarators
  *   test                a `test(...)` or `it(...)` call whose first argument is
- *                       a string literal, named by that string
+ *                       a string literal, named by that string. A modifier —
+ *                       `test.skip`, `test.todo`, `test.only`, `test.failing`
+ *                       — is the same test, marked; identity is
+ *                       (kind, container, name) and a modifier is none of
+ *                       those, which is what makes stripping a pending marker
+ *                       a body edit rather than a rename
  *
  * A `describe(...)` call is not a symbol. It contributes its string argument to
  * the container path of the tests inside it, which is what makes two tests
@@ -68,19 +73,50 @@ const DECLARATION_KINDS: Record<string, SymbolKind> = {
 const TEST_CALLEES = new Set(["test", "it"]);
 const GROUP_CALLEES = new Set(["describe", "suite"]);
 
+/**
+ * Modifiers a test or group call may carry: `test.skip("…")` is the same test
+ * as `test("…")`, marked pending.
+ *
+ * The identity that falls out of this is load-bearing rather than tidy.
+ * Identity is `(kind, container, name)` and a modifier is none of those, so
+ * stripping a pending marker is a body edit and NOT a rename — which is
+ * exactly what lets an acceptance test be activated through the write path,
+ * where an undeclared identity change is refused as a contract violation.
+ * Without this, `test.skip` would not be a test at all, activating one would
+ * ADD an identity the edit did not declare, and the gate would correctly
+ * refuse a perfectly good activation.
+ */
+const CALL_MODIFIERS = new Set(["skip", "todo", "only", "failing"]);
+
 /** `export function f() {}` is one symbol whose span includes the keyword. */
 const unwrapExport = (node: Node): Node =>
   node.type === "export_statement" ? (node.childForFieldName("declaration") ?? node) : node;
 
+/**
+ * The name a call is made under, ignoring a modifier: `test` for both
+ * `test(…)` and `test.skip(…)`. Anything else — a call on an unknown property,
+ * a call on an expression — is not a labelled call.
+ */
+const calleeName = (callee: Node): string | undefined => {
+  if (callee.type === "identifier") return callee.text;
+  if (callee.type !== "member_expression") return undefined;
+  const object = callee.childForFieldName("object");
+  const property = callee.childForFieldName("property");
+  if (object === null || object.type !== "identifier") return undefined;
+  if (property === null || !CALL_MODIFIERS.has(property.text)) return undefined;
+  return object.text;
+};
+
 /** The string a `test("…", fn)` / `describe("…", fn)` call was given, if any. */
 const callLabel = (call: Node): { callee: string; label: string } | undefined => {
   const callee = call.childForFieldName("function");
-  if (callee === null || callee.type !== "identifier") return undefined;
+  const name = callee === null ? undefined : calleeName(callee);
+  if (name === undefined) return undefined;
   const first = call.childForFieldName("arguments")?.namedChildren[0];
   if (first === undefined || first.type !== "string") return undefined;
   // A `string` node's named children are its fragments and escapes; the text
   // between the quotes is what the call was labelled with.
-  return { callee: callee.text, label: first.text.slice(1, -1) };
+  return { callee: name, label: first.text.slice(1, -1) };
 };
 
 /**

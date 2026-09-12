@@ -69,6 +69,32 @@ const STEP = {
     "A submitted allocation reaches Running through the production driver, observed as an " +
     "alloc_status row written by the exit observer.",
   design: "ExecDriver::start(&self, spec: &AllocSpec) -> Result<AllocHandle>",
+  authority: "ADR-0023 § the action-shim executor boundary",
+  acceptance: [
+    {
+      id: "02-03-AC-1",
+      text: "A submitted allocation reaches Running through the production driver.",
+      oracleLocator: "tests/alloc.test.ts::a submitted allocation reaches Running",
+    },
+  ],
+  predictedTouches: ["ExecDriver::start"],
+};
+
+/**
+ * The inventory the `oracle` resolves against. There is no VCS behind this
+ * script, so the one acceptance test is answered from a literal — already
+ * pending, so the activation has a marker to strip and the write is a real
+ * effect the executor below acknowledges.
+ */
+const oracle = {
+  locate: async (locator: string) =>
+    locator === STEP.acceptance[0]?.oracleLocator
+      ? {
+          id: "test-submit-to-running",
+          version: 1,
+          body: 'test.skip("a submitted allocation reaches Running", () => {\n  /* … */\n})',
+        }
+      : undefined,
 };
 
 const EVIDENCE =
@@ -126,7 +152,7 @@ const main = async () => {
   console.log(`\nstep ${STEP.id}: ${STEP.criteria}\n`);
 
   const outcome = await run<State>(
-    deliverGraph(memoryJournal(), defs),
+    deliverGraph(memoryJournal(), defs, oracle),
     seed(STEP, EVIDENCE, IMPACTED),
     acknowledge,
   );
