@@ -16,10 +16,21 @@ export type Effect =
   | { type: "run-tests"; impacted: string[] }
   | { type: "append-trail"; line: string };
 
+/**
+ * `by` names the gate that refused the write. Five members, covering the three
+ * failure categories the agent-native VCS distinguishes (`src/vcs`, ai-vcs.md
+ * § 5.4): `contract` is "you declared one thing and did another",
+ * `structural` is "the edit does not parse", and `typecheck` / `tests` /
+ * `schema` are quality signals from a check that ran. An infrastructure
+ * failure is not in here at all; it is `infra-failed`, so a flaky harness
+ * cannot be mistaken for a bad change.
+ */
+export type RejectedBy = "typecheck" | "tests" | "schema" | "contract" | "structural";
+
 export type EffectResult =
   | { effect: Effect; outcome: "committed"; version: number }
   | { effect: Effect; outcome: "conflict"; currentVersion: number }
-  | { effect: Effect; outcome: "rejected"; by: "typecheck" | "tests" | "schema" }
+  | { effect: Effect; outcome: "rejected"; by: RejectedBy }
   | { effect: Effect; outcome: "infra-failed" };
 
 export type Artifact = { version: number; row: unknown };

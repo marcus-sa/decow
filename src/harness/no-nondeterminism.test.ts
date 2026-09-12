@@ -65,9 +65,10 @@ describe("no nondeterminism inside the graph", () => {
     expect(files).toContain("vcs/registry.ts");
     expect(files).toContain("vcs/leases.ts");
     expect(files).toContain("vcs/writes.ts");
+    expect(files).toContain("vcs/executor.ts");
     expect(files).toContain("vcs/structural/typescript.ts");
     expect(files).not.toContain("vcs/defaults.ts");
-    expect(files.length).toBeGreaterThanOrEqual(15);
+    expect(files.length).toBeGreaterThanOrEqual(16);
   });
 
   test("no scanned file reads a clock or an RNG", async () => {
