@@ -74,6 +74,46 @@ export type StepResult<O> =
   | { decision: "ok"; output: O }
   | { decision: "validator-exhausted"; trail: Attempt<O>[] };
 
+/**
+ * What one attempt of a step did, as it happened.
+ *
+ * The journal records what a step DECIDED; the exhaustion trail records why a
+ * validator was never satisfied. Neither records what a SUCCESSFUL step cost:
+ * how many attempts it took, which mechanical check refused the first one, what
+ * the validator said about the second. Those facts exist only inside the loop
+ * below, and a run report that claims a first-attempt acceptance rate needs
+ * them. So there is a sink for them, and it is optional and never read back —
+ * nothing in the framework branches on an observation.
+ *
+ * A journal HIT emits nothing: no model was called, so there is no attempt to
+ * report, and counting a replay as a call would make every rate a fiction.
+ */
+export type StepAttempt = {
+  stepId: string;
+  version: number;
+  /** The journal key this call was made under, so a record names its input. */
+  key: string;
+  /** 1-based. Counts worker calls; an escalation is the last of them. */
+  attempt: number;
+  /** The worker binding that produced the output. */
+  model: string;
+  /** What the worker decided. Absent when the call itself threw. */
+  decision?: string;
+  /** Mechanical-check violations. They run before a validator is spent. */
+  mechanical: Violation[];
+  /** The validator's verdict. Absent when a mechanical check refused first. */
+  verdict?: Verdict["verdict"];
+  /** Validator violations, already filtered to ids the step declares. */
+  violations: Violation[];
+  /** Set when a provider call threw. */
+  error?: string;
+  /** True when this attempt's output was the one accepted and journaled. */
+  accepted: boolean;
+};
+
+/** Where attempts are reported. Optional; the framework never reads one back. */
+export type StepObserver = (attempt: StepAttempt) => void;
+
 const VALIDATOR_SYSTEM =
   "You are an adversarial reviewer. Your job is to REFUTE the output against the requirements. " +
   "Default to 'fail' when a requirement is dodged, paraphrased, or unaddressed. " +
@@ -108,6 +148,8 @@ export async function runStep<I, O>(
   def: StepDef<I, O>,
   raw: unknown,
   journal: { get<T>(key: string): Promise<T | undefined>; put<T>(key: string, value: T): Promise<void> },
+  /** Where each attempt is reported. Nothing here branches on it. */
+  observe?: StepObserver,
 ): Promise<StepResult<O>> {
   const input = def.input.parse(raw); // guardrail 1: typed input
   const key = journalKey(def, input);
@@ -120,8 +162,13 @@ export async function runStep<I, O>(
     ...(def.escalateTo ? [def.escalateTo] : []),
   ];
 
+  /** One attempt, reported. `attempt` is `trail.length + 1` at the call site. */
+  const report = (attempt: Omit<StepAttempt, "stepId" | "version" | "key">): void =>
+    observe?.({ stepId: def.id, version: def.version, key, ...attempt });
+
   for (const model of models) {
     const feedback = trail.at(-1)?.violations ?? [];
+    const attempt = trail.length + 1;
 
     let output: O;
     try {
@@ -133,8 +180,18 @@ export async function runStep<I, O>(
       });
     } catch (err) {
       trail.push({ model: model.id, violations: [], error: String(err) });
+      report({
+        attempt,
+        model: model.id,
+        mechanical: [],
+        violations: [],
+        error: String(err),
+        accepted: false,
+      });
       continue;
     }
+
+    const decision = decisionOf(output);
 
     // guardrail 4: mechanical checks before spending a second model call
     const mechanical = def.requirements
@@ -142,6 +199,7 @@ export async function runStep<I, O>(
       .filter((v): v is Violation => v !== null);
     if (mechanical.length) {
       trail.push({ model: model.id, output, violations: mechanical });
+      report({ attempt, model: model.id, ...decision, mechanical, violations: [], accepted: false });
       continue;
     }
 
@@ -159,6 +217,15 @@ export async function runStep<I, O>(
       });
     } catch (err) {
       trail.push({ model: model.id, output, violations: [], error: String(err) });
+      report({
+        attempt,
+        model: model.id,
+        ...decision,
+        mechanical: [],
+        violations: [],
+        error: String(err),
+        accepted: false,
+      });
       continue;
     }
 
@@ -170,10 +237,42 @@ export async function runStep<I, O>(
     if (verdict.verdict === "pass" && violations.length === 0) {
       const result: StepResult<O> = { decision: "ok", output };
       await journal.put(key, result);
+      report({
+        attempt,
+        model: model.id,
+        ...decision,
+        mechanical: [],
+        verdict: verdict.verdict,
+        violations,
+        accepted: true,
+      });
       return result;
     }
     trail.push({ model: model.id, output, violations });
+    report({
+      attempt,
+      model: model.id,
+      ...decision,
+      mechanical: [],
+      verdict: verdict.verdict,
+      violations,
+      accepted: false,
+    });
   }
 
   return { decision: "validator-exhausted", trail };
 }
+
+/**
+ * The `decision` field of a step output, for the report.
+ *
+ * `O` is caller-defined, and the ONE thing every step output is guaranteed to
+ * carry is `decision` — that is `stepOutput`'s whole contract and the only
+ * field the graph reads. Reading it back off an already-parsed output is a
+ * projection, not a re-validation; anything that is not a string is reported as
+ * absent rather than coerced.
+ */
+const decisionOf = (output: unknown): { decision?: string } => {
+  const value = (output as { decision?: unknown } | null)?.decision;
+  return typeof value === "string" ? { decision: value } : {};
+};

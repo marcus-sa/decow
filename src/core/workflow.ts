@@ -23,10 +23,10 @@
  */
 
 import type { z } from "zod";
-import { compileWorkflow, readTrace, SuspensionPayload } from "./compile.ts";
+import { compileWorkflow, readTrace, SuspensionPayload, type WorkflowRuntime } from "./compile.ts";
 import type { Effect, EffectResult } from "./effects.ts";
 import type { Journal } from "./journal.ts";
-import { runStep, type StepDef, type StepResult } from "./step.ts";
+import { runStep, type StepDef, type StepObserver, type StepResult } from "./step.ts";
 
 export type NodeId = string;
 
@@ -191,11 +191,17 @@ export const leaf = <S, I, O>(spec: {
   effects?: (s: S, r: StepResult<O>) => Effect[];
   /** Fold the typed effect results back into state. */
   absorbEffects?: (s: S, results: EffectResult[]) => S;
+  /**
+   * Where each attempt of this leaf's step is reported. Optional, and nothing
+   * in the graph branches on it: a leaf is still one `runStep` call whose
+   * `decision` is the only thing read.
+   */
+  observe?: StepObserver;
   next: NodeId;
 }): Node<S> => ({
   type: "step",
   run: async (s) => {
-    const result = await runStep(spec.def, spec.input(s), spec.journal);
+    const result = await runStep(spec.def, spec.input(s), spec.journal, spec.observe);
     const trail: Effect[] =
       result.decision === "validator-exhausted"
         ? [
@@ -257,8 +263,10 @@ export async function run<S>(
   wf: Workflow<S>,
   state: S,
   execute: EffectExecutor,
+  /** Where the snapshot lands. The process-wide in-memory runtime by default. */
+  runtime?: WorkflowRuntime,
 ): Promise<RunOutcome<S>> {
-  const compiled = compileWorkflow(wf, execute);
+  const compiled = compileWorkflow(wf, execute, runtime);
   const handle = await compiled.createRun();
   const result = await handle.start({
     inputData: state,
@@ -272,14 +280,21 @@ export async function run<S>(
  * Continue a parked run with a person's answer. The graph is recompiled — the
  * compilation is a pure function of the graph, so the step ids match the
  * snapshot Mastra persisted — and reattached to the same `runId`.
+ *
+ * With a durable `runtime`, the process that resumes need not be the process
+ * that parked: a second `openWorkflowRuntime(url)` over the same file reads
+ * the same snapshot, which is what makes a human-review gate a command rather
+ * than a handle somebody has to hold.
  */
 export async function resume<S>(
   wf: Workflow<S>,
   runId: string,
   answer: unknown,
   execute: EffectExecutor,
+  /** Where the snapshot lives. The process-wide in-memory runtime by default. */
+  runtime?: WorkflowRuntime,
 ): Promise<RunOutcome<S>> {
-  const compiled = compileWorkflow(wf, execute);
+  const compiled = compileWorkflow(wf, execute, runtime);
   const handle = await compiled.createRun({ runId });
   const result = await handle.resume({
     resumeData: answer,

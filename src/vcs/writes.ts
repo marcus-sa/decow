@@ -307,7 +307,7 @@ export const openWritePath = (spec: {
         }),
       () => verifier.typecheck(ctx),
       /**
-       * The impacted tests, MINUS the tests this write is itself rewriting.
+       * The impacted tests, MINUS every test THIS BATCH is rewriting.
        *
        * Running the very test you just edited to decide whether you were
        * allowed to edit it makes "activate a pending acceptance test" an
@@ -317,11 +317,20 @@ export const openWritePath = (spec: {
        * else", and every other test that reaches this file still runs, so
        * that question is still answered.
        *
+       * THE BATCH, not this write, and the difference is not theoretical. A
+       * step whose acceptance criterion has two pending tests activates both,
+       * and the two activations are two writes under ONE lease. Filtering only
+       * the write in hand leaves the first-activated test in the second one's
+       * impacted set — where it fails, by design, because the production code
+       * it asserts is still a stub — and the second activation is refused for
+       * the first one's honest red. The lease is what names the batch, so it
+       * is what the filter is over.
+       *
        * A production symbol's write is unaffected: its id is not a test id,
        * so nothing is filtered and the tests that cover it all run.
        */
       () => {
-        const written = new Set(ctx.symbolIds);
+        const written = new Set([...lease.symbolIds, ...ctx.symbolIds]);
         return verifier.tests({
           root,
           symbolIds: ctx.symbolIds,

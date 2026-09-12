@@ -27,6 +27,22 @@ export type MastraAgentOptions = {
   model: string;
   /** Reported verbatim as `Attempt.model`. Defaults to `model`. */
   id?: string;
+  /**
+   * Handed whatever the provider layer reported as token usage for this call,
+   * verbatim and unshaped.
+   *
+   * Verbatim because the shape is not ours and has more than one version in
+   * the dependency graph: `@mastra/core`'s own `TokenUsage` is flat
+   * (`promptTokens` / `completionTokens`), while the AI SDK's
+   * `LanguageModelUsage` nests (`inputTokens.total` / `outputTokens.total`).
+   * A binding that picked one would report zero tokens against the other and
+   * say nothing about it. The reader is the consumer's — see
+   * `src/examples/nwave/todo/report.ts`.
+   *
+   * Absent by default: nothing in a step reads usage, so the seam costs
+   * nothing when nobody is measuring.
+   */
+  onUsage?: (usage: unknown) => void;
 };
 
 /**
@@ -55,6 +71,9 @@ export const mastraAgent = (options: MastraAgentOptions): ModelBinding => {
         structuredOutput: { schema: req.schema },
         modelSettings: { temperature: 0 },
       });
+      // Before the parse, so a call whose output fails the schema still
+      // reports what it cost. A refused attempt is spent money too.
+      options.onUsage?.((response as { usage?: unknown }).usage);
       // Mastra validates against the schema, but the step's guarantee is that
       // the output space IS the schema, so re-parse rather than trust the
       // provider layer. A failure throws and runStep records it in the trail.

@@ -59,6 +59,7 @@
 import { z } from "zod";
 import type { Effect, EffectResult } from "../../../core/effects.ts";
 import type { Journal } from "../../../core/journal.ts";
+import type { StepObserver } from "../../../core/step.ts";
 import {
   branch,
   leaf,
@@ -508,6 +509,7 @@ const leafNode = <K extends LeafId>(
   defs: DeliverDefs,
   journal: Journal,
   spec: LeafSpec,
+  observe?: StepObserver,
 ): Node<State> => {
   const rebase = (s: State): State => (spec.reset ? spec.reset(s) : s);
   return leaf<State, LeafInput, LeafOutputFor<K>>({
@@ -528,6 +530,7 @@ const leafNode = <K extends LeafId>(
         ? spec.effects?.(rebase(s), r.output.payload as Record<string, unknown>) ?? []
         : [],
     absorbEffects: spec.absorb,
+    ...(observe === undefined ? {} : { observe }),
     next: spec.next,
   });
 };
@@ -567,6 +570,12 @@ export const deliverGraph = (
    * enumeration walk needs to be able to answer without a database.
    */
   oracle: OracleIndex,
+  /**
+   * Where each leaf's attempts are reported. Optional and inert: a leaf is
+   * still one `runStep` call whose `decision` is the only thing the graph
+   * reads, and nothing here branches on an observation.
+   */
+  observe?: StepObserver,
 ): Workflow<State> => ({
   start: "oracle",
   nodes: {
@@ -654,7 +663,7 @@ export const deliverGraph = (
       "not-run": "human",
     }),
 
-    "run-tests.red": leafNode("run-tests.red", defs, journal, { next: "red" }),
+    "run-tests.red": leafNode("run-tests.red", defs, journal, { next: "red" }, observe),
 
     // A test that passes before implementation is testing theatre, and a
     // harness failure is not a red test. Both are first-class outcomes routed
@@ -723,7 +732,7 @@ export const deliverGraph = (
       // A leaf that decided nothing wrote nothing, so last iteration's
       // outcome must not be read as this one's.
       reset: (s) => ({ ...s, write: undefined, wrote: undefined }),
-    }),
+    }, observe),
 
     // `infra-failed` is distinct from `rejected` so a flaky harness does not
     // burn the implement budget on a change that was fine. Both retry edges
@@ -757,7 +766,7 @@ export const deliverGraph = (
       }),
       // Last iteration's selection is not this one's.
       reset: (s) => ({ ...s, extra: [] }),
-    }),
+    }, observe),
 
     // Both decisions run the suite: the selection changed what runs, not what
     // happens next. `exhausted` is the block every other leaf's is — the slot
@@ -820,7 +829,7 @@ export const deliverGraph = (
       "not-run": "test-loop",
     }),
 
-    diagnose: leafNode("diagnose", defs, journal, { next: "diagnose.route" }),
+    diagnose: leafNode("diagnose", defs, journal, { next: "diagnose.route" }, observe),
 
     // Each cause routes to whoever owns it. `impl-wrong` is the loop it always
     // was. `at-wrong` corrects the test. `design-missing` and `harness-failed`
@@ -835,7 +844,7 @@ export const deliverGraph = (
       exhausted: "test-loop",
     }),
 
-    "fix-acceptance-test": leafNode("fix-acceptance-test", defs, journal, { next: "test-loop" }),
+    "fix-acceptance-test": leafNode("fix-acceptance-test", defs, journal, { next: "test-loop" }, observe),
 
     // still-red, broke-other and not-run are reachable here only at the
     // bound: below it, `testDone` is false and the loop went round again.
@@ -848,7 +857,7 @@ export const deliverGraph = (
       "not-run": "cycle",
     }),
 
-    refactor: leafNode("refactor", defs, journal, { next: "refactor.verdict" }),
+    refactor: leafNode("refactor", defs, journal, { next: "refactor.verdict" }, observe),
 
     "refactor.verdict": branch<State, RefactorVerdict>(refactorVerdict, {
       refactored: "gates-loop",
@@ -865,7 +874,7 @@ export const deliverGraph = (
       next: "gate.verdict",
     }),
 
-    gates: leafNode("gates", defs, journal, { next: "gate.route" }),
+    gates: leafNode("gates", defs, journal, { next: "gate.route" }, observe),
 
     // Inside the gates loop, only a clippy finding has more work to do; every
     // other verdict goes to the loop boundary and `gatesDone` stops there.
@@ -877,7 +886,7 @@ export const deliverGraph = (
       exhausted: "gates-loop",
     }),
 
-    "fix-lint": leafNode("fix-lint", defs, journal, { next: "gates-loop" }),
+    "fix-lint": leafNode("fix-lint", defs, journal, { next: "gates-loop" }, observe),
 
     // clippy-in-scope is reachable here only at the gates bound.
     "gate.verdict": branch<State, GateVerdict>(gateVerdict, {
@@ -901,7 +910,7 @@ export const deliverGraph = (
         testRun: undefined,
         write: undefined,
       }),
-    }),
+    }, observe),
 
     /* ---- out of the cycle: commit, or a person ---------------------------- */
 
@@ -919,7 +928,7 @@ export const deliverGraph = (
     "surface-design-gap": leafNode("surface-design-gap", defs, journal, {
       next: "human",
       carry: (s, payload) => ({ ...s, designGap: String(payload.gap ?? "") }),
-    }),
+    }, observe),
 
     human: suspend<State, HumanAnswer>({
       reason: humanReason,
@@ -936,7 +945,7 @@ export const deliverGraph = (
       abandon: "reject",
     }),
 
-    commit: leafNode("commit", defs, journal, { next: "commit.verdict" }),
+    commit: leafNode("commit", defs, journal, { next: "commit.verdict" }, observe),
 
     // Terminal on every verdict. A person has already had their turn on every
     // path that reaches here through `human`, so nothing routes back to them.

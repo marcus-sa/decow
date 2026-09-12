@@ -24,6 +24,8 @@
 import { openArtifacts, type ArtifactStore } from "../../../artifacts/store.ts";
 import type { Journal } from "../../../core/journal.ts";
 import { openScheduler, type ResourceLeases, type RowStatus, type SchedulerRow } from "../../../core/scheduler.ts";
+import type { StepObserver } from "../../../core/step.ts";
+import type { WorkflowRuntime } from "../../../core/compile.ts";
 import { resume, run, type RunOutcome } from "../../../core/workflow.ts";
 import { vcsExecutor } from "../../../vcs/executor.ts";
 import type { Vcs } from "../../../vcs/index.ts";
@@ -157,6 +159,26 @@ export type PipelineOptions = {
   /** Shared test infrastructure a row needs, by name. */
   resourcesFor?: (row: RoadmapRow) => string[];
   leases?: ResourceLeases;
+  /**
+   * Where each leaf's attempts are reported, PER ROW. A factory rather than
+   * one observer, because a record's most useful field is which roadmap step
+   * it belongs to and the journal key does not carry it: the row id is inside
+   * the hashed input, not in the key. Building the observer where the row is
+   * known is cheaper than parsing it back out. Inert in the graph.
+   */
+  observe?: (rowId: string) => StepObserver;
+  /**
+   * Each finished run, as it finishes, before it is persisted. The `step_runs`
+   * row records the outcome and the run id; the TRACE only exists on the
+   * outcome, so a caller that wants to print where a row went needs it here.
+   */
+  onRun?: (rowId: string, outcome: RunOutcome<State>) => void;
+  /**
+   * Where each row's snapshot lives. The process-wide in-memory runtime by
+   * default; a durable one when a suspended row has to outlive the command
+   * that produced it.
+   */
+  runtime?: WorkflowRuntime;
 };
 
 /**
@@ -247,17 +269,29 @@ export const openPipeline = (options: PipelineOptions) => {
 
     runOne: async (r) => {
       const row = rowFor(r.id);
-      return await run<State>(deliverGraph(journal, defs, oracle), stateFor(row), executorFor(row));
+      return await run<State>(
+        deliverGraph(journal, defs, oracle, options.observe?.(row.id)),
+        stateFor(row),
+        executorFor(row),
+        options.runtime,
+      );
     },
 
     resumeOne: async (r, runId, answer) => {
       const row = rowFor(r.id);
-      return await resume<State>(deliverGraph(journal, defs, oracle), runId, answer, executorFor(row));
+      return await resume<State>(
+        deliverGraph(journal, defs, oracle, options.observe?.(row.id)),
+        runId,
+        answer,
+        executorFor(row),
+        options.runtime,
+      );
     },
 
     statusOf: async (id) => statusOf(artifacts, id),
 
     record: async (id, outcome) => {
+      options.onRun?.(id, outcome);
       const seq = runsOf(artifacts, id).length;
       const row: StepRun = {
         stepId: id,
@@ -281,7 +315,43 @@ export const openPipeline = (options: PipelineOptions) => {
     },
   });
 
-  return { scheduler, rows, oracle };
+  /**
+   * Continue a row this or ANY EARLIER process parked, then re-evaluate the
+   * frontier so the rows waiting on it run in the same call.
+   *
+   * `Scheduler.resume` reads the parked run id out of its own memory, which is
+   * the right answer inside one process and no answer at all across two. The
+   * pipeline has a better source: `record` persisted the run id on the
+   * `step_runs` row, so the projection that answers "what is this row's
+   * status" also answers "which run is it parked under". That is the same
+   * state-is-a-projection stance one field over, and it is what lets a person
+   * answer a suspension with a command rather than with a handle.
+   */
+  const resumeParked = async (rowId: string, answer: unknown) => {
+    const row = rowFor(rowId);
+    const last = runsOf(artifacts, rowId).at(-1);
+    if (last === undefined || last.outcome !== "suspended") {
+      throw new Error(`pipeline: row ${rowId} is not parked, so there is no run to resume`);
+    }
+    const outcome = await resume<State>(
+      deliverGraph(journal, defs, oracle, options.observe?.(rowId)),
+      last.runId,
+      answer,
+      executorFor(row),
+      options.runtime,
+    );
+    options.onRun?.(rowId, outcome);
+    const seq = runsOf(artifacts, rowId).length;
+    artifacts.upsert({
+      table: STEP_RUNS_TABLE,
+      id: `${rowId}#${seq}`,
+      expectedVersion: 0,
+      row: { stepId: rowId, runId: outcome.runId, outcome: outcomeStatus(outcome), seq } satisfies StepRun,
+    });
+    return { outcome, statuses: await scheduler.run() };
+  };
+
+  return { scheduler, rows, oracle, resumeParked };
 };
 
 /** A run outcome, in the scheduler's vocabulary. */

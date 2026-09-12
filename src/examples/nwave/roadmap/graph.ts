@@ -70,6 +70,7 @@
 import { z } from "zod";
 import type { Effect, EffectResult } from "../../../core/effects.ts";
 import type { Journal } from "../../../core/journal.ts";
+import type { StepObserver } from "../../../core/step.ts";
 import {
   branch,
   leaf,
@@ -395,7 +396,16 @@ const absorbAuthorLoop = (s: State, exit: LoopExit): State => ({
   loopExhausted: exit.exhausted ? true : s.loopExhausted,
 });
 
-export const roadmapGraph = (journal: Journal, defs: RoadmapDefs): Workflow<State> => ({
+export const roadmapGraph = (
+  journal: Journal,
+  defs: RoadmapDefs,
+  /**
+   * Where each leaf's attempts are reported. Optional and inert: nothing here
+   * branches on an observation, and a journal hit reports nothing because no
+   * model was called.
+   */
+  observe?: StepObserver,
+): Workflow<State> => ({
   start: "author",
   nodes: {
     /* ---- the one bounded loop: propose, check, review, repeat ----------- */
@@ -446,6 +456,7 @@ export const roadmapGraph = (journal: Journal, defs: RoadmapDefs): Workflow<Stat
             }
           : { ...base, exhausted: "decompose" };
       },
+      ...(observe === undefined ? {} : { observe }),
       next: "decompose.route",
     }),
 
@@ -499,6 +510,7 @@ export const roadmapGraph = (journal: Journal, defs: RoadmapDefs): Workflow<Stat
               sliceVerdicts: r.output.payload.verdicts,
             }
           : { ...s, leaf: { ...s.leaf, "validate-slices": undefined }, exhausted: "validate-slices" },
+      ...(observe === undefined ? {} : { observe }),
       next: "slices.route",
     }),
 
