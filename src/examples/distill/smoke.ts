@@ -84,28 +84,39 @@ const main = async () => {
   console.log(`escalate:  ${ESCALATE_MODEL}\n`);
   console.log(`scenario ${SCENARIO.id}: ${SCENARIO.text}\n`);
 
-  const { result, trace } = await run<State>(
-    distillGraph(journal, defs),
-    seed(SCENARIO),
-    async (effects) => {
-      for (const e of effects) if (e.type === "append-trail") trail.push(e.line);
-      return effects.map((effect) => ({ effect, outcome: "committed" as const, version: 1 }));
-    },
-  );
+  const wf = distillGraph(journal, defs);
+  const outcome = await run<State>(wf, seed(SCENARIO), async (effects) => {
+    for (const e of effects) if (e.type === "append-trail") trail.push(e.line);
+    return effects.map((effect) => ({ effect, outcome: "committed" as const, version: 1 }));
+  });
 
-  const state = result.state;
-  for (const kind of KINDS) {
-    const slot = state[kind as Kind];
+  // A suspension parks before a terminal, so the last observable state is the
+  // one the classifiers produced; re-derive it rather than invent one.
+  if (outcome.kind === "terminal") {
+    const state = outcome.terminal.state;
+    for (const kind of KINDS) {
+      const slot = state[kind as Kind];
+      console.log(
+        `  ${kind.padEnd(11)} ${String(slot.lane ?? "-").padEnd(12)}` +
+          (slot.exhausted
+            ? "(validator-exhausted)"
+            : `anchor: ${JSON.stringify(slot.anchor ?? "")}`),
+      );
+    }
+    console.log(`\nmerge verdict: ${mergeVerdict(state)}`);
+    console.log(`terminal:      ${outcome.terminal.kind}`);
+  } else if (outcome.kind === "suspended") {
+    console.log(`\nsuspended:     ${outcome.reason}`);
+    console.log(`run id:        ${outcome.runId}`);
+    console.log(`trail:\n${outcome.trail.map((t) => `  ${JSON.stringify(t)}`).join("\n")}`);
     console.log(
-      `  ${kind.padEnd(11)} ${String(slot.lane ?? "-").padEnd(12)}` +
-        (slot.exhausted ? "(validator-exhausted)" : `anchor: ${JSON.stringify(slot.anchor ?? "")}`),
+      `\nresume with: resume(wf, "${outcome.runId}", { decision: "override", ` +
+        `override: { kind: "dst", lane: "needed" } }, execute)`,
     );
   }
 
-  console.log(`\nmerge verdict: ${mergeVerdict(state)}`);
-  console.log(`terminal:      ${result.kind}${result.kind === "needs-human" ? ` (${result.reason})` : ""}`);
-  console.log(`trace:         ${describeTrace(trace)}`);
-  if (trail.length > 0) console.log(`trail:\n${trail.map((l) => `  ${l}`).join("\n")}`);
+  console.log(`trace:         ${describeTrace(outcome.trace)}`);
+  if (trail.length > 0) console.log(`effects:\n${trail.map((l) => `  ${l}`).join("\n")}`);
 };
 
 await main();

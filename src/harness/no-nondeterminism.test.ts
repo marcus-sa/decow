@@ -21,12 +21,12 @@ const SRC = dirname(dirname(import.meta.path));
 const BANNED = ["Date.now", "Math.random", "new Date("] as const;
 
 /**
- * Files the graph's control flow depends on: the runner, every graph
- * definition, and every file that defines a decision function or a mechanical
- * check a branch can observe.
+ * Files the graph's control flow depends on: the contract, the compiler that
+ * turns it into a Mastra workflow, every graph definition, and every file that
+ * defines a decision function or a mechanical check a branch can observe.
  */
 const scanned = async (): Promise<string[]> => {
-  const files = new Set<string>([join(SRC, "core/workflow.ts")]);
+  const files = new Set<string>([join(SRC, "core/workflow.ts"), join(SRC, "core/compile.ts")]);
   for (const pattern of ["examples/**/graph.ts", "examples/**/classify.ts"]) {
     for await (const match of new Glob(pattern).scan({ cwd: SRC, absolute: true })) {
       files.add(match);
@@ -43,8 +43,9 @@ describe("no nondeterminism inside the graph", () => {
   test("the scanned set is non-empty and includes the runner and every graph", async () => {
     const files = (await scanned()).map((f) => relative(SRC, f));
     expect(files).toContain("core/workflow.ts");
+    expect(files).toContain("core/compile.ts");
     expect(files).toContain("examples/distill/graph.ts");
-    expect(files.length).toBeGreaterThanOrEqual(3);
+    expect(files.length).toBeGreaterThanOrEqual(4);
   });
 
   test("no scanned file reads a clock or an RNG", async () => {

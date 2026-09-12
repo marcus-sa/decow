@@ -30,16 +30,16 @@ The workflow is a finite graph. Every path through it is enumerable before it ru
 
 1. **Only enums and booleans drive edges.** Every step output splits into `decision`, a closed enum the graph may branch on, and `payload`, free text the graph carries but never reads.
 2. **Every branch's edge table is exhaustive at compile time.** A branch over a decision type `D` takes `Record<D, NodeId>`. Adding a decision value without an edge is a type error.
-3. **Terminals are enumerated, not thrown.** A workflow ends in `accepted`, `rejected`, or `needs-human`. No exception crosses the graph boundary. A step that cannot produce a valid output returns a state carrying that fact, and a branch routes it.
+3. **Terminals are enumerated, not thrown, and a person is a suspension rather than a terminal.** A workflow ends in `accepted` or `rejected`. No exception crosses the graph boundary. A step that cannot produce a valid output returns a state carrying that fact, and a branch routes it. When the branch routes to a person, the run does not end: a `needs-human` node **suspends**, parking the run with a typed reason and the trail behind it. The person answers with a value from a closed decision enum, the graph branches on that answer, and the same run continues to a terminal. A person is another input the graph reads, not a place the graph stops.
 4. **Effects are data.** A step returns `Effect[]`. The runner executes them and feeds typed results back into state. Steps never touch a filesystem, a database, or a network directly.
 
-Given these, the graph's path space is finite, so you can enumerate it with a stub model and assert every path lands on a declared terminal. No API key, no network, milliseconds. That is the property the rest of this document builds on.
+Given these, the graph's path space is finite, so you can enumerate it with a stub model and assert every path lands on a declared outcome: a terminal, or parked for a person. No API key, no network, milliseconds. That is the property the rest of this document builds on.
 
 What is not deterministic: the leaf model calls. The framework does not need them to be. It needs their output space to be closed, their outputs validated, and their results journaled so a replay never re-infers.
 
 ## Primitives
 
-The framework is provider-agnostic. The sketches below use the Vercel AI SDK because it is the thinnest layer; every orchestration concept maps one-to-one onto Mastra's `createStep` and `.parallel()`.
+The framework is provider-agnostic at the leaves. The step sketches below use the Vercel AI SDK because it is the thinnest layer, and a step's model slot is a one-method seam any provider can fill. The graph is not provider-agnostic: it compiles to Mastra, for the reasons in "Workflow graph and runner" below.
 
 ### Requirement
 
@@ -111,10 +111,18 @@ export interface Journal {
   put<O>(key: string, value: O): Promise<void>;
 }
 
+// Canonical JSON, not `JSON.stringify(input, Object.keys(input).sort())`. A
+// replacer *array* is a key allowlist applied at every nesting level, so a
+// nested key absent from the top level is dropped from the hash and two
+// different inputs collide. Sort recursively instead.
+const canonicalJson = (v: unknown): string =>
+  v === null || typeof v !== "object" ? JSON.stringify(v) ?? "null"
+  : Array.isArray(v) ? `[${v.map(canonicalJson).join(",")}]`
+  : `{${Object.entries(v).filter(([, x]) => x !== undefined).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
+        .map(([k, x]) => `${JSON.stringify(k)}:${canonicalJson(x)}`).join(",")}}`;
+
 const journalKey = (def: StepDef<any, any>, input: unknown) =>
-  createHash("sha256")
-    .update(`${def.id}@${def.version}:${JSON.stringify(input, Object.keys(input as object).sort())}`)
-    .digest("hex");
+  `${def.id}@${def.version}:${createHash("sha256").update(canonicalJson(input)).digest("hex")}`;
 ```
 
 `runStep` never throws. Mechanical checks run before the validator model is spent. Violations feed back into the next attempt. After the budget, one escalation to a larger model, then a typed failure that preserves the whole trail.
@@ -176,79 +184,71 @@ Two design choices worth defending. Temperature zero is not for determinism; it 
 
 ### Workflow graph and runner
 
-Four node types. `branch` is the load-bearing one: its edge table is typed by the decision union.
+Five node types. `branch` is the load-bearing one: its edge table is typed by the decision union. `suspend` is the same guarantee one level over: it ties the schema a person answers with to the function that folds that answer into state.
 
 ```ts
 export type NodeId = string;
 
 export type Terminal<S> =
-  | { kind: "accepted";    state: S }
-  | { kind: "rejected";    state: S; trail: unknown[] }
-  | { kind: "needs-human"; state: S; reason: string };   // a closed enum per workflow
+  | { kind: "accepted"; state: S }
+  | { kind: "rejected"; state: S; trail: unknown[] };
 
 export type Node<S> =
   | { type: "step";     run: (s: S) => Promise<{ state: S; effects: Effect[] }>;
                         absorb: (s: S, results: EffectResult[]) => S; next: NodeId }
   | { type: "fanout";   steps: NodeId[]; join: NodeId }
   | { type: "branch";   on: (s: S) => string; edges: Record<string, NodeId> }
+  | { type: "suspend";  reason: (s: S) => string;      // a closed enum per workflow
+                        trail: (s: S) => unknown[];    // the evidence behind it
+                        resumeSchema: z.ZodType<unknown>;
+                        absorb: (s: S, answer: never) => S; next: NodeId }
   | { type: "terminal"; done: (s: S) => Terminal<S> };
 
 export type Workflow<S> = { start: NodeId; nodes: Record<NodeId, Node<S>> };
 
 export const branch = <S, D extends string>(on: (s: S) => D, edges: Record<D, NodeId>): Node<S> =>
   ({ type: "branch", on, edges });
+
+// The erasure to `Node<S>` happens here and nowhere else, so a node cannot be
+// built whose schema parses something its `absorb` does not accept.
+export const suspend = <S, R>(spec: {
+  reason: (s: S) => string;
+  trail: (s: S) => unknown[];
+  resumeSchema: z.ZodType<R>;
+  absorb: (s: S, answer: R) => S;
+  next: NodeId;
+}): Node<S> => ({ type: "suspend", ...spec }) as Node<S>;
 ```
 
-The runner. The only errors it throws are graph bugs: a missing node or an unhandled edge, both of which the enumeration test catches before any model runs.
+The runner does not interpret this graph. It compiles it, once per run, to a [Mastra](https://mastra.ai) workflow and drives that through `createRun()`. The node map is an arbitrary directed graph; Mastra's builder is a linear chain of combinators. The bridge is the continuation: a chain runs until it reaches a branch, and each edge of that branch compiles to a *nested workflow* carrying the rest of that path. `Workflow` implements `Step`, so a nested workflow is a legal branch target. A node reachable from two edges is therefore compiled once per path.
+
+| Node | Compiles to |
+|---|---|
+| `step` | `createStep`, whose `execute` runs the node, hands its `Effect[]` to the injected executor, applies `absorb`, and returns the new state |
+| `fanout` | a nested workflow: `.parallel(sub-steps)` then a `.map()` that re-applies each sub-step's changed-key slice onto the pre-fanout state, in declaration order |
+| `branch` | an entry step that records the visit and proves the edge exists, then `.branch([[s => on(s) === k, tail_k], ...])` with one entry per key of the edge table, then a `.map()` that unwraps the single executed target's output |
+| `suspend` | `createStep` with a `suspendSchema` and a `resumeSchema`: the first pass calls `suspend({ reason, trail })`, and the resumed pass parses the person's answer and folds it into state |
+| `terminal` | `createStep` returning the `Terminal<S>`. `accepted` completes; `rejected` goes through `bail()`, so nothing after it in its own chain can run |
+
+The compile mapping buys the fanout merge for free. A sub-step returns only the keys it changed, and Mastra keys each sub-step's output by its own step id, so the merge re-applies slices onto a base no sub-step wrote. There is no ordering in which one sub-step's write can be lost. A whole-state merge, `outs.reduce((acc, s) => ({ ...acc, ...s }), state)`, has exactly that bug: every sub-step computes a whole state from the same ancestor, so the last one's unchanged copies overwrite every earlier one's work. In the worked example below that silently drops three of four classifier verdicts.
+
+The state flowing through the compiled workflow is the caller's `S`. The trace is separate: it accumulates in Mastra's own workflow state, which is the right lifetime, because that state survives suspension. The trace of a run that parked for a person and was answered three days later spans both halves. A model cannot claim to have reached a node it did not reach.
+
+What the compiler refuses. A graph with a dangling edge, an unreachable node, a fanout target that is not a step, no reachable terminal, or a **back edge** is rejected before any step runs. Cycles are out of scope for this cut: the continuation compile terminates only on an acyclic graph, so a back edge is named and refused rather than mis-built. The route to cycles through Mastra is `.dountil()` over a nested workflow, which is what the DELIVER step cycle below needs.
+
+A run therefore ends one of two ways, and `run` returns which:
 
 ```ts
-export async function run<S>(
-  wf: Workflow<S>,
-  state: S,
-  execute: (effects: Effect[]) => Promise<EffectResult[]>,
-  trace: NodeId[] = [],
-): Promise<{ result: Terminal<S>; trace: NodeId[] }> {
-  let cursor = wf.start;
-  for (;;) {
-    const node = wf.nodes[cursor];
-    if (!node) throw new Error(`graph bug: no node ${cursor}`);
-    trace.push(cursor);
-    switch (node.type) {
-      case "step": {
-        const out = await node.run(state);
-        const results = await execute(out.effects);
-        state = node.absorb(out.state, results);
-        cursor = node.next;
-        break;
-      }
-      case "fanout": {
-        // Results merge positionally, so completion order cannot change the trajectory.
-        const outs = await Promise.all(node.steps.map(async id => {
-          const n = wf.nodes[id];
-          if (n?.type !== "step") throw new Error(`graph bug: fanout target ${id} is not a step`);
-          trace.push(id);
-          const out = await n.run(state);
-          return n.absorb(out.state, await execute(out.effects));
-        }));
-        state = outs.reduce((acc, s) => ({ ...acc, ...s }), state);
-        cursor = node.join;
-        break;
-      }
-      case "branch": {
-        const key = node.on(state);
-        const next = node.edges[key];
-        if (!next) throw new Error(`graph bug: ${cursor} has no edge for ${key}`);
-        cursor = next;
-        break;
-      }
-      case "terminal":
-        return { result: node.done(state), trace };
-    }
-  }
-}
+export type RunOutcome<S> =
+  | { kind: "terminal";  terminal: Terminal<S>; trace: NodeId[]; runId: string }
+  | { kind: "suspended"; reason: string; trail: unknown[]; trace: NodeId[]; runId: string };
+
+export function run<S>(wf: Workflow<S>, state: S, execute: Executor): Promise<RunOutcome<S>>;
+export function resume<S>(wf: Workflow<S>, runId: string, answer: unknown,
+                          execute: Executor): Promise<RunOutcome<S>>;
 ```
 
-The trace is the provenance record. The runner writes it as it traverses. A model cannot claim to have reached a node it did not reach.
+`resume` recompiles the graph rather than taking a live handle. The compilation is a pure function of the graph, so the step ids match the snapshot the engine persisted and the run reattaches by `runId`. That is the same path a different process would take, which is what makes a suspension crash-resumable rather than a handle someone has to hold.
 
 ### Effects with typed results
 
@@ -270,13 +270,15 @@ export type EffectResult =
 
 `outcome` is a decision value. A step absorbs it into state and the next branch routes on it. A lease conflict is an edge to a rebase-and-retry node, never an exception. `infra-failed` is distinct from `rejected` so a flaky test harness does not burn the retry budget on a change that was fine. The distinct-failure-modes discipline matters more here than anywhere else in the framework because each misrouted failure costs model calls.
 
-Notably absent from the union: `create-issue`, `send-message`, or anything else that is a shared, outward-facing action. A worker step cannot defer work by opening a ticket. The only way to defer is a `needs-human` terminal with a typed reason. The rule "agents never create issues unilaterally" is unrepresentable rather than enforced.
+Notably absent from the union: `create-issue`, `send-message`, or anything else that is a shared, outward-facing action. A worker step cannot defer work by opening a ticket. The only way to defer is a `needs-human` suspension with a typed reason, which parks the run for a person rather than handing work to a queue nobody owns. The rule "agents never create issues unilaterally" is unrepresentable rather than enforced.
 
 ### Journal
 
 Keyed by `(step id, step version, input hash)`. A hit returns the stored `StepResult` and the model is never called. This is what makes a workflow replayable: rerun it against the same journal and the trajectory is identical, byte for byte, with zero inference.
 
 The journal answers "what did each step decide." It is not the provenance log for code changes. That lives in the VCS event log, linked one way: every effect the runner executes carries the journal key and step id as its intent. The dependency never runs the other direction.
+
+It is also not the engine's snapshot, and the two are complementary rather than redundant. Mastra persists a snapshot per *run*, keyed by `runId`, recording where that run stopped: which step is suspended, with what payload, and what the workflow state held. That is what `resume` and `restart` read. Our journal is keyed by *content*, spans every run forever, and records what each step decided for a given input under a given prompt version. A snapshot cannot answer "has this step already decided this input," because it is about position, not content; and the journal cannot answer "where did this run stop," because it does not know runs exist. A prompt change bumps `version` and the journal correctly re-infers; a prompt change leaves a snapshot's meaning untouched, because position is unaffected. A workflow that is both replayed and resumed uses both, and neither can be derived from the other.
 
 ## Artifacts are typed rows, not documents
 
@@ -299,6 +301,8 @@ There is one real fork: is a workflow graph generated TypeScript, or rows?
 Take the middle. Nodes, edges, and requirement bindings are rows. Exhaustiveness is a query: every value in `requirement.decisions` must have an edge row, or the graph is invalid. Path enumeration reads the graph from the database. The pure functions that compute a decision from state stay in TypeScript, referenced by id from the branch row. Only the decision functions deserve a typed language, and they are small. Everything else is queryable, versioned in one store, and the authoring workflow writes rows instead of source files.
 
 The cost of this choice: the compiler no longer proves exhaustiveness, a query does. The query runs in CI and in the harness, so the guarantee holds at the same points. What is lost is the red squiggle in the editor.
+
+This fork is already built downstream, which changes what has to be invented. Mastra's dynamic workflows are workflow definitions expressed as JSON: schemas plus a step graph over registered agents, tools, and nested workflows, validated on registration, persisted, and run through the same execution API as a code-defined workflow. They are beta, and they do not carry a decision function, which is the half that should stay in TypeScript anyway. So the middle path is: nodes, edges, and requirement bindings are rows; the pure decision functions stay in source and are referenced by id; and emitting a dynamic-workflow definition from a `Workflow<S>` is the authoring workflow's natural output format. That is a serializer over a graph the runtime already knows how to run, not a second execution engine.
 
 ### What the database needs
 
@@ -376,12 +380,15 @@ const classifier = (kind: Kind, requirements: Requirement<any>[]): StepDef<Scena
 
 The graph. Every cross-cutting rule is one line in `mergeVerdict`, a total function into a closed enum, and the branch's edge table is exhaustive over it.
 
+`State` gives each classifier its own slot. A shared `anchors` map and a shared `exhausted` array would be four writes to one key, and no merge over parallel sub-steps can keep four writes to one key. One top-level key per sub-step is what makes the fanout merge lossless.
+
 ```ts
+type LaneSlot = { lane?: Lane; anchor?: string; exhausted?: boolean };
+
 type State = {
   scenario: Scenario;
-  e2e?: Lane; expectation?: Lane; benchmark?: Lane; dst?: Lane;
-  anchors: Record<string, string>;
-  exhausted: Kind[];
+  e2e: LaneSlot; expectation: LaneSlot; benchmark: LaneSlot; dst: LaneSlot;
+  human?: HumanAnswer;   // absorbed by the suspend node; read only by human.route
 };
 
 const classify = (kind: Kind, def: StepDef<Scenario, any>, journal: Journal): Node<State> => ({
@@ -389,8 +396,8 @@ const classify = (kind: Kind, def: StepDef<Scenario, any>, journal: Journal): No
   run: async s => {
     const r = await runStep(def, s.scenario, journal);
     return r.decision === "ok"
-      ? { state: { ...s, [kind]: r.output.decision, anchors: { ...s.anchors, [kind]: r.output.payload.anchor } }, effects: [] }
-      : { state: { ...s, [kind]: "cannot-tell", exhausted: [...s.exhausted, kind] },
+      ? { state: { ...s, [kind]: { lane: r.output.decision, anchor: r.output.payload.anchor } }, effects: [] }
+      : { state: { ...s, [kind]: { lane: "cannot-tell", exhausted: true } },
           effects: [{ type: "append-trail", line: JSON.stringify({ kind, trail: r.trail }) }] };
   },
   absorb: s => s,
@@ -399,13 +406,36 @@ const classify = (kind: Kind, def: StepDef<Scenario, any>, journal: Journal): No
 
 type MergeVerdict = "complete" | "benchmark-expectation-conflict" | "incomplete-boundary" | "undecidable";
 
+const exhaustedKinds = (s: State): Kind[] => KINDS.filter(k => s[k].exhausted === true);
+
 const mergeVerdict = (s: State): MergeVerdict => {
-  if (s.exhausted.length > 0) return "undecidable";
-  if (s.benchmark === "needed" && s.expectation === "needed") return "benchmark-expectation-conflict";
-  if (s.scenario.crossesBoundary && s.dst !== "needed" && s.e2e !== "needed") return "incomplete-boundary";
+  if (exhaustedKinds(s).length > 0) return "undecidable";
+  if (s.benchmark.lane === "needed" && s.expectation.lane === "needed") return "benchmark-expectation-conflict";
+  if (s.scenario.crossesBoundary && s.dst.lane !== "needed" && s.e2e.lane !== "needed") return "incomplete-boundary";
   return "complete";
 };
+```
 
+The person's half. `reason` is the closed enum the run parks under; `HumanAnswer` is the closed enum it wakes on. Neither is free text, so the graph branches on a person's answer exactly the way it branches on a model's.
+
+```ts
+const HUMAN_DECISIONS = ["proceed", "abandon", "override"] as const;
+
+const HumanAnswer = z.object({
+  decision: z.enum(HUMAN_DECISIONS),
+  override: z.object({ kind: z.enum(KINDS), lane: Lane }).optional(),  // read only when decision is "override"
+});
+type HumanAnswer = z.infer<typeof HumanAnswer>;
+type HumanDecision = HumanAnswer["decision"];
+
+const humanReason = (s: State) =>
+  exhaustedKinds(s).length > 0 ? "validator-exhausted" : "incomplete-boundary";
+
+// The evidence a person reads: every classifier's slot, as it stands.
+const humanTrail = (s: State): unknown[] => KINDS.map(kind => ({ kind, ...s[kind] }));
+```
+
+```ts
 export const distillGraph = (journal: Journal, defs: Record<Kind, StepDef<Scenario, any>>): Workflow<State> => ({
   start: "classify",
   nodes: {
@@ -419,28 +449,68 @@ export const distillGraph = (journal: Journal, defs: Record<Kind, StepDef<Scenar
     merge: branch<State, MergeVerdict>(mergeVerdict, {
       "complete":                       "accept",
       "benchmark-expectation-conflict": "demote-expectation",
-      "incomplete-boundary":            "needs-human",
-      "undecidable":                    "needs-human",
+      "incomplete-boundary":            "human",
+      "undecidable":                    "human",
     }),
 
     "demote-expectation": {
       type: "step",
-      run: async s => ({ state: { ...s, expectation: "not-needed" },
+      run: async s => ({ state: { ...s, expectation: { ...s.expectation, lane: "not-needed" } },
                          effects: [{ type: "append-trail", line: `${s.scenario.id}: expectation demoted, benchmark wins` }] }),
       absorb: s => s,
       next: "accept",
     },
 
-    accept:        { type: "terminal", done: s => ({ kind: "accepted", state: s }) },
-    "needs-human": { type: "terminal", done: s => ({
-      kind: "needs-human", state: s,
-      reason: s.exhausted.length ? "validator-exhausted" : "incomplete-boundary",
-    }) },
+    // The run parks here with a typed reason and the evidence behind it.
+    human: suspend<State, HumanAnswer>({
+      reason: humanReason,
+      trail: humanTrail,
+      resumeSchema: HumanAnswer,
+      absorb: (s, answer) => ({ ...s, human: answer }),
+      next: "human.route",
+    }),
+
+    // Drop a HumanDecision member from this table and it will not compile.
+    "human.route": branch<State, HumanDecision>(s => s.human!.decision, {
+      "proceed":  "merge.after-human",
+      "abandon":  "reject",
+      "override": "apply-override",
+    }),
+
+    "apply-override": {
+      type: "step",
+      // A person answering "override" is answering what the validator could not,
+      // so the override clears `exhausted` as well as setting the lane.
+      run: async s => {
+        const o = s.human?.override;
+        return o === undefined
+          ? { state: s, effects: [{ type: "append-trail", line: `${s.scenario.id}: override with no payload` }] }
+          : { state: { ...s, [o.kind]: { lane: o.lane, anchor: "<human override>", exhausted: false } },
+              effects: [{ type: "append-trail", line: `${s.scenario.id}: ${o.kind} overridden to ${o.lane} by a person` }] };
+      },
+      absorb: s => s,
+      next: "merge.after-human",
+    },
+
+    // The same verdict function, a terminal edge table. A person has already
+    // answered, so nothing here routes back to them. This is how "re-run the
+    // merge" is expressed without a back edge: a second branch node, not a cycle.
+    "merge.after-human": branch<State, MergeVerdict>(mergeVerdict, {
+      "complete":                       "accept",
+      "benchmark-expectation-conflict": "demote-expectation",
+      "incomplete-boundary":            "reject",
+      "undecidable":                    "reject",
+    }),
+
+    accept: { type: "terminal", done: s => ({ kind: "accepted", state: s }) },
+    reject: { type: "terminal", done: s => ({ kind: "rejected", state: s, trail: humanTrail(s) }) },
   },
 });
 ```
 
-The exhaustive test. Three lanes, four classifiers, two boundary flags: 162 paths. A journal pre-seeded with the outputs stands in for the models. Every path must land on a declared terminal.
+`merge.after-human` routing `benchmark-expectation-conflict` back to the same `demote-expectation` node the first merge uses is re-convergence, not a cycle. Nothing downstream of `demote-expectation` leads back to either merge, so the compiler builds that tail once per path and the graph stays acyclic.
+
+The exhaustive test. Three lanes, four classifiers, two boundary flags: 162 paths. A journal pre-seeded with the outputs stands in for the models. Every path must land on a declared outcome: a terminal, or parked for a person.
 
 ```ts
 const LANES = ["needed", "not-needed", "cannot-tell"] as const;
@@ -448,27 +518,39 @@ const LANES = ["needed", "not-needed", "cannot-tell"] as const;
 const cartesian = <T>(xs: readonly T[], n: number): T[][] =>
   n === 0 ? [[]] : cartesian(xs, n - 1).flatMap(rest => xs.map(x => [x, ...rest]));
 
-test("every classifier outcome reaches a declared terminal", async () => {
+test("every classifier outcome reaches a declared outcome", async () => {
   for (const [e2e, expectation, benchmark, dst] of cartesian(LANES, 4)) {
     for (const crossesBoundary of [true, false]) {
-      const { result, trace } = await run(
+      const outcome = await run(
         distillGraph(stubJournal({ e2e, expectation, benchmark, dst }), defs),
-        { scenario: { id: "S-1", text: "…", crossesBoundary }, anchors: {}, exhausted: [] },
+        seed({ id: "S-1", text: "…", crossesBoundary }),
         async () => [],
       );
-      expect(["accepted", "rejected", "needs-human"]).toContain(result.kind);
-      expect(trace.at(-1)).toMatch(/^(accept|needs-human)$/);
+      expect(["terminal", "suspended"]).toContain(outcome.kind);
+      expect(outcome.trace.at(-1)).toMatch(/^(accept|reject|human)$/);
     }
   }
 });
 
 test("benchmark plus expectation always demotes expectation", async () => {
-  const { result, trace } = await run(
+  const outcome = await run(
     distillGraph(stubJournal({ e2e: "not-needed", expectation: "needed", benchmark: "needed", dst: "not-needed" }), defs),
-    seed(false), async () => [],
+    seed({ id: "S-1", text: "…", crossesBoundary: false }), async () => [],
   );
-  expect(trace).toContain("demote-expectation");
-  expect(result.kind === "accepted" && result.state.expectation).toBe("not-needed");
+  expect(outcome.trace).toContain("demote-expectation");
+  expect(outcome.kind === "terminal" && outcome.terminal.kind === "accepted"
+    && outcome.terminal.state.expectation.lane).toBe("not-needed");
+});
+
+test("a blocked scenario parks, and an override clears the block", async () => {
+  const wf = distillGraph(stubJournal({ e2e: "not-needed", expectation: "not-needed",
+                                        benchmark: "not-needed", dst: "not-needed" }), defs);
+  const parked = await run(wf, seed({ id: "S-1", text: "…", crossesBoundary: true }), async () => []);
+  expect(parked.kind === "suspended" && parked.reason).toBe("incomplete-boundary");
+
+  const resumed = await resume(wf, parked.runId,
+    { decision: "override", override: { kind: "e2e", lane: "needed" } }, async () => []);
+  expect(resumed.kind === "terminal" && resumed.terminal.kind).toBe("accepted");
 });
 ```
 
@@ -506,8 +588,8 @@ nWave's DELIVER wave generates a roadmap, then runs each step through a RED→GR
 | `nw-execute` dispatches one step to a crafter with a template prompt | The runner traverses the fixed step-cycle graph; each node is a leaf step with a validator |
 | `execution-log.json`, write-locked and HMAC-signed | The runner's trace. A model cannot log COMMIT because it never writes the log |
 | Reviewer dispatched after the step | The step-level validator, same primitive at coarser grain |
-| "No effort budget cuts" | Terminal is `accepted` only when every bound AC is `green`. Partial is `needs-human`; no edge leads from partial to `accepted` |
-| "Deferrals need a GH issue and user approval" | No `create-issue` effect exists. The only deferral is a `needs-human` terminal with a typed reason |
+| "No effort budget cuts" | Terminal is `accepted` only when every bound AC is `green`. Partial suspends for a person; no edge leads from partial to `accepted` |
+| "Deferrals need a GH issue and user approval" | No `create-issue` effect exists. The only deferral is a `needs-human` suspension with a typed reason |
 
 ### The step cycle as a graph
 
@@ -523,7 +605,7 @@ gates ─branch─┬─ clean ────────────────�
               └─ out-of-scope-structural ► needs-human
 ```
 
-Every branch is a closed enum. `already-green` at RED is a first-class outcome routed to a person, because a test that passes before implementation is a testing-theater signal the current process catches only if a reviewer notices. `harness-failed` is distinct from `still-red` so a flaky run does not burn the implement retry budget.
+Every `needs-human` leaf above is a suspend node, not a terminal: the cycle parks, a person answers from a closed decision enum, and the same run continues. Every branch is a closed enum. `already-green` at RED is a first-class outcome routed to a person, because a test that passes before implementation is a testing-theater signal the current process catches only if a reviewer notices. `harness-failed` is distinct from `still-red` so a flaky run does not burn the implement retry budget.
 
 ### What decomposes and what stays wide
 
@@ -543,7 +625,7 @@ Three things bound the parallelism. One of them changes how roadmaps should be a
 - **Shared test infrastructure needs leases the way symbols do.** Two steps with disjoint symbols can both need the same VM, the same kernel table, the same port. A `run-tests` effect acquires resource leases, and the test-impact graph says which resources each step's tests touch. Steps sharing none run fully parallel; steps sharing the kernel serialize on that one effect and nothing else. Overdrive's net-slot partitioning and `host-kernel-shared` nextest group are this problem solved by hand.
 - **The export target, if it is still git.** The VCS event log is the truth and commits are per-symbol-set with version tags, so there is no global lock inside the framework. If a linear git history is still what consumers expect, serialize at export, not at execution. Export is a rendering, the same way prose is.
 
-Beyond throughput: a `needs-human` terminal blocks that step's subtree and nothing else. Today one step waiting on a design gap stalls the whole feature. In the DAG, every branch not downstream of it keeps going, and the human's queue is a list of independent blocked subtrees.
+Beyond throughput: a `needs-human` suspension blocks that step's subtree and nothing else. Today one step waiting on a design gap stalls the whole feature. In the DAG, every branch not downstream of it keeps going, and the human's queue is a list of independent blocked subtrees.
 
 The one way the graph can be fooled: an AC that depends on a step it does not declare. The test goes `still-red` for the wrong reason and the retry budget burns on a correct implementation. Deriving edges from declared symbol touches closes most of this. The residue is a missed declaration, surfaced as a step that exhausts retries and lands on a person with a trail showing the failing test never referenced anything the step wrote.
 
