@@ -24,7 +24,7 @@ Testing is the sharpest case. Overdrive has four test tiers, an executed-evidenc
 
 The same shape repeats for reconciler-versus-workflow triage, deferral handling, API-surface conformance, and every other rule that ends in "symptoms during review."
 
-## Four rules that make a workflow deterministic
+## Five rules that make a workflow deterministic
 
 The workflow is a finite graph. Every path through it is enumerable before it runs.
 
@@ -32,6 +32,7 @@ The workflow is a finite graph. Every path through it is enumerable before it ru
 2. **Every branch's edge table is exhaustive at compile time.** A branch over a decision type `D` takes `Record<D, NodeId>`. Adding a decision value without an edge is a type error.
 3. **Terminals are enumerated, not thrown, and a person is a suspension rather than a terminal.** A workflow ends in `accepted` or `rejected`. No exception crosses the graph boundary. A step that cannot produce a valid output returns a state carrying that fact, and a branch routes it. When the branch routes to a person, the run does not end: a `needs-human` node **suspends**, parking the run with a typed reason and the trail behind it. The person answers with a value from a closed decision enum, the graph branches on that answer, and the same run continues to a terminal. A person is another input the graph reads, not a place the graph stops.
 4. **Effects are data.** A step returns `Effect[]`. The runner executes them and feeds typed results back into state. Steps never touch a filesystem, a database, or a network directly.
+5. **Repetition is a bounded `loop` node, and a back edge is rejected.** A retry, a fix-and-recheck, a cycle that repeats until a gate comes back clean: each is a `loop` node naming the sub-graph it repeats, the condition that ends it, and a required `max`. There is no unbounded form, because rule 1 buys a finite path space only if the number of times an edge can be taken is finite too. An arbitrary back edge in the node map is refused by name rather than compiled, so the one way to repeat is the one way that stays enumerable.
 
 Given these, the graph's path space is finite, so you can enumerate it with a stub model and assert every path lands on a declared outcome: a terminal, or parked for a person. No API key, no network, milliseconds. That is the property the rest of this document builds on.
 
@@ -184,7 +185,7 @@ Two design choices worth defending. Temperature zero is not for determinism; it 
 
 ### Workflow graph and runner
 
-Five node types. `branch` is the load-bearing one: its edge table is typed by the decision union. `suspend` is the same guarantee one level over: it ties the schema a person answers with to the function that folds that answer into state.
+Six node types. `branch` is the load-bearing one: its edge table is typed by the decision union. `suspend` is the same guarantee one level over: it ties the schema a person answers with to the function that folds that answer into state. `loop` is the third: it ties a sub-graph to the condition that ends it and the bound that ends it anyway.
 
 ```ts
 export type NodeId = string;
@@ -198,11 +199,19 @@ export type Node<S> =
                         absorb: (s: S, results: EffectResult[]) => S; next: NodeId }
   | { type: "fanout";   steps: NodeId[]; join: NodeId }
   | { type: "branch";   on: (s: S) => string; edges: Record<string, NodeId> }
+  | { type: "loop";     body: NodeId;                // the sub-graph one iteration runs
+                        until: (s: S) => boolean;    // a decision function, pure like `on`
+                        max: number;                 // required, positive; no unbounded form
+                        absorb: (s: S, exit: LoopExit) => S; next: NodeId }
   | { type: "suspend";  reason: (s: S) => string;      // a closed enum per workflow
                         trail: (s: S) => unknown[];    // the evidence behind it
                         resumeSchema: z.ZodType<unknown>;
                         absorb: (s: S, answer: never) => S; next: NodeId }
   | { type: "terminal"; done: (s: S) => Terminal<S> };
+
+// What a loop tells `absorb` on the way out. This is the whole surface through
+// which "the bound was reached" becomes something a following branch can route.
+export type LoopExit = { iterations: number; exhausted: boolean };
 
 export type Workflow<S> = { start: NodeId; nodes: Record<NodeId, Node<S>> };
 
@@ -218,15 +227,32 @@ export const suspend = <S, R>(spec: {
   absorb: (s: S, answer: R) => S;
   next: NodeId;
 }): Node<S> => ({ type: "suspend", ...spec }) as Node<S>;
+
+export const loop = <S>(spec: {
+  body: NodeId;
+  until: (s: S) => boolean;
+  max: number;
+  absorb: (s: S, exit: LoopExit) => S;
+  next: NodeId;
+}): Node<S> => ({ type: "loop", ...spec });
 ```
 
-The runner does not interpret this graph. It compiles it, once per run, to a [Mastra](https://mastra.ai) workflow and drives that through `createRun()`. The node map is an arbitrary directed graph; Mastra's builder is a linear chain of combinators. The bridge is the continuation: a chain runs until it reaches a branch, and each edge of that branch compiles to a *nested workflow* carrying the rest of that path. `Workflow` implements `Step`, so a nested workflow is a legal branch target. A node reachable from two edges is therefore compiled once per path.
+A loop's body is delimited by a convention the graph declares rather than one the
+compiler infers: **a body node whose edge names the loop's own id is the
+iteration boundary, and that is the only edge allowed to leave the body.** The
+loop's `next` is the only way past it. So "route this finding to a person" from
+inside a loop is not an edge out of the body. It is a fact the body records, an
+`until` that goes true because of it, and a branch after the loop that reads it.
+That is the same move rule 3 makes for a failing step, one level up.
+
+The runner does not interpret this graph. It compiles it, once per run, to a [Mastra](https://mastra.ai) workflow and drives that through `createRun()`. The node map is a directed graph whose only cycles are declared loops; Mastra's builder is a linear chain of combinators. The bridge is the continuation: a chain runs until it reaches a branch, and each edge of that branch compiles to a *nested workflow* carrying the rest of that path. `Workflow` implements `Step`, so a nested workflow is a legal branch target. A node reachable from two edges is therefore compiled once per path.
 
 | Node | Compiles to |
 |---|---|
 | `step` | `createStep`, whose `execute` runs the node, hands its `Effect[]` to the injected executor, applies `absorb`, and returns the new state |
 | `fanout` | a nested workflow: `.parallel(sub-steps)` then a `.map()` that re-applies each sub-step's changed-key slice onto the pre-fanout state, in declaration order |
 | `branch` | an entry step that records the visit and proves the edge exists, then `.branch([[s => on(s) === k, tail_k], ...])` with one entry per key of the edge table, then a `.map()` that unwraps the single executed target's output |
+| `loop` | `.dountil(body, s => until(s) || iterationCount >= max)` over a nested workflow compiled from the body sub-graph, then an exit step that hands `{ iterations, exhausted }` to `absorb`. The bound lives in the condition, so there is no way to build the loop without it |
 | `suspend` | `createStep` with a `suspendSchema` and a `resumeSchema`: the first pass calls `suspend({ reason, trail })`, and the resumed pass parses the person's answer and folds it into state |
 | `terminal` | `createStep` returning the `Terminal<S>`. `accepted` completes; `rejected` goes through `bail()`, so nothing after it in its own chain can run |
 
@@ -234,7 +260,9 @@ The compile mapping buys the fanout merge for free. A sub-step returns only the 
 
 The state flowing through the compiled workflow is the caller's `S`. The trace is separate: it accumulates in Mastra's own workflow state, which is the right lifetime, because that state survives suspension. The trace of a run that parked for a person and was answered three days later spans both halves. A model cannot claim to have reached a node it did not reach.
 
-What the compiler refuses. A graph with a dangling edge, an unreachable node, a fanout target that is not a step, no reachable terminal, or a **back edge** is rejected before any step runs. Cycles are out of scope for this cut: the continuation compile terminates only on an acyclic graph, so a back edge is named and refused rather than mis-built. The route to cycles through Mastra is `.dountil()` over a nested workflow, which is what the DELIVER step cycle below needs.
+A loop needs no counter to know it ran out. It leaves for exactly two reasons, `until` held or the bound was reached with `until` still false, so `exhausted` is `!until(final)` and nothing has to be threaded through the body to compute it. The iteration count does live in the engine's own state, beside the trace, which is what lets a run park inside a loop body and resume three days later into the same iteration with the same count.
+
+What the compiler refuses. A graph with a dangling edge, an unreachable node, a fanout target that is not a step, no reachable terminal, a malformed loop, or a **back edge** is rejected before any step runs. A back edge is the repetition rule 5 forbids: it is named and refused rather than compiled into something that only looks like a loop. A malformed loop is one whose bound is not a positive integer, whose body has no path back to the loop, whose body reaches a node that cannot come back, whose body is entered from outside, or whose exit re-enters its own body. Each is checked once, by the same function the harness uses to walk the graph.
 
 A run therefore ends one of two ways, and `run` returns which:
 
@@ -593,19 +621,69 @@ nWave's DELIVER wave generates a roadmap, then runs each step through a RED→GR
 
 ### The step cycle as a graph
 
-```
-activate-at ─► run-tests ─branch─┬─ red-observed ──► implement ─► run-tests ─branch─┬─ green ────────► refactor ─► gates ─► commit ─► accepted
-                                 ├─ already-green ─► needs-human (AT is vacuous)       ├─ still-red ────► implement (bounded retry)
-                                 └─ harness-failed ► needs-human                        ├─ broke-other ──► implement (bounded retry)
-                                                                                        └─ harness-failed ► needs-human
+The obvious drawing of this has back edges in it: `gates` to `fix-lint` to
+`gates`, `run-tests` to `implement` to `run-tests`. Rule 5 does not allow them.
+The same shape written with bounded loops is three nested `loop` nodes, and the
+nesting is the thing the back-edge drawing was hiding.
 
-gates ─branch─┬─ clean ──────────────────► commit
-              ├─ clippy-in-scope ────────► fix-lint ─► gates
-              ├─ mutation-below-gate ────► add-test ─► run-tests
-              └─ out-of-scope-structural ► needs-human
+```
+activate-at ─► run-tests.red ─branch─┬─ red-observed ──────► cycle
+                                     ├─ already-green ─────► human   (the AT is vacuous)
+                                     ├─ harness-failed ────► human
+                                     └─ exhausted ─────────► human
+
+cycle  = loop(body: test-loop, until: gates are clean, max: 2) ─► cycle.verdict
+│
+├─ test-loop  = loop(body: implement, until: not still-red and not broke-other, max: 2)
+│  │            ─► test.verdict ─branch─┬─ green ──────► refactor
+│  │                                    └─ everything else ─► cycle   (iterate, or leave)
+│  └─ implement ─► write.verdict ─branch─┬─ committed ───► run-tests ─► test-loop
+│                                        ├─ conflict ────► test-loop  (rebase and retry)
+│                                        ├─ rejected ────► test-loop  (retry)
+│                                        ├─ infra-failed ► test-loop  (blocked; until goes true)
+│                                        └─ exhausted ───► test-loop  (blocked)
+│
+├─ refactor ─► refactor.verdict ─branch─┬─ refactored ──► gates-loop
+│                                       └─ exhausted ───► cycle
+│
+└─ gates-loop = loop(body: gates, until: not clippy-in-scope, max: 2)
+   │            ─► gate.verdict ─branch─┬─ clean ─────────────────► cycle  (until goes true)
+   │                                    ├─ mutation-below-gate ───► add-test ─► cycle
+   │                                    └─ everything else ───────► cycle  (blocked, or the bound)
+   └─ gates ─► gate.route ─branch─┬─ clippy-in-scope ──────► fix-lint ─► gates-loop
+                                  └─ everything else ──────► gates-loop
+
+cycle.verdict ─branch─┬─ clean ───► commit ─► commit.verdict ─┬─ committed ─► accepted
+                      └─ blocked ─► human ─► human.route ─────┼─ commit ────► commit
+                                                              └─ abandon ───► rejected
 ```
 
-Every `needs-human` leaf above is a suspend node, not a terminal: the cycle parks, a person answers from a closed decision enum, and the same run continues. Every branch is a closed enum. `already-green` at RED is a first-class outcome routed to a person, because a test that passes before implementation is a testing-theater signal the current process catches only if a reviewer notices. `harness-failed` is distinct from `still-red` so a flaky run does not burn the implement retry budget.
+`human` is a suspend node, not a terminal: the cycle parks, a person answers
+from a closed decision enum, and the same run continues. Every branch is a
+closed enum. `already-green` at RED is a first-class outcome routed to a person,
+because a test that passes before implementation is a testing-theater signal the
+current process catches only if a reviewer notices. `harness-failed` is distinct
+from `still-red` so a flaky run does not burn the implement retry budget, and
+`infra-failed` on the write is distinct from `rejected` for the same reason one
+level down.
+
+There is one `human` node and it sits outside all three loops, which is what the
+body-boundary convention forces: a loop body leaves only through the loop's own
+id. So an outcome that needs a person does not jump out of the cycle. It sets a
+block in state, every enclosing `until` goes true because of it, the run unwinds
+through the loops it was inside, and `cycle.verdict` routes it. The unwinding is
+not overhead. It is how the run carries out what it learned inside the loop.
+
+A loop that reaches its bound goes to the same place by the same route, with a
+reason of its own. When the body has run `max` times and `until` is still false,
+the loop leaves anyway and hands `absorb` an exit with `exhausted: true`. The
+graph folds that into state as "which loop ran out", and `cycle.verdict` sends it
+to `human` under `test-loop-exhausted`, `gates-loop-exhausted`, or
+`cycle-exhausted`. A person therefore gets told which budget was spent and how
+many times it ran, rather than being handed a run that stopped for no stated
+reason. This is what "no effort budget cuts" looks like when it is topology: the
+bound cannot be raised by a model, and running out of it is not a route to
+`accepted`.
 
 ### What decomposes and what stays wide
 
