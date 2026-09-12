@@ -91,6 +91,10 @@ describe("no nondeterminism inside the graph", () => {
     expect(files).toContain("core/workflow.ts");
     expect(files).toContain("core/compile.ts");
     expect(files).toContain("examples/nwave/deliver/graph.ts");
+    expect(files).toContain("examples/nwave/distill/manifest.ts");
+    expect(files).toContain("examples/nwave/distill/obligations/graph.ts");
+    expect(files).toContain("examples/nwave/distill/oracle/graph.ts");
+    expect(files).toContain("examples/nwave/distill/pipeline.ts");
     expect(files).toContain("examples/nwave/roadmap/graph.ts");
     expect(files).toContain("examples/nwave/roadmap/shape.ts");
     expect(files).toContain("examples/nwave/roadmap/disjointness.ts");
@@ -103,7 +107,7 @@ describe("no nondeterminism inside the graph", () => {
     expect(files).toContain("vcs/executor.ts");
     expect(files).toContain("vcs/structural/typescript.ts");
     expect(files).not.toContain("vcs/defaults.ts");
-    expect(files.length).toBeGreaterThanOrEqual(22);
+    expect(files.length).toBeGreaterThanOrEqual(28);
   });
 
   test("no scanned file reads a clock or an RNG", async () => {
