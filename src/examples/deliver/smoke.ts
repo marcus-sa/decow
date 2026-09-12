@@ -81,6 +81,13 @@ const EVIDENCE =
   "test result: FAILED. 0 passed; 1 failed";
 
 /**
+ * The impact floor, as a VCS query would have answered it. There is no VCS
+ * behind this script either, so the floor is supplied rather than derived, and
+ * `select-tests` decides only what to ADD to it.
+ */
+const IMPACTED = ["exec_driver::submit_to_running", "exit_observer::writes_alloc_status_row"];
+
+/**
  * There is no VCS behind this, so a write is acknowledged rather than landed.
  * `memoryEffects` would answer `infra-failed`, which is the honest outcome and
  * the one the graph routes to a person — correct, and not what this script is
@@ -120,7 +127,7 @@ const main = async () => {
 
   const outcome = await run<State>(
     deliverGraph(memoryJournal(), defs),
-    seed(STEP, EVIDENCE),
+    seed(STEP, EVIDENCE, IMPACTED),
     acknowledge,
   );
 

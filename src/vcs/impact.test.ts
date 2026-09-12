@@ -112,6 +112,33 @@ describe("impacted tests", () => {
   });
 });
 
+describe("tests resolved by id", () => {
+  test("a test id resolves to the runnable target the tests stage takes", () => {
+    const { vcs, id } = open();
+    expect(names(vcs.impact.testsById([id("src/bravo.test.ts", "bravo is two")]))).toEqual([
+      "src/bravo.test.ts::bravo is two",
+    ]);
+    vcs.close();
+  });
+
+  test("the order given is kept and a repeat resolves once", () => {
+    const { vcs, id } = open();
+    const alpha = id("src/alpha.test.ts", "alpha is one");
+    const bravo = id("src/bravo.test.ts", "bravo is two");
+    expect(vcs.impact.testsById([bravo, alpha, bravo]).map((t) => t.id)).toEqual([bravo, alpha]);
+    vcs.close();
+  });
+
+  test("an id naming no live test is dropped, because extra may only add", () => {
+    const { vcs, id } = open();
+    // An invented id and a non-test symbol both add nothing. Neither can
+    // shrink a run, so neither is a refusal here; what ran is on the event.
+    expect(vcs.impact.testsById(["sym-invented"])).toEqual([]);
+    expect(vcs.impact.testsById([id("src/alpha.ts", "alpha")])).toEqual([]);
+    vcs.close();
+  });
+});
+
 describe("specifier resolution", () => {
   test("a relative specifier resolves against the importing file's directory", () => {
     expect(resolveSpecifier("src/vcs/impact.ts", "./registry.ts")).toEqual(["src/vcs/registry.ts"]);

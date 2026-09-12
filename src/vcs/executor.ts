@@ -23,6 +23,15 @@
  * that signature to carry provenance would put the framework's control plane
  * inside the VCS's argument list. One executor per task is the answer.
  *
+ * The batch is also what makes the `run-tests` union rule enforceable. A
+ * `run-tests` effect carries the symbols it is scoped to plus the tests a leaf
+ * chose above the impact floor; the executor hands the write path the symbols
+ * the batch actually wrote, and the floor is recomputed from those rather than
+ * trusted from the effect. So the workflow owns test selection above the
+ * floor, the VCS owns the floor, and a selection that misses one of the
+ * floor's tests comes back `rejected { by: "contract" }` naming the omitted
+ * ids. The LLM may add tests; it can never subtract one.
+ *
  * The outcome mapping is the identity function on `outcome` and on `by`: the
  * write path's result union was built to be `EffectResult`'s. What the mapping
  * does add is the lease layer's own answers:
@@ -87,9 +96,15 @@ export const vcsExecutor = (
   return async (effects) => {
     const results = new Map<Effect, EffectResult>();
     const writes = effects.filter(isReplaceSymbol);
+    /**
+     * The symbols this batch wrote. A `run-tests` effect in the same batch has
+     * to cover the tests these imply, and the floor is recomputed from this
+     * list inside the write path rather than read off the effect.
+     */
+    const wrote = [...new Set(writes.map((w) => w.symbolId))];
 
     if (writes.length > 0) {
-      const symbolIds = [...new Set(writes.map((w) => w.symbolId))];
+      const symbolIds = wrote;
       // The first effect naming a symbol owns that symbol's expected version;
       // a batch that names one symbol twice with two versions is a graph bug,
       // and the second write will come back `conflict` on its own.
@@ -135,8 +150,14 @@ export const vcsExecutor = (
       }
       switch (effect.type) {
         case "run-tests": {
+          // The union rule. `impacted` plus `extra` is what runs; `wrote` is
+          // what the run must cover. The workflow owns the selection above the
+          // floor, the VCS owns the floor, and the LLM may add a test but can
+          // never subtract one.
           const result = await vcs.runTests({
             symbolIds: effect.impacted,
+            ...(effect.extra === undefined ? {} : { extra: effect.extra }),
+            wrote,
             intent: intentFor({ modified: [] }),
           });
           out.push(asEffectResult(effect, result));

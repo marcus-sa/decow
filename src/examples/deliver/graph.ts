@@ -5,10 +5,17 @@
  * `loop` nodes, each with a required bound:
  *
  *   cycle      repeat [ test-loop, refactor, gates-loop ] until gates are clean
- *     test-loop  repeat [ implement, run-tests, diagnose ] until the test
- *                outcome is neither still-red nor broke-other
+ *     test-loop  repeat [ implement, select-tests, run-tests, diagnose ] until
+ *                the test outcome is neither still-red nor broke-other
  *     gates-loop repeat [ gates, fix-lint ] until the gate outcome is not
  *                clippy-in-scope
+ *
+ * `select-tests` sits between the write and the suite and decides one thing:
+ * whether any test should run in ADDITION to the impact floor the VCS already
+ * computed. Both of its decisions route to `run-tests`, because the selection
+ * changes what runs rather than what happens next, and the ids it returns are
+ * payload: a set of test ids is not a closed enum, and letting one drive an
+ * edge would make the path space the size of the suite.
  *
  * A still-red suite is classified before it is retried. `diagnose` answers
  * with the cause, and each cause goes to whoever owns it: `impl-wrong` is the
@@ -50,6 +57,7 @@ import {
   ACTIVATE_OUTCOMES,
   COMMIT_OUTCOMES,
   REFACTOR_OUTCOMES,
+  SELECT_TESTS_OUTCOMES,
   type DeliverDefs,
   type DiagnoseOutcome,
   type GateOutcome,
@@ -57,6 +65,7 @@ import {
   type LeafInput,
   type LeafOutputFor,
   type RedOutcome,
+  type SelectTestsOutcome,
   type StepUnderDelivery,
   type TestOutcome,
 } from "./steps.ts";
@@ -67,10 +76,27 @@ import {
  * The three bounds. Two is the smallest value that still exercises every edge:
  * one iteration to reach a retry, a second to reach the bound. Raising them
  * multiplies the enumerated path space without adding an edge.
+ *
+ * `MAX_CYCLES` is 1, and that is a budget decision with a measurement behind
+ * it. `select-tests` sits inside `test-loop`, which sits inside `cycle`, so its
+ * multiplier compounds once per (cycle x test) iteration. Measured on the walk,
+ * with the other two bounds at 2: cutting `MAX_CYCLES` to 1 gives 447 paths in
+ * ~2 s; cutting `MAX_GATE_ATTEMPTS` to 1 instead gives 5615 paths in ~254 s,
+ * because it is not one of the two loops the new leaf is inside; cutting
+ * `MAX_TEST_ATTEMPTS` to 1 would also work on time (285 paths, ~2 s) and is the
+ * most expensive in signal — five tests depend on the test loop running twice,
+ * including the whole `at-wrong` re-run-without-re-implementing claim and both
+ * write-retry claims. So the cycle is the one that gives way.
+ *
+ * What that costs is one observation, and it is bought back rather than
+ * dropped: the cycle repeating is asserted in
+ * `a surviving mutant re-enters the test loop on the next cycle`, which
+ * rebuilds the `cycle` node at `max: 2` for itself. The walk pays for one
+ * cycle; the one test that needs two builds two.
  */
 export const MAX_TEST_ATTEMPTS = 2;
 export const MAX_GATE_ATTEMPTS = 2;
-export const MAX_CYCLES = 2;
+export const MAX_CYCLES = 1;
 
 export const LOOP_IDS = ["test-loop", "gates-loop", "cycle"] as const;
 export type LoopId = (typeof LOOP_IDS)[number];
@@ -85,6 +111,7 @@ export type Leaves = {
   "activate-at"?: LeafOutputFor<"activate-at">["decision"];
   "run-tests.red"?: RedOutcome;
   implement?: LeafOutputFor<"implement">["decision"];
+  "select-tests"?: SelectTestsOutcome;
   "run-tests"?: TestOutcome;
   diagnose?: DiagnoseOutcome;
   "fix-acceptance-test"?: LeafOutputFor<"fix-acceptance-test">["decision"];
@@ -126,12 +153,27 @@ export type State = {
   step: StepUnderDelivery;
   /** Verbatim runner or gate output. Carried, not produced: no runner is wired. */
   evidence: string;
+  /**
+   * The test-impact floor, as a VCS query answered it. Carried, not produced:
+   * no VCS is wired here either, and `select-tests` reads it to decide what to
+   * ADD. It can never be narrowed from inside the graph — see the union rule
+   * on `run-tests` in `src/core/effects.ts`.
+   */
+  impacted: string[];
   /** The optimistic version the next `replace-symbol` claims. */
   symbolVersion: number;
 
   leaf: Leaves;
   /** How `implement`'s write landed. Cleared when `implement` did not write. */
   write?: WriteOutcome;
+  /** The symbol `implement` last rewrote. Payload; never branched on. */
+  wrote?: string;
+  /**
+   * Test ids `select-tests` chose above the floor. Payload; never branched on.
+   * A `run-tests` effect would carry it as `extra`, and the executor would run
+   * the union of it and the floor. See the README's "Not built yet".
+   */
+  extra: string[];
   /** The leaf whose validator was never satisfied, most recent wins. */
   exhausted?: LeafId;
   /** The first loop to run out of iterations. */
@@ -145,11 +187,18 @@ export type State = {
   human?: HumanAnswer;
 };
 
-export const seed = (step: StepUnderDelivery, evidence: string): State => ({
+export const seed = (
+  step: StepUnderDelivery,
+  evidence: string,
+  /** The impact floor a VCS query produced. Empty when nothing supplied one. */
+  impacted: readonly string[] = [],
+): State => ({
   step,
   evidence,
+  impacted: [...impacted],
   symbolVersion: 0,
   leaf: {},
+  extra: [],
   iterations: {},
 });
 
@@ -190,6 +239,7 @@ export const blockedReason = (s: State): HumanReason | undefined => {
 export type ActivateVerdict = (typeof ACTIVATE_OUTCOMES)[number] | "exhausted";
 export type RedVerdict = RedOutcome | "exhausted";
 export type WriteVerdict = WriteOutcome | "exhausted";
+export type SelectVerdict = SelectTestsOutcome | "exhausted";
 export type TestVerdict = TestOutcome | "exhausted";
 export type DiagnoseVerdict = DiagnoseOutcome | "exhausted";
 export type RefactorVerdict = (typeof REFACTOR_OUTCOMES)[number] | "exhausted";
@@ -208,6 +258,7 @@ export type TestPhase = "implement" | "run-tests";
 export const activateVerdict = (s: State): ActivateVerdict => s.leaf["activate-at"] ?? "exhausted";
 export const redVerdict = (s: State): RedVerdict => s.leaf["run-tests.red"] ?? "exhausted";
 export const writeVerdict = (s: State): WriteVerdict => s.write ?? "exhausted";
+export const selectVerdict = (s: State): SelectVerdict => s.leaf["select-tests"] ?? "exhausted";
 export const testVerdict = (s: State): TestVerdict => s.leaf["run-tests"] ?? "exhausted";
 export const diagnoseVerdict = (s: State): DiagnoseVerdict => s.leaf.diagnose ?? "exhausted";
 export const testPhase = (s: State): TestPhase =>
@@ -261,9 +312,10 @@ export const humanReason = (s: State): HumanReason => {
 export const humanTrail = (s: State): unknown[] => [
   { step: s.step.id, criteria: s.step.criteria },
   { leaves: s.leaf },
-  { write: s.write, symbolVersion: s.symbolVersion },
+  { write: s.write, symbolVersion: s.symbolVersion, wrote: s.wrote },
   { exhausted: s.exhausted, loopExhausted: s.loopExhausted, iterations: s.iterations },
   { designGap: s.designGap },
+  { impacted: s.impacted, extra: s.extra },
 ];
 
 /**
@@ -308,7 +360,7 @@ const leafNode = <K extends LeafId>(
     id,
     def: defs[id],
     journal,
-    input: (s) => ({ step: s.step, evidence: s.evidence }),
+    input: (s) => ({ step: s.step, evidence: s.evidence, impacted: s.impacted, wrote: s.wrote }),
     absorb: (s, r) => {
       const base = rebase(s);
       if (r.decision !== "ok") {
@@ -414,19 +466,54 @@ export const deliverGraph = (journal: Journal, defs: DeliverDefs): Workflow<Stat
           return { ...s, write: "conflict", symbolVersion: landed.currentVersion };
         return { ...s, write: landed.outcome };
       },
+      // The symbol it rewrote is what `select-tests` reads next, so it is
+      // carried out of the payload rather than re-derived from the effect.
+      carry: (s, payload) => ({ ...s, wrote: String(payload.symbolId ?? "") }),
       // A leaf that decided nothing wrote nothing, so last iteration's
       // outcome must not be read as this one's.
-      reset: (s) => ({ ...s, write: undefined }),
+      reset: (s) => ({ ...s, write: undefined, wrote: undefined }),
     }),
 
     // `infra-failed` is distinct from `rejected` so a flaky harness does not
     // burn the implement budget on a change that was fine. Both retry edges
     // stay inside the bound; both block edges let `testDone` stop the loop.
     "write.verdict": branch<State, WriteVerdict>(writeVerdict, {
-      committed: "run-tests",
+      committed: "select-tests",
       conflict: "test-loop",
       rejected: "test-loop",
       "infra-failed": "test-loop",
+      exhausted: "test-loop",
+    }),
+
+    // Between the write and the suite: which tests, above the floor. The
+    // floor is the VCS's and always runs; this leaf may only ADD to it, which
+    // is why its decision space has no `fewer` and why the ids it returns are
+    // payload rather than a decision. A set of test ids could not drive an
+    // edge without making the path space the size of the suite.
+    "select-tests": leafNode("select-tests", defs, journal, {
+      next: "select.verdict",
+      // `no-extra` means nothing was added, so the ids are not carried on
+      // that decision even if the payload holds some. The mechanical check
+      // `deliver.selection-matches-its-decision` refuses the contradiction at
+      // the model boundary; reading the decision here makes it structural, so
+      // a journal replay that never ran the check cannot smuggle one through.
+      carry: (s, payload) => ({
+        ...s,
+        extra:
+          s.leaf["select-tests"] === "extra" && Array.isArray(payload.extra)
+            ? payload.extra.map(String)
+            : [],
+      }),
+      // Last iteration's selection is not this one's.
+      reset: (s) => ({ ...s, extra: [] }),
+    }),
+
+    // Both decisions run the suite: the selection changed what runs, not what
+    // happens next. `exhausted` is the block every other leaf's is — the slot
+    // is cleared, `blockedReason` sees it, and the loop unwinds.
+    "select.verdict": branch<State, SelectVerdict>(selectVerdict, {
+      "no-extra": "run-tests",
+      extra: "run-tests",
       exhausted: "test-loop",
     }),
 

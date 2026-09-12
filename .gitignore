@@ -35,3 +35,6 @@ logs
 
 # Finder (macOS) folder config
 .DS_Store
+
+# MCP server artifacts
+.serena

@@ -37,13 +37,19 @@ export const StepUnderDelivery = z.object({
 export type StepUnderDelivery = z.infer<typeof StepUnderDelivery>;
 
 /**
- * What every leaf reads. `evidence` is verbatim runner or gate output; no
- * runner is wired in this prototype, so the graph carries it rather than
- * producing it.
+ * What every leaf reads. `evidence` is verbatim runner or gate output and
+ * `impacted` is the test-impact floor a VCS query produced; no runner and no
+ * VCS are wired in this prototype, so the graph carries both rather than
+ * producing them. Only some prompts read each field, the same way only some
+ * read `evidence`.
  */
 export const LeafInput = z.object({
   step: StepUnderDelivery,
   evidence: z.string(),
+  /** Test ids the VCS impact graph considers impacted. Carried, not produced. */
+  impacted: z.array(z.string()),
+  /** The symbol `implement` rewrote, once it has. Its payload, carried. */
+  wrote: z.string().optional(),
 });
 export type LeafInput = z.infer<typeof LeafInput>;
 
@@ -53,6 +59,7 @@ export const LEAF_IDS = [
   "activate-at",
   "run-tests.red",
   "implement",
+  "select-tests",
   "run-tests",
   "diagnose",
   "fix-acceptance-test",
@@ -72,6 +79,24 @@ export type RedOutcome = (typeof RED_OUTCOMES)[number];
 /** Every later run of the suite. */
 export const TEST_OUTCOMES = ["green", "still-red", "broke-other", "harness-failed"] as const;
 export type TestOutcome = (typeof TEST_OUTCOMES)[number];
+
+/**
+ * Which tests to run, ABOVE the impact floor. The floor is the VCS's — the
+ * impact graph derives it from the symbols the write touched — and this leaf
+ * decides only whether anything should be added to it. The decision space is
+ * therefore two words, and the ids themselves are payload the graph carries
+ * and never branches on: a set of test ids is not a closed enum, so it cannot
+ * be allowed to drive an edge, and keeping it out of the decision is also
+ * what keeps the enumerated path space from multiplying by the size of the
+ * suite.
+ *
+ * There is no `fewer`, and that is the rule rather than an omission. See
+ * `src/core/effects.ts` on `run-tests`: the executor runs
+ * `impactedTests(symbols) ∪ extra` and refuses a union that misses a test the
+ * floor holds, so subtraction is not a decision this leaf could make.
+ */
+export const SELECT_TESTS_OUTCOMES = ["no-extra", "extra"] as const;
+export type SelectTestsOutcome = (typeof SELECT_TESTS_OUTCOMES)[number];
 
 /**
  * Why the suite is still red. Four causes, each owned by a different agent: the
@@ -121,6 +146,7 @@ export const LEAF_DECISIONS = {
   "activate-at": ACTIVATE_OUTCOMES,
   "run-tests.red": RED_OUTCOMES,
   implement: IMPLEMENT_OUTCOMES,
+  "select-tests": SELECT_TESTS_OUTCOMES,
   "run-tests": TEST_OUTCOMES,
   diagnose: DIAGNOSE_OUTCOMES,
   "fix-acceptance-test": FIX_AT_OUTCOMES,
@@ -146,7 +172,9 @@ export type LeafPayload<K extends LeafId> = K extends "implement"
   ? { symbolId: string; body: string; rationale: string }
   : K extends "surface-design-gap"
     ? { gap: string; rationale: string }
-    : { anchor: string; rationale: string };
+    : K extends "select-tests"
+      ? { extra: string[]; rationale: string }
+      : { anchor: string; rationale: string };
 
 export type LeafOutputFor<K extends LeafId> = {
   decision: LeafDecision[K];
@@ -165,6 +193,19 @@ const change = <D extends readonly [string, ...string[]]>(decisions: D) =>
   stepOutput(decisions, {
     symbolId: z.string(),
     body: z.string(),
+    rationale: z.string().max(300),
+  });
+
+/**
+ * The leaf that selects tests above the impact floor. The ids are payload, not
+ * decision, so the graph carries them to the effect and never branches on
+ * them.
+ */
+const selection = <D extends readonly [string, ...string[]]>(decisions: D) =>
+  stepOutput(decisions, {
+    extra: z
+      .array(z.string())
+      .describe("Test ids to run in ADDITION to the impact floor. Empty when no-extra."),
     rationale: z.string().max(300),
   });
 
@@ -265,6 +306,54 @@ export const atFixPreservesTheCriterion = (decisions: readonly string[]): Requir
   decisions,
 });
 
+/** The `extra` array a selection returned, defensively. */
+const extraOf = (ctx: LeafCtx): string[] => {
+  const raw = ctx.output.payload.extra;
+  return Array.isArray(raw) ? raw.map(String) : [];
+};
+
+/**
+ * The union rule, as the rule text the selecting leaf is refuted against. The
+ * floor is not this leaf's to shrink — the executor recomputes it and refuses
+ * a union that misses one of its tests — so what the leaf is held to here is
+ * the honest framing of what it may do.
+ */
+export const testsMayBeAddedNeverRemoved = (decisions: readonly string[]): Requirement<LeafCtx> => ({
+  id: "deliver.tests-may-be-added-never-removed",
+  sourceId: "testing.impact-floor-is-the-vcs",
+  text:
+    "The impact floor is every test the VCS considers impacted by the symbols this step wrote, and " +
+    "it always runs. You may ADD test ids the static impact graph cannot see. You may never remove " +
+    "one, narrow the floor, or propose running fewer tests than it holds.",
+  decisions,
+});
+
+/**
+ * The mechanical half: the decision and the payload must agree. `no-extra`
+ * with ids in `extra` and `extra` with none are the two ways a selection can
+ * contradict itself, and neither costs a model call to catch.
+ */
+export const selectionMatchesItsDecision = (decisions: readonly string[]): Requirement<LeafCtx> => ({
+  id: "deliver.selection-matches-its-decision",
+  sourceId: "framework.decision-is-the-only-field-the-graph-reads",
+  text:
+    "Report `extra` with at least one test id, or `no-extra` with an empty list. The decision is " +
+    "what the graph routes and the list is what runs; a decision its own payload contradicts is " +
+    "not a selection.",
+  decisions,
+  check: (ctx) => {
+    const extra = extraOf(ctx);
+    const id = "deliver.selection-matches-its-decision";
+    if (ctx.output.decision === "no-extra" && extra.length > 0) {
+      return { requirementId: id, evidence: `no-extra with ${extra.length} id(s): ${extra.join(", ")}` };
+    }
+    if (ctx.output.decision === "extra" && extra.length === 0) {
+      return { requirementId: id, evidence: "extra with an empty list" };
+    }
+    return null;
+  },
+});
+
 export const scopeIsTheStep = (decisions: readonly string[]): Requirement<LeafCtx> => ({
   id: "deliver.gate-findings-are-in-scope-fixes",
   sourceId: "claude.deferrals-require-issues",
@@ -283,6 +372,7 @@ const REQUIREMENTS: { [K in LeafId]: ((d: readonly string[]) => Requirement<Leaf
   "activate-at": [noInventedApi],
   "run-tests.red": [anchorMustBeVerbatim, vacuousAtIsTestingTheatre, outcomesAreDistinct],
   implement: [noInventedApi, minimalChange],
+  "select-tests": [testsMayBeAddedNeverRemoved, selectionMatchesItsDecision],
   "run-tests": [anchorMustBeVerbatim, outcomesAreDistinct],
   diagnose: [anchorMustBeVerbatim, outcomesAreDistinct, designGapIsNotInventedApi],
   "fix-acceptance-test": [atFixPreservesTheCriterion, noInventedApi],
@@ -305,6 +395,10 @@ const SYSTEM: Record<LeafId, string> = {
   implement:
     "You make one acceptance test pass with the minimal change to one symbol. Build only the API the " +
     "design names. Report `written` and return the symbol and its new body.",
+  "select-tests":
+    "You choose whether any test should run IN ADDITION to the impact floor the VCS already " +
+    "computed. The floor always runs and you cannot narrow it. Report `extra` with the ids to add, " +
+    "or `no-extra` with an empty list.",
   "run-tests":
     "You classify one run of the suite. Answer with one word. Quote the runner output verbatim in `anchor`.",
   diagnose:
@@ -335,6 +429,11 @@ const PROMPT: Record<LeafId, (i: LeafInput) => string> = {
   implement: (i) =>
     `Step ${i.step.id}\n\nAcceptance criteria:\n${i.step.criteria}\n\n` +
     `The design declares exactly this surface:\n${i.step.design}\n\nRunner output:\n${i.evidence}`,
+  "select-tests": (i) =>
+    `Step ${i.step.id}\n\nAcceptance criteria:\n${i.step.criteria}\n\n` +
+    `The symbol this step wrote:\n${i.wrote ?? "(nothing written yet)"}\n\n` +
+    `The impact floor already runs these tests:\n` +
+    `${i.impacted.length === 0 ? "(none)" : i.impacted.map((t) => `- ${t}`).join("\n")}`,
   "run-tests": (i) => `Step ${i.step.id}\n\nRunner output:\n${i.evidence}`,
   diagnose: (i) =>
     `Step ${i.step.id}\n\nAcceptance criteria:\n${i.step.criteria}\n\n` +
@@ -388,7 +487,9 @@ export const leafDef = <K extends LeafId>(leaf: K, models: DeliverModels): LeafD
       ? change(decisions)
       : leaf === "surface-design-gap"
         ? gapReport(decisions)
-        : classification(decisions)) as unknown as z.ZodType<LeafOutputFor<K>>,
+        : leaf === "select-tests"
+          ? selection(decisions)
+          : classification(decisions)) as unknown as z.ZodType<LeafOutputFor<K>>,
     requirements: REQUIREMENTS[leaf].map((row) => row(decisions)) as Requirement<{
       input: LeafInput;
       output: LeafOutputFor<K>;

@@ -41,6 +41,19 @@ export type ImpactGraph = {
   observe(fileId: string, path: string, imports: readonly string[]): void;
   /** Tests whose outcome a change to these symbols could affect. */
   impactedTests(symbolIds: readonly string[]): TestTarget[];
+  /**
+   * Resolve test ids to runnable targets, in the order given, without
+   * duplicates. This is how a selection a workflow made *above* the impact
+   * floor becomes something the tests stage can run: `extra` on a `run-tests`
+   * effect is test ids, and a test is a symbol of kind `test`, so its id is
+   * already stable (§ 6.2 "Test identity").
+   *
+   * An id naming no live test is dropped rather than refused. `extra` may only
+   * ADD to the floor, so an id that names nothing adds nothing and cannot
+   * shrink the run; what actually ran is recorded on the `tests-run` event, so
+   * the drop is visible in provenance rather than silent.
+   */
+  testsById(ids: readonly string[]): TestTarget[];
   /** The stored module edges, for inspection and for tests. */
   edges(): { from: string; to: string }[];
 };
@@ -117,6 +130,21 @@ export const openImpactGraph = (db: Database, registry: Registry): ImpactGraph =
         const seen = reachable(file.id);
         if (![...wanted].some((f) => seen.has(f))) continue;
         for (const test of tests) targets.push({ id: test.id, path: file.path, name: test.name });
+      }
+      return targets;
+    },
+
+    testsById(ids) {
+      const targets: TestTarget[] = [];
+      const seen = new Set<string>();
+      for (const id of ids) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const symbol = registry.symbol(id);
+        if (symbol === undefined || symbol.tombstoned || symbol.kind !== "test") continue;
+        const file = registry.fileById(symbol.fileId);
+        if (file === undefined) continue;
+        targets.push({ id: symbol.id, path: file.path, name: symbol.name });
       }
       return targets;
     },

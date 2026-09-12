@@ -55,4 +55,14 @@ describe("memoryEffects", () => {
     ]);
     expect(results.map((r) => r.outcome)).toEqual(["infra-failed", "infra-failed"]);
   });
+
+  test("a run-tests effect carrying `extra` is unchanged here: there is no impact graph", async () => {
+    // The union rule lives where the floor lives. This executor has no impact
+    // graph, so it cannot compute a floor, cannot tell an omission from a
+    // selection, and must not pretend to: `extra` changes nothing and the
+    // answer stays `infra-failed`. Enforcement is `vcsExecutor`'s.
+    const { execute } = memoryEffects();
+    const [result] = await execute([{ type: "run-tests", impacted: ["a"], extra: ["t-1"] }]);
+    expect(result).toMatchObject({ outcome: "infra-failed" });
+  });
 });

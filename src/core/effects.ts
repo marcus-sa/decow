@@ -13,7 +13,20 @@
 export type Effect =
   | { type: "replace-symbol"; symbolId: string; expectedVersion: number; body: string }
   | { type: "upsert-artifact"; table: string; id: string; expectedVersion: number; row: unknown }
-  | { type: "run-tests"; impacted: string[] }
+  /**
+   * Run the suite. `impacted` names the symbols the run is scoped to, and the
+   * executor derives the tests from them through the VCS impact graph.
+   *
+   * `extra` is the selection a leaf added *above* that floor: test ids a step
+   * chose to run because it knows something the static import graph does not.
+   * The split is load-bearing. The floor belongs to the VCS, which recomputes
+   * it from the symbols the batch actually wrote rather than trusting what the
+   * effect declared; the selection above it belongs to the workflow. So a leaf
+   * may ADD tests and can never SUBTRACT one: an effect whose union misses a
+   * test the impact graph considers impacted comes back
+   * `rejected { by: "contract" }` with the omitted ids, not as a smaller run.
+   */
+  | { type: "run-tests"; impacted: string[]; extra?: string[] }
   | { type: "append-trail"; line: string };
 
 /**

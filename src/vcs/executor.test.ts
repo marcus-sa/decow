@@ -258,6 +258,157 @@ describe("the VCS as the framework's effect executor", () => {
     expect(result).toMatchObject({ outcome: "rejected", by: "tests" });
     vcs.close();
   });
+});
+
+/**
+ * The union rule. `impactedTests(symbols) ∪ extra` is what runs, and the floor
+ * is recomputed by the VCS from the symbols the batch wrote rather than read
+ * off the effect. So a workflow owns test selection ABOVE the floor and cannot
+ * reach below it: adding a test is a selection, omitting an impacted one is a
+ * contract violation with the omitted ids named.
+ */
+describe("run-tests is a union: the LLM may add tests, never subtract", () => {
+  const PROJECT = {
+    "src/alpha.ts": "export function alpha(): number {\n  return 1;\n}\n",
+    "src/bravo.ts": "export function bravo(): number {\n  return 2;\n}\n",
+    "src/alpha.test.ts":
+      'import { alpha } from "./alpha.ts";\ntest("alpha is one", () => {\n  alpha();\n});\n',
+    "src/bravo.test.ts":
+      'import { bravo } from "./bravo.ts";\ntest("bravo is two", () => {\n  bravo();\n});\n',
+  };
+
+  /** A tests stage that records the targets it was handed instead of running them. */
+  const recordingTests = () => {
+    const runs: string[][] = [];
+    const tests: Verifier["tests"] = async (ctx) => {
+      runs.push(ctx.targets.map((t) => t.id));
+      return { status: "passed" };
+    };
+    return { runs, tests };
+  };
+
+  const openProject = (tests: Verifier["tests"]) => {
+    const root = tempProject(PROJECT);
+    const vcs = openVcs({
+      root,
+      verifier: passingVerifier({ tests }),
+      clock: manualClock(1_000),
+      ids: counterIds(),
+    });
+    const files = vcs.trackTree("src");
+    const id = (path: string, name: string) => {
+      const file = files.find((f) => f.path === path);
+      const symbol =
+        file === undefined
+          ? undefined
+          : vcs.registry.symbolsOf(file.id).find((s) => s.name === name);
+      if (symbol === undefined) throw new Error(`fixture has no ${path}::${name}`);
+      return symbol.id;
+    };
+    const execute = vcsExecutor({ vcs, session: "session-union", intent: TASK });
+    return { vcs, id, execute };
+  };
+
+  test("extra is added to the floor and the tests stage is handed both", async () => {
+    const { runs, tests } = recordingTests();
+    const { vcs, id, execute } = openProject(tests);
+    const alphaTest = id("src/alpha.test.ts", "alpha is one");
+    const bravoTest = id("src/bravo.test.ts", "bravo is two");
+
+    const [result] = await execute([
+      { type: "run-tests", impacted: [id("src/alpha.ts", "alpha")], extra: [bravoTest] },
+    ]);
+
+    expect(result).toMatchObject({ outcome: "committed" });
+    // The floor came from the impact graph; `bravo is two` came from the leaf.
+    expect(runs).toEqual([[alphaTest, bravoTest]]);
+    vcs.close();
+  });
+
+  test("an extra test the floor already chose is added once, not twice", async () => {
+    const { runs, tests } = recordingTests();
+    const { vcs, id, execute } = openProject(tests);
+    const alphaTest = id("src/alpha.test.ts", "alpha is one");
+
+    await execute([
+      { type: "run-tests", impacted: [id("src/alpha.ts", "alpha")], extra: [alphaTest] },
+    ]);
+    expect(runs).toEqual([[alphaTest]]);
+    vcs.close();
+  });
+
+  test("omitting an impacted test for a symbol the batch wrote is rejected: contract", async () => {
+    const { runs, tests } = recordingTests();
+    const { vcs, id, execute } = openProject(tests);
+    const alpha = id("src/alpha.ts", "alpha");
+    const alphaTest = id("src/alpha.test.ts", "alpha is one");
+
+    // The batch writes `alpha` and then asks to run only bravo's tests. The
+    // floor is computed from the write, not from `impacted`, so the omission
+    // is visible whatever the effect declared.
+    const results = await execute([
+      {
+        type: "replace-symbol",
+        symbolId: alpha,
+        expectedVersion: 1,
+        body: "export function alpha(): number {\n  return 42;\n}",
+      },
+      { type: "run-tests", impacted: [id("src/bravo.ts", "bravo")] },
+    ]);
+
+    expect(results[0]).toMatchObject({ outcome: "committed" });
+    expect(results[1]).toMatchObject({ outcome: "rejected", by: "contract" });
+    // One entry, and it is the WRITE's own gate at step 8 of the write path.
+    // The refused effect added none: it is refused before anything runs,
+    // because a narrower run is not a cheaper run.
+    expect(runs).toEqual([[alphaTest]]);
+
+    // The omitted ids ARE the finding, so they are in the failure event.
+    const event = vcs.log.all().at(-1);
+    expect(event).toMatchObject({ kind: "tests-run", verification: "failed", category: "contract" });
+    expect(JSON.parse(String(event?.detail))).toMatchObject({
+      omitted: [alphaTest],
+      status: "omitted-impacted-tests",
+    });
+    vcs.close();
+  });
+
+  test("extra can cover the floor: the union is what matters, not the declaration", async () => {
+    const { runs, tests } = recordingTests();
+    const { vcs, id, execute } = openProject(tests);
+    const alpha = id("src/alpha.ts", "alpha");
+    const alphaTest = id("src/alpha.test.ts", "alpha is one");
+    const bravoTest = id("src/bravo.test.ts", "bravo is two");
+
+    const results = await execute([
+      {
+        type: "replace-symbol",
+        symbolId: alpha,
+        expectedVersion: 1,
+        body: "export function alpha(): number {\n  return 42;\n}",
+      },
+      { type: "run-tests", impacted: [id("src/bravo.ts", "bravo")], extra: [alphaTest] },
+    ]);
+
+    expect(results[1]).toMatchObject({ outcome: "committed" });
+    // The first entry is the write's own gate; the second is the effect's
+    // union. The effect declared the wrong symbol scope and `extra` covered
+    // the floor anyway, which is the whole point of checking the union.
+    expect(runs.at(-1)).toEqual([bravoTest, alphaTest]);
+    vcs.close();
+  });
+
+  test("a run-tests effect in a batch that wrote nothing has no floor to miss", async () => {
+    const { runs, tests } = recordingTests();
+    const { vcs, id, execute } = openProject(tests);
+    const [result] = await execute([{ type: "run-tests", impacted: [id("src/bravo.ts", "bravo")] }]);
+
+    // Nothing was written, so nothing could have been subtracted. A scoped
+    // run on its own stays a scoped run.
+    expect(result).toMatchObject({ outcome: "committed" });
+    expect(runs).toEqual([[id("src/bravo.test.ts", "bravo is two")]]);
+    vcs.close();
+  });
 
   test("an append-trail effect becomes provenance, and upsert-artifact stays unwired", async () => {
     const { vcs } = open();

@@ -47,6 +47,7 @@ import {
   structuralStage,
   type RejectedBy,
   type StageOutcome,
+  type TestTarget,
   type VerificationStatus,
   type Verifier,
 } from "./verify.ts";
@@ -97,8 +98,28 @@ export type WritePath = {
    * This is what a `run-tests` effect asks for; it takes no lease because it
    * observes rather than writes. `version` on the result is the sequence
    * number of the event recording the run.
+   *
+   * The run set is `impactedTests(symbolIds) ∪ testsById(extra)`: the impact
+   * graph owns the floor and the caller owns the selection above it. `wrote`
+   * is what makes that a rule rather than a convention — the floor is
+   * recomputed HERE from the symbols the caller says its batch wrote, and a
+   * union that misses one of those tests is `rejected { by: "contract" }` with
+   * the omitted ids, because a caller may add tests and may never subtract
+   * one.
    */
-  runTests(spec: { symbolIds: readonly string[]; intent: Intent }): Promise<WriteResult>;
+  runTests(spec: {
+    /** The symbols the run is scoped to, as the caller declared them. */
+    symbolIds: readonly string[];
+    /** Test ids chosen above the floor. Added, never subtracted. */
+    extra?: readonly string[];
+    /**
+     * The symbols the caller's batch actually wrote. `impactedTests` of these
+     * is the floor the union must cover. Absent or empty means nothing was
+     * written, so there is no floor and nothing could have been subtracted.
+     */
+    wrote?: readonly string[];
+    intent: Intent;
+  }): Promise<WriteResult>;
 };
 
 /** What the operation declares about identity, for the structural stage. */
@@ -126,6 +147,16 @@ const rewriteContainer = (
   const path = [...descendant.container];
   path[ancestor.container.length] = newName;
   return path;
+};
+
+/**
+ * Test targets, first occurrence wins. The floor and the selection above it
+ * overlap by construction — a leaf that adds a test the impact graph already
+ * chose is adding nothing, not asking for it twice.
+ */
+const dedupe = (targets: readonly TestTarget[]): TestTarget[] => {
+  const seen = new Set<string>();
+  return targets.filter((t) => (seen.has(t.id) ? false : (seen.add(t.id), true)));
 };
 
 export const openWritePath = (spec: {
@@ -376,7 +407,42 @@ export const openWritePath = (spec: {
       }),
 
     async runTests(s) {
-      const targets = impact.impactedTests(s.symbolIds);
+      const selected = dedupe([...impact.impactedTests(s.symbolIds), ...impact.testsById(s.extra ?? [])]);
+
+      // The floor, recomputed here rather than trusted from the caller. A
+      // selection that covers it may be wider; one that is narrower is a
+      // contract violation, and the omitted ids ARE the finding, so they are
+      // named in the event and in the rejection.
+      const chosen = new Set(selected.map((t) => t.id));
+      const omitted = impact
+        .impactedTests(s.wrote ?? [])
+        .filter((t) => !chosen.has(t.id))
+        .map((t) => t.id)
+        .sort();
+
+      if (omitted.length > 0) {
+        const detail =
+          `the test selection omits ${omitted.length} impacted test` +
+          `${omitted.length === 1 ? "" : "s"} for the symbols this batch wrote: ` +
+          `${omitted.join(", ")} — tests may be added to the impact floor, never removed from it`;
+        log.append({
+          kind: "tests-run",
+          taskId: s.intent.taskId,
+          ...(s.intent.parentTaskId === undefined ? {} : { parentTaskId: s.intent.parentTaskId }),
+          description: s.intent.description,
+          verification: "failed",
+          category: "contract",
+          detail: JSON.stringify({
+            omitted,
+            selected: selected.map((t) => t.id),
+            wrote: [...(s.wrote ?? [])],
+            status: "omitted-impacted-tests",
+          }),
+        });
+        return rejected("contract", detail);
+      }
+
+      const targets = selected;
       const outcome = await verifier.tests({ root, symbolIds: s.symbolIds, targets });
       const seq = log.append({
         kind: "tests-run",

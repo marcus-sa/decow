@@ -5,7 +5,7 @@
  * cartesian product covers it. DELIVER's is a sequence, because a loop asks
  * the same leaf again on the next iteration. `enumeratePaths` walks the
  * reachable decision tree instead: every leaf decision, every write outcome,
- * every loop count up to its bound. **1270 paths**, and the count is finite
+ * every loop count up to its bound. **447 paths**, and the count is finite
  * only because every loop carries one.
  *
  * Zero model calls, no API key, no network. The stub journal throws on a miss
@@ -28,6 +28,7 @@ import { enumeratePaths, graphDefects, inspectGraph, type Choose } from "../../h
 import { describeTrace, endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "../../harness/matchers.ts";
 import { exhausted, ok, stubJournal } from "../../harness/stub-journal.ts";
 import {
+  cycleDone,
   deliverGraph,
   HUMAN_REASONS,
   MAX_CYCLES,
@@ -61,6 +62,13 @@ const STEP = {
 };
 const EVIDENCE = "test result: FAILED. assertion failed: expected Running, got Pending";
 
+/**
+ * The impact floor, as a VCS query would have answered it. Stubbed: no VCS is
+ * wired to this graph, so the state carries the floor rather than producing it
+ * — the same boundary `evidence` already sits on.
+ */
+const IMPACTED = ["test-submit-to-running", "test-exit-observer-writes-row"];
+
 /** One payload shape covers every leaf output schema; the graph reads none of them. */
 const PAYLOAD = {
   anchor: "expected Running, got Pending",
@@ -68,6 +76,7 @@ const PAYLOAD = {
   symbolId: "ExecDriver::start",
   body: "fn start(&self) { /* ... */ }",
   gap: "the design names no way to observe the allocation's state",
+  extra: ["test-alloc-handle-is-dropped"],
 };
 
 /** The sentinel for "this leaf's validator was never satisfied". */
@@ -117,6 +126,7 @@ const HAPPY: Script = {
   "activate-at": "activated",
   "run-tests.red": "red-observed",
   implement: "written",
+  "select-tests": "no-extra",
   "run-tests": "green",
   refactor: "refactored",
   gates: "clean",
@@ -124,7 +134,7 @@ const HAPPY: Script = {
 };
 
 const start = (script: Script, execute: EffectExecutor = landsCleanly) =>
-  run<State>(deliverGraph(journalFor(script), defs), seed(STEP, EVIDENCE), execute);
+  run<State>(deliverGraph(journalFor(script), defs), seed(STEP, EVIDENCE, IMPACTED), execute);
 
 /** The loop-count row of what a person reads, for asserting on a parked run. */
 const iterationsOf = (trail: readonly unknown[]) =>
@@ -153,6 +163,8 @@ describe("deliver graph", () => {
       "test-loop.head",
       "implement",
       "write.verdict",
+      "select-tests",
+      "select.verdict",
       "run-tests",
       "test.route",
       "test.verdict",
@@ -174,7 +186,7 @@ describe("deliver graph", () => {
     expect(outcome.trace.indexOf("run-tests.red")).toBeLessThan(outcome.trace.indexOf("implement"));
   });
 
-  // 1270 runs through the real engine. No model, no key, no network.
+  // 447 runs through the real engine. No model, no key, no network.
   test("every leaf decision, write outcome and loop count reaches a declared outcome", async () => {
     const seen = new Set<string>();
     const reasons = new Set<string>();
@@ -182,7 +194,7 @@ describe("deliver graph", () => {
 
     const paths = await enumeratePaths(async (choose) => {
       const wf = deliverGraph(chooseJournal(choose), defs);
-      const outcome = await run<State>(wf, seed(STEP, EVIDENCE), chooseExecutor(choose));
+      const outcome = await run<State>(wf, seed(STEP, EVIDENCE, IMPACTED), chooseExecutor(choose));
 
       expect(isDeclaredOutcome(outcome)).toBe(true);
       expect(endedOnDeclaredNode(wf, outcome)).toBe(true);
@@ -194,7 +206,7 @@ describe("deliver graph", () => {
     });
 
     // The bounds are what make this a number rather than an infinity.
-    expect(paths).toHaveLength(2215);
+    expect(paths).toHaveLength(447);
 
     // Every node the graph declares was exercised, except the one that is only
     // reachable by answering a suspension. The resume tests below cover it.
@@ -246,15 +258,53 @@ describe("deliver graph", () => {
   });
 
   test("a surviving mutant re-enters the test loop on the next cycle", async () => {
+    // The one test that needs the cycle to run twice builds it twice. The
+    // graph's own `MAX_CYCLES` is 1 so the enumeration walk stays inside its
+    // budget (see the bounds comment in graph.ts); the behaviour under test
+    // here is what a SECOND cycle does with an invalidated green verdict, so
+    // this test rebuilds the `cycle` node at 2 rather than asserting against
+    // a bound that would make the claim vacuous.
+    const script = { ...HAPPY, gates: "mutation-below-gate", "add-test": "added" };
+    const base = deliverGraph(journalFor(script), defs);
+    const twoCycles: Workflow<State> = {
+      ...base,
+      nodes: {
+        ...base.nodes,
+        cycle: loop<State>({
+          body: "test-loop",
+          until: cycleDone,
+          max: 2,
+          absorb: (s, exit) => ({
+            ...s,
+            iterations: { ...s.iterations, cycle: exit.iterations },
+            loopExhausted: exit.exhausted ? (s.loopExhausted ?? "cycle") : s.loopExhausted,
+          }),
+          next: "cycle.verdict",
+        }),
+      },
+    };
+    const outcome = await run<State>(twoCycles, seed(STEP, EVIDENCE, IMPACTED), landsCleanly);
+
+    expect(outcome.kind).toBe("suspended");
+    if (outcome.kind !== "suspended") return;
+    expect(outcome.reason).toBe("cycle-exhausted");
+    expect(visitCount(outcome.trace, "cycle")).toBe(2);
+    expect(visitCount(outcome.trace, "add-test")).toBe(2);
+    // add-test invalidated the green verdict, so the test loop ran again.
+    expect(visitCount(outcome.trace, "run-tests")).toBe(2);
+    expect(iterationsOf(outcome.trail)["cycle"]).toBe(2);
+  });
+
+  test("the cycle bound is handed to a person with its own reason", async () => {
+    // What the graph's own MAX_CYCLES = 1 still proves: a cycle that ends with
+    // the gates unclean leaves anyway, and the person is told which budget was
+    // spent rather than being handed a run that stopped for no stated reason.
     const outcome = await start({ ...HAPPY, gates: "mutation-below-gate", "add-test": "added" });
 
     expect(outcome.kind).toBe("suspended");
     if (outcome.kind !== "suspended") return;
     expect(outcome.reason).toBe("cycle-exhausted");
     expect(visitCount(outcome.trace, "cycle")).toBe(MAX_CYCLES);
-    expect(visitCount(outcome.trace, "add-test")).toBe(MAX_CYCLES);
-    // add-test invalidated the green verdict, so the test loop ran again.
-    expect(visitCount(outcome.trace, "run-tests")).toBe(MAX_CYCLES);
     expect(iterationsOf(outcome.trail)["cycle"]).toBe(MAX_CYCLES);
   });
 
@@ -301,6 +351,49 @@ describe("deliver graph", () => {
     // infra-failed. That is the honest outcome and it has its own edge.
     const outcome = await start(HAPPY, memoryEffects().execute);
     expect(outcome.kind === "suspended" && outcome.reason).toBe("write-infra-failed");
+  });
+
+  test("a selection above the floor is carried to the suite, and both decisions run it", async () => {
+    const chosen = await start({ ...HAPPY, "select-tests": "extra" });
+    expect(chosen.kind === "terminal" && chosen.terminal.kind).toBe("accepted");
+    expect(chosen.trace).toContain("select-tests");
+    expect(
+      chosen.kind === "terminal" && chosen.terminal.kind === "accepted"
+        ? chosen.terminal.state.extra
+        : undefined,
+    ).toEqual(PAYLOAD.extra);
+
+    // `no-extra` is the happy path's own answer, and it reaches the same node.
+    const none = await start(HAPPY);
+    expect(none.trace.indexOf("select-tests")).toBeLessThan(none.trace.indexOf("run-tests"));
+    expect(
+      none.kind === "terminal" && none.terminal.kind === "accepted"
+        ? none.terminal.state.extra
+        : undefined,
+    ).toEqual([]);
+  });
+
+  test("the floor is never narrowed from inside the graph: a selection only adds", async () => {
+    // The graph carries the floor and the addition separately, and it has no
+    // node that can remove one. The union and the refusal live in the
+    // executor, where the floor is recomputed — see src/vcs/executor.ts.
+    const outcome = await start({ ...HAPPY, "select-tests": "extra" });
+    if (outcome.kind !== "terminal" || outcome.terminal.kind !== "accepted") {
+      throw new Error("expected the happy path to be accepted");
+    }
+    expect(outcome.terminal.state.impacted).toEqual(IMPACTED);
+    expect(outcome.terminal.state.extra).toEqual(PAYLOAD.extra);
+  });
+
+  test("a selection whose validator refuses parks under validator-exhausted", async () => {
+    const outcome = await start({ ...HAPPY, "select-tests": EXHAUSTED });
+
+    expect(outcome.kind).toBe("suspended");
+    if (outcome.kind !== "suspended") return;
+    expect(outcome.reason).toBe("validator-exhausted");
+    expect(outcome.trail[3]).toMatchObject({ exhausted: "select-tests" });
+    // It blocked before the suite ran: the selection is upstream of the run.
+    expect(visited(outcome.trace, "run-tests")).toBe(false);
   });
 
   test("an exhausted leaf parks under validator-exhausted and the trail names it", async () => {
@@ -410,7 +503,7 @@ describe("deliver graph, the diagnosis branch", () => {
 describe("deliver graph, resumed by a person", () => {
   const park = async () => {
     const wf = deliverGraph(journalFor({ ...HAPPY, "run-tests.red": "already-green" }), defs);
-    const parked = await run<State>(wf, seed(STEP, EVIDENCE), landsCleanly);
+    const parked = await run<State>(wf, seed(STEP, EVIDENCE, IMPACTED), landsCleanly);
     if (parked.kind !== "suspended") throw new Error("expected the run to park");
     return { wf, parked };
   };
@@ -441,7 +534,7 @@ describe("deliver graph, resumed by a person", () => {
       journalFor({ ...HAPPY, "run-tests.red": "already-green", commit: EXHAUSTED }),
       defs,
     );
-    const parked = await run<State>(wf, seed(STEP, EVIDENCE), landsCleanly);
+    const parked = await run<State>(wf, seed(STEP, EVIDENCE, IMPACTED), landsCleanly);
     if (parked.kind !== "suspended") throw new Error("expected the run to park");
 
     const outcome = await resume<State>(wf, parked.runId, { decision: "commit" }, landsCleanly);
