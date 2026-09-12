@@ -1,7 +1,7 @@
 /**
  * The write path (ai-vcs.md § 5.4, § 6.1).
  *
- * Three declared operations, one shape. Every one of them checks the lease,
+ * Three SYMBOL operations, one shape. Every one of them checks the lease,
  * checks the version, edits the file, runs the verification pipeline over the
  * result, and then either commits the change with its events or restores the
  * file's bytes exactly and records why it did not:
@@ -29,6 +29,12 @@
  * Any failure between 5 and 9 restores the file byte for byte and appends a
  * `write-failed` event carrying which of § 5.4's three categories it was.
  *
+ * A FOURTH operation, `writeFile`, is not that shape and cannot be: it writes a
+ * file that may not exist, so it holds a path scope rather than a symbol id,
+ * claims no version, and asks a weaker structural question. Its contract is
+ * above it. A failed one restores the previous bytes, or removes the file it
+ * created.
+ *
  * The result union is deliberately the same shape as `EffectResult`'s, so the
  * executor maps one onto the other without interpreting anything.
  *
@@ -37,16 +43,17 @@
  * mechanically.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { ImpactGraph } from "./impact.ts";
 import type { EventLog, EventKind, Intent } from "./log.ts";
-import type { LeaseManager, LeaseMode } from "./leases.ts";
+import { coveringScopes, type LeaseManager, type LeaseMode } from "./leases.ts";
 import type { Registry, RegisteredSymbol } from "./registry.ts";
 import { identityKey, type Parser } from "./structural/parser.ts";
 import {
   categoryOf,
   structuralStage,
+  wholeFileStage,
   type RejectedBy,
   type StageOutcome,
   type TestTarget,
@@ -98,6 +105,30 @@ export type WritePath = {
     leaseId: string;
     symbolId: string;
     expectedVersion: number;
+    intent: Intent;
+  }): Promise<WriteResult>;
+
+  /**
+   * Write a whole file, which may or may not exist, under a PATH-SCOPE lease.
+   *
+   * The other three operations all resolve a symbol id first, so none of them
+   * can produce a file that is not there. This one is what an author needs: the
+   * claim is the lease's scope over a region of the tree, the intent declares
+   * the path under `created`, and the structural stage asks only that no
+   * identity the file already held has vanished.
+   *
+   * THE TESTS STAGE IS SKIPPED, and that is the point rather than an omission.
+   * Every other write asks "did this break something else" before it commits,
+   * and the honest answer for an oracle is that running it is a separate
+   * measurement with its own verdict — `measureOracle` — whose whole job is to
+   * observe a failure. Running the suite here would refuse every oracle for
+   * being red, which is what an oracle IS before its production code exists.
+   */
+  writeFile(spec: {
+    leaseId: string;
+    /** Repository-relative. Covered by the lease's path scope. */
+    path: string;
+    body: string;
     intent: Intent;
   }): Promise<WriteResult>;
 
@@ -448,6 +479,150 @@ export const openWritePath = (spec: {
           added: [],
         }),
       }),
+
+    async writeFile(s) {
+      const lease = leases.lease(s.leaseId);
+      if (lease === undefined) return rejected("contract", `lease ${s.leaseId} is not live`);
+      if (!MODES.edit.includes(lease.mode)) {
+        return rejected("contract", `a whole-file write needs a write or exclusive lease; ${s.leaseId} is ${lease.mode}`);
+      }
+      if (coveringScopes(lease.paths, s.path).length === 0) {
+        return rejected("contract", `lease ${s.leaseId} holds no path scope covering ${s.path}`);
+      }
+      if (!(s.intent.expectedOutcome.created ?? []).includes(s.path)) {
+        return rejected("contract", `the intent does not declare ${s.path} as an outcome of this call`);
+      }
+
+      const absolute = join(root, s.path);
+      const tracked = registry.file(s.path);
+      let before: string | undefined;
+      try {
+        before = readFileSync(absolute, "utf8");
+      } catch {
+        // The file is not there, which is the case this operation exists for.
+        before = undefined;
+      }
+      // A file the registry holds whose bytes moved under it is a desync, the
+      // same as it is for a symbol write: something with no declared intent
+      // changed it between the acquire and now (§ 9.1).
+      if (tracked !== undefined && before !== tracked.content) {
+        registry.reinventory(s.path, before ?? "", parser.symbols(before ?? ""));
+        return { outcome: "infra-failed", detail: `${s.path} was changed outside the system; it is now desynced` };
+      }
+
+      const restore = (): void => {
+        if (before === undefined) rmSync(absolute, { force: true });
+        else writeFileSync(absolute, before, "utf8");
+      };
+
+      try {
+        mkdirSync(dirname(absolute), { recursive: true });
+        writeFileSync(absolute, s.body, "utf8");
+      } catch (err) {
+        return { outcome: "infra-failed", detail: `cannot write ${s.path}: ${String(err)}` };
+      }
+
+      const observed = parser.symbols(s.body);
+      const ctx = { root, path: s.path, source: s.body, symbolIds: [] as string[] };
+      let status: VerificationStatus = "passed";
+
+      // The tests stage is absent from this list, not stubbed inside it. See
+      // the contract above `writeFile` for why.
+      const stages: Array<() => StageOutcome | Promise<StageOutcome>> = [
+        () =>
+          wholeFileStage({
+            parses: parser.parses(s.body),
+            before: before === undefined ? [] : parser.symbols(before).map(identityKey),
+            after: observed.map(identityKey),
+          }),
+        () => verifier.typecheck(ctx),
+        () => verifier.policy(ctx),
+      ];
+
+      for (const stage of stages) {
+        const outcome = await stage();
+        if (outcome.status === "passed") continue;
+        if (outcome.status === "advisory") {
+          status = "advisory";
+          continue;
+        }
+        restore();
+        log.append({
+          kind: "write-failed",
+          ...(tracked === undefined ? {} : { fileId: tracked.id }),
+          leaseId: s.leaseId,
+          taskId: s.intent.taskId,
+          ...(s.intent.parentTaskId === undefined ? {} : { parentTaskId: s.intent.parentTaskId }),
+          description: s.intent.description,
+          verification: "failed",
+          category: categoryOf(outcome) ?? "infrastructure",
+          detail: outcome.detail,
+        });
+        return outcome.status === "failed"
+          ? rejected(outcome.by, outcome.detail, outcome.failed)
+          : { outcome: "infra-failed", detail: outcome.detail };
+      }
+
+      const file = tracked ?? registry.createFile(s.path);
+      const children: number[] = [];
+      const attribute = (kind: EventKind, symbolId: string, version: number, body?: string): void => {
+        children.push(
+          log.append({
+            kind,
+            symbolId,
+            fileId: file.id,
+            leaseId: s.leaseId,
+            taskId: s.intent.taskId,
+            ...(s.intent.parentTaskId === undefined ? {} : { parentTaskId: s.intent.parentTaskId }),
+            description: s.intent.description,
+            version,
+            verification: status,
+            ...(body === undefined ? {} : { body }),
+          }),
+        );
+      };
+
+      if (tracked === undefined) {
+        children.push(
+          log.append({
+            kind: "file-created",
+            fileId: file.id,
+            leaseId: s.leaseId,
+            taskId: s.intent.taskId,
+            ...(s.intent.parentTaskId === undefined ? {} : { parentTaskId: s.intent.parentTaskId }),
+            description: s.intent.description,
+            verification: status,
+            detail: s.path,
+          }),
+        );
+      }
+
+      const report = registry.reconcile({ fileId: file.id, source: s.body, observed });
+      impact.observe(file.id, s.path, parser.imports(s.body));
+      for (const created of report.created) {
+        attribute("symbol-created", created.id, created.version, s.body.slice(created.start, created.end));
+      }
+      for (const modified of report.modified) {
+        attribute("symbol-modified", modified.id, modified.version, s.body.slice(modified.start, modified.end));
+      }
+
+      // The parent lands last, so a reader that sees it knows every child is
+      // already in the log (§ 4.4). A whole-file write claims no symbol
+      // version, so `version` is the transaction's own sequence number —
+      // the same answer `runTests` gives for the same reason.
+      const seq = log.append({
+        kind: "transaction",
+        fileId: file.id,
+        leaseId: s.leaseId,
+        taskId: s.intent.taskId,
+        ...(s.intent.parentTaskId === undefined ? {} : { parentTaskId: s.intent.parentTaskId }),
+        description: s.intent.description,
+        verification: status,
+        children,
+        detail: "file-written",
+      });
+      return { outcome: "committed", version: seq, seq, verification: status };
+    },
 
     async runTests(s) {
       const selected = dedupe([...impact.impactedTests(s.symbolIds), ...impact.testsById(s.extra ?? [])]);

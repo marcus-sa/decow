@@ -14,6 +14,22 @@ import { openArtifacts, type ArtifactStore } from "../artifacts/store.ts";
 
 export type Effect =
   | { type: "replace-symbol"; symbolId: string; expectedVersion: number; body: string }
+  /**
+   * Write a whole file, which may or may not already exist.
+   *
+   * `replace-symbol` names a symbol id, so it can only ever rewrite something
+   * the registry already holds. That is the right shape for a crafter working
+   * inside a declared surface, and the wrong shape for an author whose whole
+   * job is to produce a file that is not there yet — an oracle, and the
+   * supports beside it.
+   *
+   * The concurrency model is the path scope of the lease rather than a
+   * version: a file has no version to be optimistic about before it exists.
+   * What the write path checks instead is that the lease's scope covers the
+   * path, that the intent declared it, and that no identity the file already
+   * held vanished.
+   */
+  | { type: "write-file"; path: string; body: string }
   | { type: "upsert-artifact"; table: string; id: string; expectedVersion: number; row: unknown }
   /**
    * Run the suite. `impacted` names the symbols the run is scoped to, and the
@@ -90,9 +106,9 @@ export type MemoryEffectsOptions = {
 /**
  * In-memory effect executor. `upsert-artifact` goes to a real artifact store
  * under the optimistic version check the effect declares; the trail is an
- * array. `replace-symbol` and `run-tests` come back `infra-failed` because
- * there is no VCS and no test runner behind this executor — that is the honest
- * outcome, not `rejected`.
+ * array. `replace-symbol`, `write-file` and `run-tests` come back
+ * `infra-failed` because there is no VCS and no test runner behind this
+ * executor — that is the honest outcome, not `rejected`.
  */
 export const memoryEffects = (options: MemoryEffectsOptions = {}) => {
   const store = options.store ?? openArtifacts();
@@ -119,6 +135,7 @@ export const memoryEffects = (options: MemoryEffectsOptions = {}) => {
           trail.push(effect.line);
           return { effect, outcome: "committed", version: trail.length };
         case "replace-symbol":
+        case "write-file":
         case "run-tests":
           return { effect, outcome: "infra-failed" };
       }

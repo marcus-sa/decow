@@ -16,7 +16,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { openVcs, type Vcs } from "./index.ts";
-import { LEASE_MODES, type LeaseMode } from "./leases.ts";
+import { LEASE_MODES, scopeCovers, scopesOverlap, type LeaseMode } from "./leases.ts";
 import type { Intent } from "./log.ts";
 import { counterIds, manualClock, passingVerifier, tempProject, type ManualClock } from "./testing.ts";
 
@@ -260,5 +260,108 @@ describe("TTL and heartbeat", () => {
     expire(clock);
     expect(vcs.heartbeat(first.leaseId)).toBeUndefined();
     vcs.close();
+  });
+});
+
+/**
+ * Path scopes (`write-file`'s concurrency model).
+ *
+ * A symbol lease is an optimistic claim on something the registry already
+ * holds. A path scope is a territorial one on a region of the tree, and it is
+ * the only claim a write to a file that does not exist yet can make. The mode
+ * matrix is the same; what changes is what "the same thing" means.
+ */
+describe("path scopes", () => {
+  test("a prefix covers itself and everything under it, and nothing beside it", () => {
+    expect(scopeCovers("test", "test")).toBe(true);
+    expect(scopeCovers("test", "test/todo.test.ts")).toBe(true);
+    expect(scopeCovers("test/", "test/deep/a.test.ts")).toBe(true);
+    expect(scopeCovers("test", "tests/a.test.ts")).toBe(false);
+    expect(scopeCovers("test", "src/todo.ts")).toBe(false);
+  });
+
+  test("a glob scope matches by glob", () => {
+    expect(scopeCovers("test/**", "test/deep/a.test.ts")).toBe(true);
+    expect(scopeCovers("test/*.test.ts", "test/a.test.ts")).toBe(true);
+    expect(scopeCovers("test/*.test.ts", "test/deep/a.test.ts")).toBe(false);
+  });
+
+  test("overlap is symmetric, and disjoint prefixes do not overlap", () => {
+    expect(scopesOverlap("test", "test/todo.test.ts")).toBe(true);
+    expect(scopesOverlap("test/todo.test.ts", "test")).toBe(true);
+    expect(scopesOverlap("test", "test")).toBe(true);
+    expect(scopesOverlap("test", "src")).toBe(false);
+    expect(scopesOverlap("src/todo.ts", "src/other.ts")).toBe(false);
+  });
+
+  test("two sessions whose scopes overlap conflict, and disjoint ones do not", () => {
+    const { vcs } = open();
+    const take = (session: string, paths: string[]) =>
+      vcs.acquire({
+        session,
+        paths,
+        mode: "write",
+        ttlMs: 5_000,
+        intent: intent({ created: paths.map((p) => `${p}/x.ts`) }),
+      });
+
+    expect(take("session-a", ["test"]).outcome).toBe("granted");
+
+    const overlapping = take("session-b", ["test/acceptance"]);
+    expect(overlapping.outcome).toBe("conflict");
+    // The report names the SCOPE rather than a symbol, because the collision
+    // is on the tree and there is no symbol to name.
+    expect(overlapping.outcome === "conflict" && overlapping.held[0]).toMatchObject({
+      path: "test",
+      session: "session-a",
+    });
+
+    expect(take("session-c", ["src"]).outcome).toBe("granted");
+  });
+
+  test("an acquire naming neither symbols nor paths is refused", () => {
+    const { vcs } = open();
+    const empty = vcs.acquire({ session: "s", mode: "write", ttlMs: 1_000, intent: intent() });
+    expect(empty).toMatchObject({ outcome: "contract-violation", violation: "empty-request" });
+  });
+
+  test("a declared creation outside every requested scope is a contract violation", () => {
+    // § 4.5's `created` names paths, and it goes through the same rule the
+    // symbol ids do: the request has to have asked for the region it is about
+    // to write.
+    const { vcs } = open();
+    const refused = vcs.acquire({
+      session: "s",
+      paths: ["test"],
+      mode: "write",
+      ttlMs: 1_000,
+      intent: intent({ created: ["src/smuggled.ts"] }),
+    });
+    expect(refused).toMatchObject({
+      outcome: "contract-violation",
+      violation: "intent-scope-mismatch",
+    });
+  });
+
+  test("a symbol lease and a path lease on different regions do not see each other", () => {
+    const { vcs, id } = open();
+    expect(
+      vcs.acquire({
+        session: "session-a",
+        symbolIds: [id("alpha")],
+        mode: "write",
+        ttlMs: 5_000,
+        intent: intent({ modified: [id("alpha")] }),
+      }).outcome,
+    ).toBe("granted");
+    expect(
+      vcs.acquire({
+        session: "session-b",
+        paths: ["test"],
+        mode: "write",
+        ttlMs: 5_000,
+        intent: intent({ created: ["test/a.test.ts"] }),
+      }).outcome,
+    ).toBe("granted");
   });
 });

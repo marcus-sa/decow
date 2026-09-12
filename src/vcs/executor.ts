@@ -56,6 +56,7 @@
 
 import type { ArtifactStore } from "../artifacts/store.ts";
 import type { Effect, EffectResult } from "../core/effects.ts";
+import { scopeCovers } from "./leases.ts";
 import type { Intent } from "./log.ts";
 import type { Vcs } from "./index.ts";
 import type { WriteResult } from "./writes.ts";
@@ -78,11 +79,24 @@ export type VcsExecutorOptions = {
    * nowhere to write must not pretend otherwise.
    */
   artifacts?: ArtifactStore;
+  /**
+   * Repository-relative scopes this executor may not write, at all, in any
+   * shape. `rejected { by: "contract" }` before a lease is asked for.
+   *
+   * This is `_crafter_owns` as an executor rule. Every path a task declares is
+   * the crafter's EXCEPT the oracle: RED to GREEN must be bought by production,
+   * never by editing the test that measures it. Expressing it here rather than
+   * in the graph is what makes it hold for every write the graph could emit,
+   * including one a model proposed that the graph merely passed along.
+   */
+  protected?: readonly string[];
 };
 
 type ReplaceSymbol = Extract<Effect, { type: "replace-symbol" }>;
+type WriteFile = Extract<Effect, { type: "write-file" }>;
 
 const isReplaceSymbol = (effect: Effect): effect is ReplaceSymbol => effect.type === "replace-symbol";
+const isWriteFile = (effect: Effect): effect is WriteFile => effect.type === "write-file";
 
 /** The write path's result, as an effect result. Identity on every field. */
 const asEffectResult = (effect: Effect, result: WriteResult): EffectResult => {
@@ -117,9 +131,42 @@ export const vcsExecutor = (
     expectedOutcome,
   });
 
+  /** The path a write targets, for the protected-scope check. */
+  const targetPath = (effect: ReplaceSymbol | WriteFile): string | undefined => {
+    if (effect.type === "write-file") return effect.path;
+    const symbol = vcs.registry.symbol(effect.symbolId);
+    return symbol === undefined ? undefined : vcs.registry.fileById(symbol.fileId)?.path;
+  };
+
+  /** The protected scope this write lands in, if any. */
+  const protectedBy = (effect: ReplaceSymbol | WriteFile): string | undefined => {
+    const path = targetPath(effect);
+    if (path === undefined) return undefined;
+    return (options.protected ?? []).find((scope) => scopeCovers(scope, path));
+  };
+
   return async (effects) => {
     const results = new Map<Effect, EffectResult>();
-    const writes = effects.filter(isReplaceSymbol);
+
+    // The wall, before the lease. A write into a protected scope is refused
+    // whatever else is true of it — a lease it could have held, a version it
+    // got right, a body that would have typechecked. The oracle is not the
+    // crafter's, and the refusal says so rather than letting the write race a
+    // stage that might have passed it.
+    const refuseProtected = (effect: ReplaceSymbol | WriteFile): boolean => {
+      const scope = protectedBy(effect);
+      if (scope === undefined) return false;
+      results.set(effect, { effect, outcome: "rejected", by: "contract" });
+      vcs.appendTrail(
+        JSON.stringify({ refused: targetPath(effect), scope, why: "the oracle is not the crafter's" }),
+        intentFor({}),
+      );
+      return true;
+    };
+
+    const writes = effects.filter(isReplaceSymbol).filter((w) => !refuseProtected(w));
+    const files = effects.filter(isWriteFile).filter((w) => !refuseProtected(w));
+
     /**
      * The symbols this batch wrote. A `run-tests` effect in the same batch has
      * to cover the tests these imply, and the floor is recomputed from this
@@ -127,8 +174,15 @@ export const vcsExecutor = (
      */
     const wrote = [...new Set(writes.map((w) => w.symbolId))];
 
-    if (writes.length > 0) {
+    if (writes.length > 0 || files.length > 0) {
       const symbolIds = wrote;
+      /**
+       * One scope per path the batch writes. A caller that wanted a wider
+       * territorial claim would have to say which, and nothing here has a
+       * reason to: the batch already names every path it will touch, which is
+       * exactly what § 5.3 asks an acquire to do.
+       */
+      const paths = [...new Set(files.map((f) => f.path))];
       // The first effect naming a symbol owns that symbol's expected version;
       // a batch that names one symbol twice with two versions is a graph bug,
       // and the second write will come back `conflict` on its own.
@@ -138,9 +192,10 @@ export const vcsExecutor = (
       const acquired = vcs.acquire({
         session,
         symbolIds,
+        paths,
         mode: "write",
         ttlMs: BATCH_TTL_MS,
-        intent: intentFor({ modified: symbolIds }),
+        intent: intentFor({ modified: symbolIds, created: paths }),
         expectedVersions,
       });
 
@@ -155,11 +210,20 @@ export const vcsExecutor = (
           });
           results.set(write, asEffectResult(write, result));
         }
+        for (const file of files) {
+          const result = await vcs.writeFile({
+            leaseId: acquired.leaseId,
+            path: file.path,
+            body: file.body,
+            intent: intentFor({ created: [file.path] }),
+          });
+          results.set(file, asEffectResult(file, result));
+        }
         vcs.release(acquired.leaseId);
       } else {
         // Nothing was granted, so nothing was written. Every write in the
         // batch gets the lease layer's answer, which is what the graph routes.
-        for (const write of writes) {
+        for (const write of [...writes, ...files]) {
           results.set(write, notAcquired(write, acquired));
         }
       }
@@ -219,6 +283,8 @@ export const vcsExecutor = (
         }
         case "replace-symbol":
           throw new Error(`vcs executor bug: replace-symbol on ${effect.symbolId} produced no result`);
+        case "write-file":
+          throw new Error(`vcs executor bug: write-file on ${effect.path} produced no result`);
       }
     }
     return out;
@@ -227,18 +293,22 @@ export const vcsExecutor = (
 
 /** The lease layer's refusal, as the effect result for one write in the batch. */
 const notAcquired = (
-  effect: ReplaceSymbol,
+  effect: ReplaceSymbol | WriteFile,
   acquired: Exclude<ReturnType<Vcs["acquire"]>, { outcome: "granted" }>,
 ): EffectResult => {
+  // A whole-file write claims no version, so a lease outcome that is ABOUT a
+  // version has none to report back. It is still a conflict — somebody else
+  // holds the scope — and the graph routes it the same way.
+  const version = effect.type === "write-file" ? 0 : effect.expectedVersion;
   switch (acquired.outcome) {
     case "stale":
       return {
         effect,
         outcome: "conflict",
-        currentVersion: acquired.versions[effect.symbolId] ?? effect.expectedVersion,
+        currentVersion: effect.type === "write-file" ? version : acquired.versions[effect.symbolId] ?? version,
       };
     case "conflict":
-      return { effect, outcome: "conflict", currentVersion: effect.expectedVersion };
+      return { effect, outcome: "conflict", currentVersion: version };
     case "contract-violation":
       return { effect, outcome: "rejected", by: "contract" };
     case "desync":

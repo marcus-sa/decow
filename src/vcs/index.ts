@@ -89,6 +89,7 @@ export type Vcs = {
   replaceSymbolBody: WritePath["replaceSymbolBody"];
   renameSymbol: WritePath["renameSymbol"];
   deleteSymbol: WritePath["deleteSymbol"];
+  writeFile: WritePath["writeFile"];
   runTests: WritePath["runTests"];
 
   /**
@@ -177,6 +178,7 @@ export const openVcs = (options: VcsOptions): Vcs => {
     replaceSymbolBody: writes.replaceSymbolBody,
     renameSymbol: writes.renameSymbol,
     deleteSymbol: writes.deleteSymbol,
+    writeFile: writes.writeFile,
     runTests: writes.runTests,
 
     appendTrail: (line, intent) =>

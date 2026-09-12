@@ -14,10 +14,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import type { EffectResult } from "../core/effects.ts";
+import { memoryEffects, type EffectResult } from "../core/effects.ts";
 import { stepOutput, type StepDef } from "../core/step.ts";
 import { branch, leaf, run, type Node, type Workflow } from "../core/workflow.ts";
 import { ok, stubJournal } from "../harness/stub-journal.ts";
@@ -441,5 +441,150 @@ describe("run-tests is a union: the LLM may add tests, never subtract", () => {
     expect(outcome.terminal.state.write).toBe("infra-failed");
     expect(outcome.trace).toEqual(["implement", "write.verdict", "reject"]);
     vcs.close();
+  });
+});
+
+/**
+ * `write-file` through the executor, and the wall around the oracle.
+ *
+ * The batch is still the unit: one lease covers every symbol AND every path the
+ * batch names, so an author that writes an oracle and its supports holds one
+ * territorial claim rather than three. The protected scope sits in front of all
+ * of it, because RED to GREEN is bought by production and never by editing the
+ * test that measures it.
+ */
+describe("the executor: whole files, and protected paths", () => {
+  const ORACLE = 'import { test } from "bun:test";\n\ntest("alpha returns 42", () => {});\n';
+  const SUPPORT = "export const driver = () => 1;\n";
+
+  const execute = (vcs: Vcs, options: { protected?: readonly string[] } = {}) =>
+    vcsExecutor({
+      vcs,
+      session: "session-author",
+      intent: TASK,
+      ...(options.protected === undefined ? {} : { protected: options.protected }),
+    });
+
+  test("one lease covers every path in the batch, and both files land", async () => {
+    const { root, vcs } = open();
+    const results = await execute(vcs)([
+      { type: "write-file", path: "test/a.test.ts", body: ORACLE },
+      { type: "write-file", path: "test/support/driver.ts", body: SUPPORT },
+    ]);
+
+    expect(results.map((r) => r.outcome)).toEqual(["committed", "committed"]);
+    expect(readFileSync(join(root, "test/a.test.ts"), "utf8")).toBe(ORACLE);
+    expect(readFileSync(join(root, "test/support/driver.ts"), "utf8")).toBe(SUPPORT);
+
+    // ONE lease, not two: § 5.3's acquire names the complete set it will need.
+    const acquired = vcs.log.byTask(TASK.taskId).filter((e) => e.kind === "lease-acquired");
+    expect(acquired).toHaveLength(1);
+    expect(JSON.parse(String(acquired[0]?.detail)).paths.sort()).toEqual([
+      "test/a.test.ts",
+      "test/support/driver.ts",
+    ]);
+    expect(vcs.log.byTask(TASK.taskId).filter((e) => e.kind === "lease-released")).toHaveLength(1);
+    vcs.close();
+  });
+
+  test("a symbol write and a file write ride the same batch and the same lease", async () => {
+    const { vcs, symbolId, read } = open();
+    const results = await execute(vcs)([
+      { type: "replace-symbol", symbolId, expectedVersion: 1, body: NEW_BODY },
+      { type: "write-file", path: "test/a.test.ts", body: ORACLE },
+    ]);
+
+    expect(results.map((r) => r.outcome)).toEqual(["committed", "committed"]);
+    expect(read()).toBe(`${NEW_BODY}\n`);
+    expect(vcs.log.byTask(TASK.taskId).filter((e) => e.kind === "lease-acquired")).toHaveLength(1);
+    vcs.close();
+  });
+
+  test("a write into a protected scope is refused as a contract violation, before the lease", async () => {
+    const { root, vcs } = open();
+    const results = await execute(vcs, { protected: ["test"] })([
+      { type: "write-file", path: "test/a.test.ts", body: ORACLE },
+    ]);
+
+    expect(results[0]).toMatchObject({ outcome: "rejected", by: "contract" });
+    expect(existsSync(join(root, "test/a.test.ts"))).toBe(false);
+    // No lease was even asked for: the refusal is ahead of the whole path.
+    expect(vcs.log.byTask(TASK.taskId).filter((e) => e.kind === "lease-acquired")).toHaveLength(0);
+    // And the refusal is in the log, so "why did nothing happen" is answerable.
+    const trail = vcs.log.byTask(TASK.taskId).filter((e) => e.kind === "trail");
+    expect(JSON.parse(String(trail[0]?.detail))).toMatchObject({
+      refused: "test/a.test.ts",
+      scope: "test",
+    });
+    vcs.close();
+  });
+
+  test("a replace-symbol whose file is protected is refused too", async () => {
+    // The crafter's own effect shape, pointed at the oracle. `_crafter_owns`
+    // is about the PATH, so the wall does not care which effect names it.
+    const root = tempProject({ "a.ts": SOURCE, "test/a.test.ts": ORACLE });
+    const vcs = openVcs({
+      root,
+      verifier: passingVerifier(),
+      clock: manualClock(1_000),
+      ids: counterIds(),
+    });
+    vcs.track("a.ts");
+    const oracleFile = vcs.track("test/a.test.ts");
+    const testSymbol = vcs.registry.symbolsOf(oracleFile.id)[0]?.id ?? "";
+
+    const results = await execute(vcs, { protected: ["test/a.test.ts"] })([
+      { type: "replace-symbol", symbolId: testSymbol, expectedVersion: 1, body: 'test("alpha returns 42", () => {});' },
+    ]);
+
+    expect(results[0]).toMatchObject({ outcome: "rejected", by: "contract" });
+    expect(readFileSync(join(root, "test/a.test.ts"), "utf8")).toBe(ORACLE);
+    vcs.close();
+  });
+
+  test("a protected refusal does not stop the rest of the batch", async () => {
+    // The crafter's production write still lands; only the oracle is walled.
+    const root = tempProject({ "a.ts": SOURCE, "test/a.test.ts": ORACLE });
+    const vcs = openVcs({
+      root,
+      verifier: passingVerifier(),
+      clock: manualClock(1_000),
+      ids: counterIds(),
+    });
+    const file = vcs.track("a.ts");
+    vcs.track("test/a.test.ts");
+    const symbolId = vcs.registry.symbolsOf(file.id)[0]?.id ?? "";
+
+    const results = await execute(vcs, { protected: ["test"] })([
+      { type: "write-file", path: "test/b.test.ts", body: ORACLE },
+      { type: "replace-symbol", symbolId, expectedVersion: 1, body: NEW_BODY },
+    ]);
+
+    expect(results[0]).toMatchObject({ outcome: "rejected", by: "contract" });
+    expect(results[1]?.outcome).toBe("committed");
+    expect(readFileSync(join(root, "a.ts"), "utf8")).toBe(`${NEW_BODY}\n`);
+    vcs.close();
+  });
+
+  test("two sessions whose path scopes overlap see a conflict the graph routes", async () => {
+    const { vcs } = open();
+    const held = vcs.acquire({
+      session: "session-other",
+      paths: ["test"],
+      mode: "write",
+      ttlMs: 60_000,
+      intent: { ...TASK, expectedOutcome: { created: ["test/held.test.ts"] } },
+    });
+    expect(held.outcome).toBe("granted");
+
+    const results = await execute(vcs)([{ type: "write-file", path: "test/a.test.ts", body: ORACLE }]);
+    expect(results[0]?.outcome).toBe("conflict");
+    vcs.close();
+  });
+
+  test("memoryEffects cannot land a write-file, and says so rather than pretending", async () => {
+    const { execute: memory } = memoryEffects();
+    const results = await memory([{ type: "write-file", path: "test/a.test.ts", body: ORACLE }]);
+    expect(results[0]?.outcome).toBe("infra-failed");
   });
 });

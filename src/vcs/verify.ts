@@ -144,6 +144,41 @@ export const structuralStage = (spec: {
   };
 };
 
+/**
+ * The stage for a WHOLE-FILE write, as a pure function over identity keys.
+ *
+ * It asks a weaker question than `structuralStage`, and deliberately: a caller
+ * writing a whole file is authoring, so what appears is its business. What is
+ * NOT its business is what DISAPPEARS. A file that already held a symbol and
+ * comes back without it has had an identity removed that nothing declared, and
+ * the registry does not infer a delete from an absence (§ 9.1) — so this is a
+ * contract violation rather than a tombstone.
+ *
+ * A file that did not exist has an empty `before`, so every identity in it is
+ * new and the check passes vacuously. That is the case this exists for.
+ */
+export const wholeFileStage = (spec: {
+  parses: boolean;
+  /** Identity keys the file held before the write. Empty for a new file. */
+  before: readonly string[];
+  /** Identity keys the written bytes hold. */
+  after: readonly string[];
+}): StageOutcome => {
+  if (!spec.parses) {
+    return { status: "failed", by: "structural", detail: "the written file does not parse" };
+  }
+  const after = new Set(spec.after);
+  const vanished = [...new Set(spec.before)].filter((key) => !after.has(key)).sort();
+  if (vanished.length === 0) return { status: "passed" };
+  return {
+    status: "failed",
+    by: "contract",
+    detail:
+      `the write removes ${vanished.length} identity the file already held and nothing declared ` +
+      `a delete for: ${vanished.join(", ")}`,
+  };
+};
+
 /** The category an outcome belongs to, for the event log. */
 export const categoryOf = (outcome: StageOutcome): FailureCategory | undefined => {
   switch (outcome.status) {

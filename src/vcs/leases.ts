@@ -1,14 +1,16 @@
 /**
  * The lease manager (ai-vcs.md § 5).
  *
- * An acquire names the complete set of symbols the caller will need, a mode, a
- * TTL, the intent payload, and optionally the versions it expects to see. The
- * manager evaluates the whole request atomically and answers with one of five
- * outcomes, every one of them data:
+ * An acquire names the complete set the caller will need — symbols, PATH
+ * SCOPES, or both — plus a mode, a TTL, the intent payload, and optionally the
+ * versions it expects to see. The manager evaluates the whole request
+ * atomically and answers with one of five outcomes, every one of them data:
  *
  *   granted             the lease, its expiry, and the current version of every
  *                       granted symbol, so one round trip yields both the lock
- *                       and the versions the caller's next write needs (§ 5.1)
+ *                       and the versions the caller's next write needs (§ 5.1).
+ *                       A path scope hands back no version: a file that does
+ *                       not exist yet has none to be optimistic about
  *   stale               a symbol moved under the caller; here are the versions
  *   conflict            unavailable in this mode; here is who holds what
  *   contract-violation  the intent does not match the request (§ 4.5, § 5.1)
@@ -31,6 +33,7 @@
  */
 
 import type { Database } from "bun:sqlite";
+import { Glob } from "bun";
 import { DESCRIPTION_MAX, type EventLog, type Intent } from "./log.ts";
 import type { Clock, IdGen, Registry, RegisteredSymbol } from "./registry.ts";
 
@@ -53,6 +56,46 @@ const BLOCKS: Record<LeaseMode, Record<LeaseMode, boolean>> = {
   exclusive: { read: true, write: true, exclusive: true },
 };
 
+/* ------------------------------------------------------------ path scopes */
+
+/**
+ * A lease may be taken on PATHS as well as on symbols, and the two are not the
+ * same kind of claim. A symbol lease is an optimistic claim on something the
+ * registry already holds; a path scope is a territorial one on a region of the
+ * tree, which is the only thing a `write-file` can hold, because a file has no
+ * version to be optimistic about before it exists.
+ *
+ * A scope is a repository-relative prefix (`test`, `test/acceptance`) or a
+ * glob (`test/**`, `test/*.test.ts`). A prefix covers itself and everything
+ * under it.
+ */
+export const scopeCovers = (scope: string, path: string): boolean => {
+  if (scope.includes("*")) return new Glob(scope).match(path);
+  const base = scope.endsWith("/") ? scope.slice(0, -1) : scope;
+  return path === base || path.startsWith(`${base}/`);
+};
+
+/**
+ * Do two scopes overlap? This is what decides whether two sessions' path
+ * leases conflict.
+ *
+ * For prefixes it is exact: `test` overlaps `test/todo.test.ts` and neither
+ * overlaps `src`. For globs it is an APPROXIMATION — one scope's glob is
+ * matched against the other's literal text — because the general question
+ * "can two patterns match the same string" is not one a matcher answers. The
+ * approximation is right for every shape a caller here actually writes (a
+ * prefix, or a glob against a concrete path) and it never reports an overlap
+ * that is not one; what it can miss is two globs that overlap only on strings
+ * neither spells. Stated rather than hidden: a caller that needs the stronger
+ * guarantee names prefixes.
+ */
+export const scopesOverlap = (a: string, b: string): boolean =>
+  a === b || scopeCovers(a, b) || scopeCovers(b, a);
+
+/** Every scope in `scopes` that covers `path`. */
+export const coveringScopes = (scopes: readonly string[], path: string): string[] =>
+  scopes.filter((scope) => scopeCovers(scope, path));
+
 /** The ways an intent payload can fail to match its request (§ 4.5). */
 export const CONTRACT_VIOLATIONS = [
   "empty-request",
@@ -70,6 +113,8 @@ export type Lease = {
   session: string;
   mode: LeaseMode;
   symbolIds: readonly string[];
+  /** Repository-relative prefixes or globs this lease admits writes under. */
+  paths: readonly string[];
   /** The TTL the lease was taken with. A heartbeat extends by this much. */
   ttlMs: number;
   expiresAt: number;
@@ -78,11 +123,29 @@ export type Lease = {
   versions: Readonly<Record<string, number>>;
 };
 
-export type Holder = { symbolId: string; leaseId: string; mode: LeaseMode; session: string };
+/**
+ * Who is holding what, on a refused acquire. `symbolId` names the symbol when
+ * the collision is on the symbol hierarchy and `path` names the scope when it
+ * is on the tree; exactly one of them is set.
+ */
+export type Holder = {
+  symbolId?: string;
+  path?: string;
+  leaseId: string;
+  mode: LeaseMode;
+  session: string;
+};
 
 export type AcquireRequest = {
   session: string;
-  symbolIds: readonly string[];
+  /** The complete set of symbols this lease will need. */
+  symbolIds?: readonly string[];
+  /**
+   * The complete set of path scopes this lease will need. A `write` lease
+   * whose scope covers a path admits a `write-file` at that path, whether or
+   * not the file exists yet.
+   */
+  paths?: readonly string[];
   mode: LeaseMode;
   ttlMs: number;
   intent: Intent;
@@ -125,6 +188,7 @@ type LeaseRow = {
   session: string;
   mode: string;
   symbol_ids: string;
+  paths: string;
   ttl_ms: number;
   expires_at: number;
   intent: string;
@@ -137,6 +201,7 @@ const decodeLease = (row: LeaseRow): Lease => ({
   session: row.session,
   mode: row.mode as LeaseMode,
   symbolIds: JSON.parse(row.symbol_ids) as string[],
+  paths: JSON.parse(row.paths) as string[],
   ttlMs: row.ttl_ms,
   expiresAt: row.expires_at,
   intent: JSON.parse(row.intent) as Intent,
@@ -164,6 +229,7 @@ export const openLeaseManager = (
     session     TEXT NOT NULL,
     mode        TEXT NOT NULL,
     symbol_ids  TEXT NOT NULL,
+    paths       TEXT NOT NULL,
     ttl_ms      INTEGER NOT NULL,
     expires_at  INTEGER NOT NULL,
     intent      TEXT NOT NULL,
@@ -175,8 +241,8 @@ export const openLeaseManager = (
     byId: db.query<LeaseRow, [string]>("SELECT * FROM leases WHERE id = ? AND released = 0"),
     live: db.query<LeaseRow, []>("SELECT * FROM leases WHERE released = 0 ORDER BY id"),
     insert: db.query<unknown, (string | number)[]>(
-      `INSERT INTO leases (id, session, mode, symbol_ids, ttl_ms, expires_at, intent, versions)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO leases (id, session, mode, symbol_ids, paths, ttl_ms, expires_at, intent, versions)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     extend: db.query<unknown, [number, string]>("UPDATE leases SET expires_at = ? WHERE id = ?"),
     close: db.query<unknown, [string]>("UPDATE leases SET released = 1 WHERE id = ?"),
@@ -221,10 +287,16 @@ export const openLeaseManager = (
         detail,
       });
 
+      const symbolIds = request.symbolIds ?? [];
+      const paths = request.paths ?? [];
+
       // Guardrail order: the caller's own errors first, because they are the
       // cheapest to answer and § 5.1 rejects them "before any work begins".
-      if (request.symbolIds.length === 0) {
-        return reject("empty-request", "an acquire names the complete symbol set it will need");
+      if (symbolIds.length === 0 && paths.length === 0) {
+        return reject(
+          "empty-request",
+          "an acquire names the complete set it will need: symbols, path scopes, or both",
+        );
       }
       if (request.intent.description.length > DESCRIPTION_MAX) {
         return reject(
@@ -233,12 +305,24 @@ export const openLeaseManager = (
         );
       }
 
-      const requested = new Set(request.symbolIds);
+      const requested = new Set(symbolIds);
       const outside = declaredMutations(request.intent).filter((id) => !requested.has(id));
       if (outside.length > 0) {
         return reject(
           "intent-scope-mismatch",
           `the intent declares ${outside.join(", ")}, which the request does not name`,
+        );
+      }
+      // § 4.5's `created` names PATHS, because a file that does not exist yet
+      // has no symbol id to name. Every one of them has to be inside a scope
+      // this lease is asking for, on the same rule as the symbols above.
+      const uncovered = (request.intent.expectedOutcome.created ?? []).filter(
+        (path) => coveringScopes(paths, path).length === 0,
+      );
+      if (uncovered.length > 0) {
+        return reject(
+          "intent-scope-mismatch",
+          `the intent declares creating ${uncovered.join(", ")}, which no requested path scope covers`,
         );
       }
       if ((request.intent.expectedOutcome.tombstoned ?? []).length > 0 && request.mode !== "exclusive") {
@@ -249,7 +333,7 @@ export const openLeaseManager = (
       }
 
       const symbols: RegisteredSymbol[] = [];
-      for (const id of request.symbolIds) {
+      for (const id of symbolIds) {
         const symbol = registry.symbol(id);
         if (symbol === undefined) return reject("unknown-symbol", id);
         if (symbol.tombstoned) return reject("tombstoned-symbol", id);
@@ -278,7 +362,7 @@ export const openLeaseManager = (
       // against leases on the method, on its class, and on anything the method
       // itself holds.
       const held: Holder[] = [];
-      for (const id of request.symbolIds) {
+      for (const id of symbolIds) {
         const related = new Set(closure(id));
         for (const lease of live) {
           for (const heldId of lease.symbolIds) {
@@ -288,7 +372,20 @@ export const openLeaseManager = (
           }
         }
       }
-      // All or nothing (§ 5.3): one blocked symbol denies the whole request.
+      // The same mode matrix over the tree rather than over the hierarchy. Two
+      // sessions whose scopes overlap are asking for the same region, and the
+      // question of who may have it is the one the matrix already answers.
+      for (const scope of paths) {
+        for (const lease of live) {
+          for (const heldScope of lease.paths) {
+            if (!scopesOverlap(scope, heldScope)) continue;
+            if (!BLOCKS[lease.mode][request.mode]) continue;
+            held.push({ path: heldScope, leaseId: lease.id, mode: lease.mode, session: lease.session });
+          }
+        }
+      }
+      // All or nothing (§ 5.3): one blocked symbol or scope denies the whole
+      // request.
       if (held.length > 0) return { outcome: "conflict", held };
 
       const leaseId = ids("lease");
@@ -297,7 +394,8 @@ export const openLeaseManager = (
         leaseId,
         request.session,
         request.mode,
-        JSON.stringify(request.symbolIds),
+        JSON.stringify(symbolIds),
+        JSON.stringify(paths),
         request.ttlMs,
         expiresAt,
         JSON.stringify(request.intent),
@@ -309,7 +407,7 @@ export const openLeaseManager = (
         taskId: request.intent.taskId,
         ...(request.intent.parentTaskId === undefined ? {} : { parentTaskId: request.intent.parentTaskId }),
         description: request.intent.description,
-        detail: JSON.stringify({ mode: request.mode, symbolIds: request.symbolIds, session: request.session }),
+        detail: JSON.stringify({ mode: request.mode, symbolIds, paths, session: request.session }),
       });
       return { outcome: "granted", leaseId, expiresAt, versions };
     },
@@ -355,7 +453,16 @@ export const openLeaseManager = (
       ].sort();
       const declared = [...new Set(declaredMutations(lease.intent))].sort();
       const permitted = new Set(declared.flatMap(closure));
-      const outside = observed.filter((id) => !permitted.has(id));
+      // A whole-file write creates symbols the intent could not have named by
+      // id, because they did not exist when it was written. What it DID name
+      // is the path, so a symbol whose file the lease's scope covers is inside
+      // the declaration in the only way a file-grained claim can be.
+      const inScope = (symbolId: string): boolean => {
+        const symbol = registry.symbol(symbolId);
+        const file = symbol === undefined ? undefined : registry.fileById(symbol.fileId);
+        return file !== undefined && coveringScopes(lease.paths, file.path).length > 0;
+      };
+      const outside = observed.filter((id) => !permitted.has(id) && !inScope(id));
 
       if (outside.length > 0) {
         const seq = log.append({

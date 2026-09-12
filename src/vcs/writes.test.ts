@@ -12,7 +12,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { openVcs, type Vcs } from "./index.ts";
 import type { Intent } from "./log.ts";
@@ -361,5 +361,232 @@ describe("deleteSymbol", () => {
     expect(fixture.vcs.registry.symbol(bravo)?.tombstoned).toBe(true);
     expect(fixture.vcs.registry.symbol(charlie)?.tombstoned).toBe(true);
     fixture.vcs.close();
+  });
+});
+
+/**
+ * `writeFile`: the operation that can produce a file.
+ *
+ * The three symbol operations all resolve a symbol id first, so a file that
+ * does not exist is unreachable from any of them. This one is the author's:
+ * it holds a path scope instead of a version, and the only structural question
+ * it asks is whether an identity the file already held has vanished.
+ */
+describe("the write path, whole files", () => {
+  const ORACLE = `import { expect, test } from "bun:test";
+import { alpha } from "./a.ts";
+
+test("alpha returns 42", () => {
+  expect(alpha()).toBe(42);
+});
+`;
+
+  const pathLease = (vcs: Vcs, paths: string[], created: string[]) => {
+    const result = vcs.acquire({
+      session: "session-author",
+      paths,
+      mode: "write",
+      ttlMs: 5_000,
+      intent: { taskId: "task-1", description: "author the oracle", expectedOutcome: { created } },
+    });
+    if (result.outcome !== "granted") throw new Error(`expected a lease, got ${JSON.stringify(result)}`);
+    return result.leaseId;
+  };
+
+  test("a file that does not exist is created, tracked, and its symbols get ids", async () => {
+    const { root, vcs } = open();
+    const leaseId = pathLease(vcs, ["test"], ["test/a.test.ts"]);
+
+    const result = await vcs.writeFile({
+      leaseId,
+      path: "test/a.test.ts",
+      body: ORACLE,
+      intent: { taskId: "task-1", description: "author the oracle", expectedOutcome: { created: ["test/a.test.ts"] } },
+    });
+    vcs.release(leaseId);
+
+    expect(result).toMatchObject({ outcome: "committed", verification: "passed" });
+    expect(readFileSync(join(root, "test/a.test.ts"), "utf8")).toBe(ORACLE);
+
+    const file = vcs.registry.file("test/a.test.ts");
+    expect(file).toBeDefined();
+    const symbols = vcs.registry.symbolsOf(file?.id ?? "");
+    expect(symbols.map((s) => `${s.kind}:${s.name}`)).toEqual(["test:alpha returns 42"]);
+
+    // The creation is attributed to the TASK, not to the inventory channel:
+    // an agent wrote this file and the log says which one.
+    const events = vcs.log.byTask("task-1");
+    const created = events.find((e) => e.kind === "file-created");
+    expect(created).toMatchObject({ taskId: "task-1", detail: "test/a.test.ts" });
+    expect(created?.sourceChannel).toBeUndefined();
+    expect(events.filter((e) => e.kind === "symbol-created")).toHaveLength(1);
+    // Children first, the transaction last (§ 4.4).
+    const transaction = events.find((e) => e.kind === "transaction");
+    expect(transaction?.children?.length).toBe(2);
+    expect((transaction?.seq ?? 0) > (created?.seq ?? 0)).toBe(true);
+    vcs.close();
+  });
+
+  test("the impact graph sees the new file's imports, so the oracle covers the symbol", async () => {
+    const { vcs, id } = open();
+    const leaseId = pathLease(vcs, ["test"], ["test/a.test.ts"]);
+    await vcs.writeFile({
+      leaseId,
+      path: "test/a.test.ts",
+      body: ORACLE.replace('from "./a.ts"', 'from "../a.ts"'),
+      intent: { taskId: "task-1", description: "author", expectedOutcome: { created: ["test/a.test.ts"] } },
+    });
+    vcs.release(leaseId);
+
+    expect(vcs.impact.impactedTests([id("alpha")]).map((t) => t.name)).toEqual(["alpha returns 42"]);
+    vcs.close();
+  });
+
+  test("a rewrite that keeps every identity commits; one that drops one is a contract violation", async () => {
+    const { root, vcs } = open();
+    const write = async (body: string) => {
+      const leaseId = pathLease(vcs, ["test"], ["test/a.test.ts"]);
+      const result = await vcs.writeFile({
+        leaseId,
+        path: "test/a.test.ts",
+        body,
+        intent: { taskId: "task-2", description: "rewrite", expectedOutcome: { created: ["test/a.test.ts"] } },
+      });
+      vcs.release(leaseId);
+      return result;
+    };
+
+    expect((await write(ORACLE)).outcome).toBe("committed");
+    // Adding is the author's business.
+    const added = ORACLE + '\ntest("alpha is a number", () => {\n  expect(typeof alpha()).toBe("number");\n});\n';
+    expect((await write(added)).outcome).toBe("committed");
+
+    // Removing is not: the registry never infers a delete from an absence.
+    const dropped = await write('import { expect, test } from "bun:test";\n');
+    expect(dropped).toMatchObject({ outcome: "rejected", by: "contract" });
+    expect(dropped.outcome === "rejected" && dropped.detail).toContain("test::alpha returns 42");
+    // And the bytes are back.
+    expect(readFileSync(join(root, "test/a.test.ts"), "utf8")).toBe(added);
+    vcs.close();
+  });
+
+  test("a file that does not parse is rejected structurally and removed again", async () => {
+    const { root, vcs } = open();
+    const leaseId = pathLease(vcs, ["test"], ["test/broken.test.ts"]);
+    const result = await vcs.writeFile({
+      leaseId,
+      path: "test/broken.test.ts",
+      body: "test(\"unclosed\" => {\n",
+      intent: { taskId: "task-3", description: "author", expectedOutcome: { created: ["test/broken.test.ts"] } },
+    });
+    vcs.release(leaseId);
+
+    expect(result).toMatchObject({ outcome: "rejected", by: "structural" });
+    // The file it created is gone: a rollback of a creation is a removal.
+    expect(existsSync(join(root, "test/broken.test.ts"))).toBe(false);
+    expect(vcs.registry.file("test/broken.test.ts")).toBeUndefined();
+    vcs.close();
+  });
+
+  test("a failing typecheck rolls a rewrite back byte for byte", async () => {
+    const failing = { typecheck: failingStage("typecheck", "TS2322") };
+    const root = tempProject({ "a.ts": SOURCE, "test/a.test.ts": ORACLE });
+    const vcs = openVcs({
+      root,
+      verifier: passingVerifier(failing),
+      clock: manualClock(1_000),
+      ids: counterIds(),
+    });
+    vcs.track("a.ts");
+    vcs.track("test/a.test.ts");
+
+    const leaseId = pathLease(vcs, ["test"], ["test/a.test.ts"]);
+    const result = await vcs.writeFile({
+      leaseId,
+      path: "test/a.test.ts",
+      // The same test, asserting differently: the identity is unchanged, so
+      // the write reaches the typecheck stage rather than stopping short of it.
+      body: ORACLE.replace("toBe(42)", "toBe(43)"),
+      intent: { taskId: "task-4", description: "rewrite", expectedOutcome: { created: ["test/a.test.ts"] } },
+    });
+    vcs.release(leaseId);
+
+    expect(result).toMatchObject({ outcome: "rejected", by: "typecheck" });
+    expect(readFileSync(join(root, "test/a.test.ts"), "utf8")).toBe(ORACLE);
+    vcs.close();
+  });
+
+  test("the tests stage never runs, so an oracle can be authored red", async () => {
+    // The property this operation exists for. A stage that ran the suite would
+    // refuse every oracle for being red, which is what an oracle IS before its
+    // production code exists.
+    const ran: string[] = [];
+    const { vcs } = open({
+      tests: async (ctx) => {
+        ran.push(...ctx.targets.map((t) => t.id));
+        return { status: "failed", by: "tests", detail: "the oracle is red" };
+      },
+    });
+    const leaseId = pathLease(vcs, ["test"], ["test/a.test.ts"]);
+    const result = await vcs.writeFile({
+      leaseId,
+      path: "test/a.test.ts",
+      body: ORACLE,
+      intent: { taskId: "task-5", description: "author", expectedOutcome: { created: ["test/a.test.ts"] } },
+    });
+    vcs.release(leaseId);
+
+    expect(result.outcome).toBe("committed");
+    expect(ran).toEqual([]);
+    vcs.close();
+  });
+
+  test("a lease whose scope does not cover the path refuses before anything is written", async () => {
+    const { root, vcs } = open();
+    const leaseId = pathLease(vcs, ["test"], ["test/a.test.ts"]);
+    const result = await vcs.writeFile({
+      leaseId,
+      path: "src/smuggled.ts",
+      body: "export const x = 1;\n",
+      intent: { taskId: "task-6", description: "smuggle", expectedOutcome: { created: ["src/smuggled.ts"] } },
+    });
+    vcs.release(leaseId);
+
+    expect(result).toMatchObject({ outcome: "rejected", by: "contract" });
+    expect(existsSync(join(root, "src/smuggled.ts"))).toBe(false);
+    vcs.close();
+  });
+
+  test("a write the intent did not declare is refused, even inside the scope", async () => {
+    const { root, vcs } = open();
+    const leaseId = pathLease(vcs, ["test"], ["test/a.test.ts"]);
+    const result = await vcs.writeFile({
+      leaseId,
+      path: "test/b.test.ts",
+      body: ORACLE,
+      intent: { taskId: "task-7", description: "undeclared", expectedOutcome: { created: ["test/a.test.ts"] } },
+    });
+    vcs.release(leaseId);
+
+    expect(result).toMatchObject({ outcome: "rejected", by: "contract" });
+    expect(existsSync(join(root, "test/b.test.ts"))).toBe(false);
+    vcs.close();
+  });
+
+  test("release accepts the symbols a path-scoped write created, which it could not have named", async () => {
+    // The symbols in a file that did not exist have no ids to declare, so the
+    // lease declared the PATH and release reads the coverage rather than the
+    // id list. Without this every authored oracle would release as a
+    // contract violation.
+    const { vcs } = open();
+    const leaseId = pathLease(vcs, ["test"], ["test/a.test.ts"]);
+    await vcs.writeFile({
+      leaseId,
+      path: "test/a.test.ts",
+      body: ORACLE,
+      intent: { taskId: "task-8", description: "author", expectedOutcome: { created: ["test/a.test.ts"] } },
+    });
+    expect(vcs.release(leaseId).outcome).toBe("released");
+    vcs.close();
   });
 });

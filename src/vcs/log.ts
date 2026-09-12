@@ -30,6 +30,13 @@ import type { FailureCategory, VerificationStatus } from "./verify.ts";
 
 export const EVENT_KINDS = [
   "file-tracked",
+  /**
+   * A file this system created, under a task. Distinct from `file-tracked`,
+   * which is the inventory ADOPTING a file that already existed and carries a
+   * source channel rather than a task (§ 9.1). Reading them as one would make
+   * "who wrote this file" unanswerable for exactly the files an agent wrote.
+   */
+  "file-created",
   "symbol-created",
   "symbol-modified",
   "symbol-renamed",
@@ -62,7 +69,15 @@ export type Intent = {
   expectedOutcome: ExpectedOutcome;
 };
 
-/** What the caller says will be true afterwards, in symbol ids. */
+/**
+ * What the caller says will be true afterwards.
+ *
+ * `modified` and `tombstoned` are symbol ids. `created` is repository-relative
+ * PATHS, and it has to be: a file a `write-file` is about to create has no
+ * symbol id yet, and neither do the symbols inside it. The lease checks each
+ * one against the path scopes the request named, on the same rule the symbol
+ * ids go through.
+ */
 export type ExpectedOutcome = {
   modified?: readonly string[];
   created?: readonly string[];

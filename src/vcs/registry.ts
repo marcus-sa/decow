@@ -89,6 +89,17 @@ export type Registry = {
    * action (§ 9.1).
    */
   track(path: string, source: string, observed: readonly ObservedSymbol[]): { file: TrackedFile; report: ReconcileReport };
+  /**
+   * Register a path with no content and no events, for a caller that is about
+   * to create the file itself and will log the creation under its own task.
+   *
+   * `track` is the inventory adopting code that already exists, so it attributes
+   * every event to `INVENTORY_CHANNEL` and to no task (§ 9.1). A file an agent
+   * WRITES is the opposite: it has a task, and the log must say so. Separating
+   * the row from the events is what lets the write path append `file-created`
+   * itself, after its verification stages have passed and not before.
+   */
+  createFile(path: string): TrackedFile;
   file(path: string): TrackedFile | undefined;
   fileById(id: string): TrackedFile | undefined;
   files(): TrackedFile[];
@@ -356,6 +367,15 @@ export const openRegistry = (db: Database, log: EventLog, ids: IdGen): Registry 
       const file = fileById(id);
       if (file === undefined) throw new Error(`registry: file ${id} vanished during track`);
       return { file, report };
+    },
+    createFile(path) {
+      const existing = q.fileByPath.get(path);
+      if (existing !== null) return decodeFile(existing);
+      const id = ids("file");
+      q.insertFile.run(id, path, "");
+      const file = fileById(id);
+      if (file === undefined) throw new Error(`registry: file ${id} vanished during createFile`);
+      return file;
     },
     file(path) {
       const row = q.fileByPath.get(path);
