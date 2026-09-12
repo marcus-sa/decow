@@ -183,7 +183,7 @@ export async function runStep<I, O>(def: StepDef<I, O>, raw: unknown, journal: J
 
 Two design choices worth defending. Temperature zero is not for determinism; it narrows the distribution so retries with feedback converge instead of wandering. Mixing model families for worker and validator is the reason to stay provider-agnostic: a Haiku worker refuted by a GPT-mini validator shares fewer blind spots than Haiku refuting Haiku.
 
-The model slot is one method. It takes a system prompt, a prompt and a schema, and returns something the schema accepts. That is the seam where an agent plugs in, not just a provider. A Claude Code subagent is a binding: from the step's side there is no difference between one model call and a subagent that spent forty turns reading a checkout, as long as what comes back satisfies the schema and the decision is a member of the closed enum. There are two shapes of that, and the difference is not stylistic. In the **opaque** shape the agent edits the workspace itself and returns only the object; the writes happened outside the effect boundary, so the framework cannot lease them, verify them, or roll them back, and a lease conflict is unrepresentable because nothing ever crossed the boundary where a version check could happen. In the **proposal** shape the agent returns its writes as `replace-symbol` effects and the runner commits them through the agent-native VCS, under a lease, with the write-boundary gate and the journal key as the intent; a conflict comes back as a decision value a branch routes. The VCS is what makes the second shape possible, which is why it is the data plane in "The agent-native VCS is the effect executor and mechanical verifier" below and not an optional extra.
+The model slot is one method. It takes a system prompt, a prompt and a schema, and returns something the schema accepts. That is the seam where an agent plugs in, not just a provider. A Claude Code subagent is a binding: from the step's side there is no difference between one model call and a subagent that spent forty turns reading a checkout, as long as what comes back satisfies the schema and the decision is a member of the closed enum. There are two shapes of that, and the difference is not stylistic. In the **opaque** shape the agent edits the workspace itself and returns only the object; the writes happened outside the effect boundary, so the framework cannot lease them, verify them, or roll them back, and a lease conflict is unrepresentable because nothing ever crossed the boundary where a version check could happen. In the **proposal** shape the agent still edits, because a tool set is what makes it an agent rather than a chat — but it edits a *scratch copy*, and afterwards the copy is diffed: every changed file under the allowed paths becomes a `write-file` or a `replace-symbol` effect, and the runner commits them through the agent-native VCS, under a lease, with the write-boundary gate and the task id as the intent. A conflict comes back as a decision value a branch routes, and a byte moved outside the allowed paths refuses the whole turn before any effect is emitted. The VCS is what makes the second shape possible, which is why it is the data plane in "The agent-native VCS is the effect executor and mechanical verifier" below and not an optional extra.
 
 ### Workflow graph and runner
 
@@ -303,18 +303,29 @@ Every write the runner performs has one shape: an id, an expected version, a bod
 ```ts
 export type Effect =
   | { type: "replace-symbol";  symbolId: string; expectedVersion: number; body: string }
+  | { type: "write-file";      path: string;     body: string }
   | { type: "upsert-artifact"; table: string;    id: string; expectedVersion: number; row: unknown }
-  | { type: "run-tests";       impacted: string[] }
+  | { type: "run-tests";       impacted: string[]; extra?: string[] }
+  | { type: "measure-oracle";  oracle: string;   argv?: string[] }
   | { type: "append-trail";    line: string };
 
 export type EffectResult =
-  | { effect: Effect; outcome: "committed";    version: number }
+  | { effect: Effect; outcome: "committed";    version: number; measured?: OracleMeasurement }
   | { effect: Effect; outcome: "conflict";     currentVersion: number }
-  | { effect: Effect; outcome: "rejected";     by: "typecheck" | "tests" | "schema" }
-  | { effect: Effect; outcome: "infra-failed" };
+  | { effect: Effect; outcome: "rejected";     by: RejectedBy; detail?: RejectionDetail;
+                                               measured?: OracleMeasurement }
+  | { effect: Effect; outcome: "infra-failed"; measured?: OracleMeasurement };
 ```
 
 `outcome` is a decision value. A step absorbs it into state and the next branch routes on it. A lease conflict is an edge to a rebase-and-retry node, never an exception. `infra-failed` is distinct from `rejected` so a flaky test harness does not burn the retry budget on a change that was fine. The distinct-failure-modes discipline matters more here than anywhere else in the framework because each misrouted failure costs model calls.
+
+Two of the six are worth naming, because each exists for one job the other five could not do.
+
+**`write-file`** is the only write that can produce a file. `replace-symbol` names a symbol id, so it can only ever rewrite something the registry already holds — the right shape for a crafter working inside a declared surface, and useless for an author whose job is to write a test that does not exist yet. Its concurrency model is the path scope of the lease rather than a version, because a file has no version to be optimistic about before it exists. What the write path checks instead is that the lease's scope covers the path, that the intent declared it, and that no identity the file already held has vanished.
+
+**`measure-oracle`** executes one test and reads a verdict off it: `green | red | broken | indeterminate`. It is `run-tests` asking a different question, and it is a different effect because of it — `run-tests` asks "did the change break anything" and a failure is a refusal; this asks "what does this one test do, on its own, right now" and a failure is the *desired* answer. Exit status alone cannot tell `red` from `broken`, because a runner exits non-zero for both, so the counts are read and the axis that reached the verdict travels with it. The measurement rides on `EffectResult` as an optional `measured` rather than as a fifth outcome, so every other graph's edge tables stay total over the same four words and a pure branch reads all four verdicts off one field.
+
+Why the framework runs the oracle rather than a leaf is [below](#distill-is-two-graphs).
 
 Notably absent from the union: `create-issue`, `send-message`, or anything else that is a shared, outward-facing action. A worker step cannot defer work by opening a ticket. The only way to defer is a `needs-human` suspension with a typed reason, which parks the run for a person rather than handing work to a queue nobody owns. The rule "agents never create issues unilaterally" is unrepresentable rather than enforced.
 
@@ -362,261 +373,175 @@ Humans read prose. A rules document becomes a view generated from rows, never th
 
 The one cost is one-time. A consumer with existing prose rules migrates them to rows once. That migration exposes every rule that was never crisp enough to be a closed enum. Those become `cannot-tell` edges to a human, which is the honest answer the prose was hiding.
 
-## Worked example: DISTILL test-lane classification
+## DISTILL is two graphs
 
-Input: one test scenario. Output: which lanes it needs, from `testing.md § Classify external execution` and the DISTILL completeness gate. Four classifiers fan out, each a small model answering one question with one of three words. A pure merge applies the cross-cutting rules. No `if` lives anywhere a model can reach.
+nWave's DISTILL wave turns an ordered graph of values into two things: what
+each value must be *observed* to do, and the executable oracle that will
+observe it. Those are two disjoint steps in the shipped runner, and reading
+them as one is how this document got them wrong the first time.
 
-```ts
-import { anthropic } from "@ai-sdk/anthropic";
-import { openai } from "@ai-sdk/openai";
+### `des distill` is provider-free
 
-const small = anthropic("claude-haiku-4-5");
-const smallOther = openai("gpt-5-mini");     // different family for the validator
-const big = anthropic("claude-sonnet-5");
+The first step buys no model turn and writes no test. Its input is a JSON
+manifest: per value, an `observation` that must already exist in the handover
+by exact string match, a non-empty list of `AcceptanceObligation { id,
+stimulus, expected }`, exactly **one** `oracle` locator, and an
+`acceptance_supports` list of whole-file paths — which may be empty, may never
+equal the oracle, and may never name a path the repository ignores. It
+validates a closed rule set, renders a markdown brief, and persists the facts
+into the value graph.
 
-export const Scenario = z.object({
-  id: z.string(),
-  text: z.string(),
-  crossesBoundary: z.boolean(),   // set upstream by DISTILL, not inferred here
-});
-type Scenario = z.infer<typeof Scenario>;
+The obligation's three fields are the load-bearing part. A stimulus a reader
+could apply and an expected result they could observe is something an oracle
+author can write an assertion from; one sentence of prose saying "complete
+works" is neither, and an author handed it has to invent both halves before it
+can write anything.
 
-const Lane = z.enum(["needed", "not-needed", "cannot-tell"]);
-type Lane = z.infer<typeof Lane>;
+What is **not** there, and must not be built: `.feature` files, a `steps/**`
+tree, `S-1.2`-style ids, a Contract Shape tag, pending markers of any kind, a
+seven-category taxonomy, a fifteen-item checklist. Completeness is not a score.
+It is a **total relation** in both directions — every obligation to at least
+one falsifiable observation, and every observation the oracle makes back to
+exactly one obligation — and a checklist or a scenario count is exactly the
+thing that rule exists to refuse.
 
-// `anchor` and `rationale` are payload. The graph cannot read them.
-const Classification = stepOutput(Lane.options, {
-  anchor: z.string().describe("Verbatim quote from the scenario that justifies the decision"),
-  rationale: z.string().max(300),
-});
+So the graph is one leaf in front of a pure function:
 
-const anchorMustBeVerbatim: Requirement<{ input: Scenario; output: z.infer<typeof Classification> }> = {
-  id: "distill.anchor-verbatim",
-  sourceId: "verification.enforcement.unanchored-claims",
-  text: "The justification must quote the scenario verbatim. Paraphrase is an unanchored claim.",
-  decisions: Lane.options,
-  check: ({ input, output }) =>
-    input.text.includes(output.payload.anchor) ? null
-      : { requirementId: "distill.anchor-verbatim", evidence: output.payload.anchor },
-};
+```
+obligations = loop(body: propose-obligations, until: valid or blocked, max: 2)
+|
++- propose-obligations -> propose.route  -+- proposed  -> validate-manifest
+|                                         +- exhausted -> obligations (blocked)
++- validate-manifest --> manifest.route  -+- valid     -> obligations (leave)
+                                          +- invalid   -> obligations (iterate)
 
-type Kind = "e2e" | "expectation" | "benchmark" | "dst";
-
-const QUESTION: Record<Kind, string> = {
-  e2e:         "Does the assembled system need to keep satisfying a deterministic contract, rerun in CI?",
-  expectation: "Is this a one-time, point-in-time operator-observable claim to capture as SHA-pinned evidence?",
-  benchmark:   "Does this ask how fast, how much, or how variable, needing repeated samples and a statistical method?",
-  dst:         "Does correctness depend on ordering, timing, concurrency, retry, or convergence, needing a seeded simulation invariant?",
-};
-
-const classifier = (kind: Kind, requirements: Requirement<any>[]): StepDef<Scenario, z.infer<typeof Classification>> => ({
-  id: `distill.classify.${kind}`,
-  version: 1,
-  input: Scenario,
-  output: Classification,
-  requirements: [anchorMustBeVerbatim, ...requirements],
-  worker: {
-    model: small,
-    system: "You classify a single test scenario. Answer only the question asked. Quote the scenario verbatim in `anchor`.",
-    prompt: s => `${QUESTION[kind]}\n\nScenario ${s.id}:\n${s.text}`,
-  },
-  validator: { model: smallOther },
-  maxAttempts: 2,
-  escalateTo: big,
-});
+obligations.verdict -+- valid   -> persist -> persist.verdict -+- committed -> accepted
+                     |                                          +- else      -> human
+                     +- blocked -> human -> human.route -> rejected
 ```
 
-The graph. Every cross-cutting rule is one line in `mergeVerdict`, a total function into a closed enum, and the branch's edge table is exhaustive over it.
+The leaf's decision space is a **singleton**. It proposes; whether the proposal
+is admissible is the validator's, and the validator is a total function over
+the manifest, the roadmap, and one injected repository fact. Giving the leaf a
+second decision would be asking a model to grade its own manifest, which is the
+arrangement the validator replaces.
 
-`State` gives each classifier its own slot. A shared `anchors` map and a shared `exhausted` array would be four writes to one key, and no merge over parallel sub-steps can keep four writes to one key. One top-level key per sub-step is what makes the fanout merge lossless.
+Each rule is a **named defect** rather than a boolean, for the reason
+`validate-shape` one wave earlier has the same shape: the defects are the
+feedback the next proposal reads, and "invalid" tells a model nothing it can
+act on.
 
-```ts
-type LaneSlot = { lane?: Lane; anchor?: string; exhausted?: boolean };
+There is **no human gate on the happy path**, unlike the roadmap workflow's.
+That is the one shape decision here worth defending. A decomposition is the
+highest-judgement act in the pipeline and its output is a diff somebody reads;
+this is not that. Every reason this step can refuse is a named defect a
+proposal can be re-driven against, so a review gate would be a person re-reading
+what a total function already decided.
 
-type State = {
-  scenario: Scenario;
-  e2e: LaneSlot; expectation: LaneSlot; benchmark: LaneSlot; dst: LaneSlot;
-  human?: HumanAnswer;   // absorbed by the suspend node; read only by human.route
-};
+### `des oracle --value N` is the step that writes the test
 
-const classify = (kind: Kind, def: StepDef<Scenario, any>, journal: Journal): Node<State> => ({
-  type: "step",
-  run: async s => {
-    const r = await runStep(def, s.scenario, journal);
-    return r.decision === "ok"
-      ? { state: { ...s, [kind]: { lane: r.output.decision, anchor: r.output.payload.anchor } }, effects: [] }
-      : { state: { ...s, [kind]: { lane: "cannot-tell", exhausted: true } },
-          effects: [{ type: "append-trail", line: JSON.stringify({ kind, trail: r.trail }) }] };
-  },
-  absorb: s => s,
-  next: "merge",
-});
+The second step dispatches the acceptance designer with tools `Read, Edit` and
+nothing else, scoped so it may write only under the subject's test paths. It
+returns a typed `accepted | rejected` outcome, and `rejected` has a precise
+meaning rather than "I could not": *the constructive chain cannot be expressed
+through the declared public port without inventing a field, an operation, a
+fixture fact or an expected result.* That is a finding about the **design**, and
+the runner routes it to the design's owner.
 
-type MergeVerdict = "complete" | "benchmark-expectation-conflict" | "incomplete-boundary" | "undecidable";
+Then **software executes the oracle** and reads a JUnit-style verdict off it.
+This is the rule the shipped code names
+`boundary:software-measures-model-decides`, and it is the load-bearing shape
+rather than an optimisation: the two roles that hold an oracle — its author,
+`Read, Edit`, and its reviewer, an enforced empty tool set — *cannot run it*.
+So "this oracle fails on its assertion and not on its scaffolding" is a
+property the software owns, and observing an execution is a fixed floor rather
+than a rigor knob.
 
-const exhaustedKinds = (s: State): Kind[] => KINDS.filter(k => s[k].exhausted === true);
+```
+author = loop(body: author-oracle, until: red or blocked, max: 2)
+|
++- author-oracle --> author.route --+- authored       -> write-oracle
+|                                   +- cannot-express -> author (blocked: design)
+|                                   +- exhausted      -> author (blocked)
++- write-oracle ---> write.verdict -+- committed      -> measure
+|                                   +- conflict       -> author (iterate)
+|                                   +- defective      -> author (iterate, with the gate's detail)
+|                                   +- refused        -> author (blocked: out of scope)
+|                                   +- infra-failed   -> author (blocked)
++- measure -------> measure.verdict +- red            -> author (leave: the desired answer)
+                                    +- broken         -> author (iterate, with the output)
+                                    +- green          -> author (blocked: vacuous)
+                                    +- indeterminate  -> author (blocked: harness)
 
-const mergeVerdict = (s: State): MergeVerdict => {
-  if (exhaustedKinds(s).length > 0) return "undecidable";
-  if (s.benchmark.lane === "needed" && s.expectation.lane === "needed") return "benchmark-expectation-conflict";
-  if (s.scenario.crossesBoundary && s.dst.lane !== "needed" && s.e2e.lane !== "needed") return "incomplete-boundary";
-  return "complete";
-};
+author.verdict -+- red     -> accepted, and an `oracle_runs` row is recorded
+                +- blocked -> human -> human.route -> rejected
 ```
 
-The person's half. `reason` is the closed enum the run parks under; `HumanAnswer` is the closed enum it wakes on. Neither is free text, so the graph branches on a person's answer exactly the way it branches on a model's.
+`red` is the only route to `accepted`, which is the inversion the whole wave
+rests on. `broken` is the author's own defect — an import that does not
+resolve, a fixture that threw, a file that does not parse — and it gets the one
+correction turn, with the runner's verbatim output as the finding. `green` is a
+**vacuous oracle**: a test that passes before any production code exists proves
+nothing, and it goes to a person. The shipped runner computes the same verdict
+and deliberately does not *arm* it, because four of its own designed behaviours
+legitimately reach a green oracle before a craft turn; a graph that runs one
+value once with nothing behind it reaches none of them, so parking is the
+honest answer here.
 
-```ts
-const HUMAN_DECISIONS = ["proceed", "abandon", "override"] as const;
+The pre-craft oracle reviewer is **retired**, and this is where the
+`accepted | rejected` outcome earns its keep. A judge between "measured" and
+"judged" was a fourth model boundary, and the incident it existed for — an
+approving review of a broken oracle, in 27 seconds — is answered by a
+measurement that is software and free. The oracle's independent judgement is
+the whole-diff review at the end, which sees the oracle and the implementation
+together.
 
-const HumanAnswer = z.object({
-  decision: z.enum(HUMAN_DECISIONS),
-  override: z.object({ kind: z.enum(KINDS), lane: Lane }).optional(),  // read only when decision is "override"
-});
-type HumanAnswer = z.infer<typeof HumanAnswer>;
-type HumanDecision = HumanAnswer["decision"];
+Then the crafter is **walled off from the oracle file**. Every path a task
+declares is the crafter's except that one, because RED to GREEN must be bought
+by production and never by editing the test that measures it. Here that is an
+executor rule rather than a graph edge, which is what makes it hold for every
+write the graph could emit — including one a model proposed and the graph
+merely passed along. The supports are *not* walled: a support is the oracle's
+dependency rather than the thing that measures the value.
 
-const humanReason = (s: State) =>
-  exhaustedKinds(s).length > 0 ? "validator-exhausted" : "incomplete-boundary";
+### One defect from the shipped runner, not copied
 
-// The evidence a person reads: every classifier's slot, as it stands.
-const humanTrail = (s: State): unknown[] => KINDS.map(kind => ({ kind, ...s[kind] }));
-```
+`des distill`'s obligations never reach the oracle author. The runner's
+`_derive` builds its `AuthorityFacts` with `acceptance_obligations` left at its
+default, and only the craft path ever populates it — so the acceptance author
+receives the obligation *ids* the design declared and not the
+stimulus/expected pairs `des distill` produced, and is asked to write an oracle
+for obligations it cannot read.
 
-```ts
-export const distillGraph = (journal: Journal, defs: Record<Kind, StepDef<Scenario, any>>): Workflow<State> => ({
-  start: "classify",
-  nodes: {
-    classify: { type: "fanout", steps: ["classify.e2e", "classify.expectation", "classify.benchmark", "classify.dst"], join: "merge" },
-    "classify.e2e":         classify("e2e", defs.e2e, journal),
-    "classify.expectation": classify("expectation", defs.expectation, journal),
-    "classify.benchmark":   classify("benchmark", defs.benchmark, journal),
-    "classify.dst":         classify("dst", defs.dst, journal),
+Here they are an input to the author leaf. That is the whole of the fix and it
+is worth one sentence in a design document because the shape of the bug is
+general: two steps that produce and consume the same fact, joined through a
+record that carries a default.
 
-    // Drop a MergeVerdict member from this table and it will not compile.
-    merge: branch<State, MergeVerdict>(mergeVerdict, {
-      "complete":                       "accept",
-      "benchmark-expectation-conflict": "demote-expectation",
-      "incomplete-boundary":            "human",
-      "undecidable":                    "human",
-    }),
+### What this costs to enumerate
 
-    "demote-expectation": {
-      type: "step",
-      run: async s => ({ state: { ...s, expectation: { ...s.expectation, lane: "not-needed" } },
-                         effects: [{ type: "append-trail", line: `${s.scenario.id}: expectation demoted, benchmark wins` }] }),
-      absorb: s => s,
-      next: "accept",
-    },
+55 paths through the obligations graph and 421 through the oracle graph, with
+every node visited, every block reason produced, and zero model calls. The
+oracle graph's third axis is the one that makes it interesting: the verdict is
+an **effect outcome** rather than a leaf decision, so the walk gets all four
+verdicts from the same `scriptedExecutor` seam it gets a write outcome from.
 
-    // The run parks here with a typed reason and the evidence behind it.
-    human: suspend<State, HumanAnswer>({
-      reason: humanReason,
-      trail: humanTrail,
-      resumeSchema: HumanAnswer,
-      absorb: (s, answer) => ({ ...s, human: answer }),
-      next: "human.route",
-    }),
-
-    // Drop a HumanDecision member from this table and it will not compile.
-    "human.route": branch<State, HumanDecision>(s => s.human!.decision, {
-      "proceed":  "merge.after-human",
-      "abandon":  "reject",
-      "override": "apply-override",
-    }),
-
-    "apply-override": {
-      type: "step",
-      // A person answering "override" is answering what the validator could not,
-      // so the override clears `exhausted` as well as setting the lane.
-      run: async s => {
-        const o = s.human?.override;
-        return o === undefined
-          ? { state: s, effects: [{ type: "append-trail", line: `${s.scenario.id}: override with no payload` }] }
-          : { state: { ...s, [o.kind]: { lane: o.lane, anchor: "<human override>", exhausted: false } },
-              effects: [{ type: "append-trail", line: `${s.scenario.id}: ${o.kind} overridden to ${o.lane} by a person` }] };
-      },
-      absorb: s => s,
-      next: "merge.after-human",
-    },
-
-    // The same verdict function, a terminal edge table. A person has already
-    // answered, so nothing here routes back to them. This is how "re-run the
-    // merge" is expressed without a back edge: a second branch node, not a cycle.
-    "merge.after-human": branch<State, MergeVerdict>(mergeVerdict, {
-      "complete":                       "accept",
-      "benchmark-expectation-conflict": "demote-expectation",
-      "incomplete-boundary":            "reject",
-      "undecidable":                    "reject",
-    }),
-
-    accept: { type: "terminal", done: s => ({ kind: "accepted", state: s }) },
-    reject: { type: "terminal", done: s => ({ kind: "rejected", state: s, trail: humanTrail(s) }) },
-  },
-});
-```
-
-`merge.after-human` routing `benchmark-expectation-conflict` back to the same `demote-expectation` node the first merge uses is re-convergence, not a cycle. Nothing downstream of `demote-expectation` leads back to either merge, so the compiler builds that tail once per path and the graph stays acyclic.
-
-The exhaustive test. Three lanes, four classifiers, two boundary flags: 162 paths. A journal pre-seeded with the outputs stands in for the models. Every path must land on a declared outcome: a terminal, or parked for a person.
-
-```ts
-const LANES = ["needed", "not-needed", "cannot-tell"] as const;
-
-const cartesian = <T>(xs: readonly T[], n: number): T[][] =>
-  n === 0 ? [[]] : cartesian(xs, n - 1).flatMap(rest => xs.map(x => [x, ...rest]));
-
-test("every classifier outcome reaches a declared outcome", async () => {
-  for (const [e2e, expectation, benchmark, dst] of cartesian(LANES, 4)) {
-    for (const crossesBoundary of [true, false]) {
-      const outcome = await run(
-        distillGraph(stubJournal({ e2e, expectation, benchmark, dst }), defs),
-        seed({ id: "S-1", text: "…", crossesBoundary }),
-        async () => [],
-      );
-      expect(["terminal", "suspended"]).toContain(outcome.kind);
-      expect(outcome.trace.at(-1)).toMatch(/^(accept|reject|human)$/);
-    }
-  }
-});
-
-test("benchmark plus expectation always demotes expectation", async () => {
-  const outcome = await run(
-    distillGraph(stubJournal({ e2e: "not-needed", expectation: "needed", benchmark: "needed", dst: "not-needed" }), defs),
-    seed({ id: "S-1", text: "…", crossesBoundary: false }), async () => [],
-  );
-  expect(outcome.trace).toContain("demote-expectation");
-  expect(outcome.kind === "terminal" && outcome.terminal.kind === "accepted"
-    && outcome.terminal.state.expectation.lane).toBe("not-needed");
-});
-
-test("a blocked scenario parks, and an override clears the block", async () => {
-  const wf = distillGraph(stubJournal({ e2e: "not-needed", expectation: "not-needed",
-                                        benchmark: "not-needed", dst: "not-needed" }), defs);
-  const parked = await run(wf, seed({ id: "S-1", text: "…", crossesBoundary: true }), async () => []);
-  expect(parked.kind === "suspended" && parked.reason).toBe("incomplete-boundary");
-
-  const resumed = await resume(wf, parked.runId,
-    { decision: "override", override: { kind: "e2e", lane: "needed" } }, async () => []);
-  expect(resumed.kind === "terminal" && resumed.terminal.kind).toBe("accepted");
-});
-```
-
-Changing a rule in `testing.md` means changing one line in `mergeVerdict`, and the compiler names every edge that needs updating. The models' job has been reduced to producing one of three words per classifier. Everything they cannot decide routes to a person with a trail attached.
 
 ## The agent-native VCS is the effect executor and mechanical verifier
 
-This is now built, as `src/vcs/` in this repo. It is a library rather than the separate Rust CLI its own design plans, because the caller here is the workflow runner and not a free agent: there is no bash to drift to, so the tool surface and the preference experiment that motivated a CLI are moot, and a coordinator in another language would need an IPC protocol before it could be used at all. The seam is one function, `vcsExecutor({ vcs, session, intent })`, which returns an `EffectExecutor`. The dependency runs one way: `src/core` imports nothing from `src/vcs`, and `src/vcs/executor.ts` imports the `Effect` and `EffectResult` types and nothing else from the framework. Four of the five things listed under "what needs changing" below are closed by it. Typed effect results are closed: `outcome` is a decision value and the write path's own result union is the same shape, so the mapping between them is the identity function. The gate separating "you broke it" from "the harness broke" is closed by the three failure categories, `contract`, `verification` and `infrastructure`, each routed to a different edge, with `contract` and `structural` added to `rejected.by` so the first of them is representable at all. Per-symbol leases in fanout are closed by atomic multi-acquire: a batch takes one write lease covering every symbol it names, which is also why holding a lease and asking for more can be refused. Two provenance stores drifting is closed by the task id on every event, so the journal's answer to "what did this step decide" and the log's answer to "what changed" join on one key. What remains open is the fifth, the symbol-set difference that would make "implement to the design, never invent public API" mechanical: the symbol inventory it needs exists, and the check that consumes it does not.
+This is now built, as `src/vcs/` in this repo. It is a library rather than the separate Rust CLI its own design plans, because the caller here is the workflow runner and not a free agent: there is no bash to drift to, so the tool surface and the preference experiment that motivated a CLI are moot, and a coordinator in another language would need an IPC protocol before it could be used at all. The seam is one function, `vcsExecutor({ vcs, session, intent, protected, knownRed })`, which returns an `EffectExecutor`. The dependency runs one way: `src/core` imports nothing from `src/vcs`, and `src/vcs/executor.ts` imports the `Effect` and `EffectResult` types and nothing else from the framework. Four of the five things listed under "what needs changing" below are closed by it. Typed effect results are closed: `outcome` is a decision value and the write path's own result union is the same shape, so the mapping between them is the identity function. The gate separating "you broke it" from "the harness broke" is closed by the three failure categories, `contract`, `verification` and `infrastructure`, each routed to a different edge, with `contract` and `structural` added to `rejected.by` so the first of them is representable at all. Per-symbol leases in fanout are closed by atomic multi-acquire: a batch takes one write lease covering every symbol it names, which is also why holding a lease and asking for more can be refused. Two provenance stores drifting is closed by the task id on every event, so the journal's answer to "what did this step decide" and the log's answer to "what changed" join on one key. What remains open is the fifth, the symbol-set difference that would make "implement to the design, never invent public API" mechanical: the symbol inventory it needs exists, and the check that consumes it does not.
 
 A separate design (agent-native version control: symbol-level granularity via tree-sitter, stable symbol identity across renames, optimistic concurrency with leases, verification at write boundaries via typecheck and a test-impact graph, an immutable event log keyed by task and intent) fits this framework as its data plane for code. The framework is the control plane: what happens, in what order, validated how. The VCS is how writes land, under what concurrency, with what provenance. Neither needs the other, but together they close a loop each leaves open alone.
 
 What works:
 
-- **`replace-symbol` is the code effect.** The runner hands it to the VCS, which does the lease, the version check, and the verification gate. The workflow never touches a file.
+- **`replace-symbol` is the code effect, and `write-file` is the one that can create.** The runner hands either to the VCS, which does the lease, the version check or the path-scope check, and the verification gate. The workflow never touches a file. A symbol write claims an optimistic version; a whole-file write claims a **path scope**, because a file has no version to be optimistic about before it exists, and the structural question it answers is weaker by exactly the right amount: what appears is the author's business, what vanishes is not.
 - **Verification at boundaries is the strongest mechanical check.** Typecheck plus impact-scoped tests run synchronously before commit. That is a `Requirement.check` with no model in it. The validator chain for a code-writing step becomes: schema, then VCS gate, then a small model refuting against requirements. The expensive stochastic check runs last and only on outputs that already compile.
 - **Provenance links two logs instead of merging them.** The journal answers what each step decided. The VCS event log answers what changed and why. Every effect carries the journal key and step id as intent. Blame on a symbol resolves to which workflow, which step, which requirement, which model, which validator passed it.
 - **Stable symbol identity makes API-surface conformance mechanical.** "Implement to the design, never invent public API" is a prose rule reviewers apply by reading. With a symbol inventory it is a set difference: exported symbols after the change, minus the symbols the design declares, must be empty. No model. Overdrive's `TerminalErrorKind::Retryable` and `ctx.run_retryable` incidents, both caught only in adversarial review, are the shape this catches at the gate.
 - **Test selection above the impact floor is the workflow's; the floor is the VCS's.** A `run-tests` effect names the symbols it is scoped to and the tests a leaf chose to add; the executor runs their union and recomputes the floor from the symbols the batch actually wrote, so a selection that misses one of those tests is a contract violation rather than a smaller run. The LLM may add a test the static import graph cannot see, and has no way to remove one.
+- **A protected scope is how one role's ownership becomes structural.** The executor refuses any write landing under a declared scope, before a lease is asked for. That is what walls the crafter off from the oracle, and expressing it in the executor rather than in a graph is what makes it hold for every write the graph could emit — including one a model proposed and the graph merely passed along.
+- **A test that was already red must not refuse a write that did not break it.** The gate's question is "did you break something else". Once oracles are live files rather than pending markers, every undelivered value has a live failing test in the modules it shares, so the impact-scoped set takes a `knownRed` exclusion beside the one it already takes for the tests the batch is rewriting. Without it, a module with two undelivered values is undeliverable — measured on the first real run of the worked example, not predicted.
 - **The "do agents prefer structured tools" question is moot here.** Inside a workflow the agent does not pick tools; the graph does. The VCS does not need to win a preference contest because the runner is its only caller.
 
 What needs changing:
@@ -630,7 +555,9 @@ The first integration test is not the VCS's own phase one. It is: the runner exe
 
 ## DELIVER is two graphs
 
-nWave's DELIVER wave generates a roadmap, then runs each step through a RED→GREEN→COMMIT cycle with a crafter agent, a reviewer, a mutation gate, and a phase log. That is two graphs. One is authored per feature: the roadmap. One is fixed: the step cycle. Today both are enforced after the fact, by hooks checking that the phase log has the right events in the right order and that the dispatch prompt carried the full template. In the framework they are enforced by topology. The model cannot skip RED because no edge bypasses it.
+nWave's DELIVER wave generates a roadmap, then runs each step through a RED→GREEN→COMMIT cycle with a crafter agent, a reviewer, a mutation gate, and a phase log. That is two graphs. One is authored per feature: the roadmap. One is fixed: the step cycle. Today both are enforced after the fact, by hooks checking that the phase log has the right events in the right order and that the dispatch prompt carried the full template. In the framework they are enforced by topology.
+
+RED is the one that is not enforced by topology *inside* this graph, and the reason is the previous section. The oracle was authored and executed in its own run, so the step cycle has nothing to observe and no judgement to make: it READS a recorded verdict. That makes "no edge bypasses RED" a **readiness precondition** one layer out — a row whose oracle has no recorded `red` never becomes ready — which mirrors the shipped runner's own rule that with no recorded oracle the next step for a value is `des oracle`, never `des craft`. It is a stronger guarantee than an edge, not a weaker one: an edge could be reached with a fabricated observation, and a row that is not ready has no run at all.
 
 | nWave DELIVER today | In the framework |
 |---|---|
@@ -638,6 +565,7 @@ nWave's DELIVER wave generates a roadmap, then runs each step through a RED→GR
 | `des.cli.roadmap validate` | A constraint query: DAG, every step has at least one AC, every AC has a closed decision space, every step reaches a terminal |
 | `nw-execute` dispatches one step to a crafter with a template prompt | The runner traverses the fixed step-cycle graph; each node is a leaf step with a validator |
 | `execution-log.json`, write-locked and HMAC-signed | The runner's trace. A model cannot log COMMIT because it never writes the log |
+| RED observed by the crafter, logged by the crafter | An `oracle_runs` row a different wave recorded, from a measurement software took. The crafter cannot log it, cannot reach it, and cannot edit the oracle it came from |
 | Reviewer dispatched after the step | The step-level validator, same primitive at coarser grain |
 | "No effort budget cuts" | Terminal is `accepted` only when every bound AC is `green`. Partial suspends for a person; no edge leads from partial to `accepted` |
 | "Deferrals need a GH issue and user approval" | No `create-issue` effect exists. The only deferral is a `needs-human` suspension with a typed reason |
@@ -652,17 +580,6 @@ The same shape written with bounded loops is three nested `loop` nodes, and the
 nesting is the thing the back-edge drawing was hiding.
 
 ```
-oracle ─► oracle.route ─branch─┬─ located ────────────► activate-at
-                               └─ missing-at ─────────► human   (nobody wrote the AT)
-
-activate-at ─► activate.verdict ─branch─┬─ committed ─────► run-tests.red
-                                        └─ everything else ► human
-
-run-tests.red ─► red ─branch─┬─ red-observed ──────► cycle
-                             ├─ already-green ─────► human   (the AT is vacuous)
-                             ├─ harness-failed ────► human
-                             └─ exhausted ─────────► human
-
 cycle  = loop(body: test-loop, until: gates are clean, max: 2) ─► cycle.verdict
 │
 ├─ test-loop  = loop(body: test-loop.head, until: not still-red and not broke-other, max: 2)
@@ -715,29 +632,23 @@ diagnose ─► diagnose.route ─branch─┬─ impl-wrong ──────�
 
 `human` is a suspend node, not a terminal: the cycle parks, a person answers
 from a closed decision enum, and the same run continues. Every branch is a
-closed enum. `already-green` at RED is a first-class outcome routed to a person,
-because a test that passes before implementation is a testing-theater signal the
-current process catches only if a reviewer notices. `harness-failed` is distinct
-from `still-red` so a flaky run does not burn the implement retry budget, and
-`infra-failed` on the write is distinct from `rejected` for the same reason one
-level down.
+closed enum. `harness-failed` is distinct from `still-red` so a flaky run does
+not burn the implement retry budget, and `infra-failed` on the write is
+distinct from `rejected` for the same reason one level down.
 
-The `oracle` ahead of RED locates the step's acceptance tests. It does not
-author them. DISTILL pre-authors the bodies with a pending marker, so a roadmap
-row's acceptance obligations each name where their assertion lives, and the
-oracle resolves those locators against the VCS symbol inventory. Every
-obligation resolved is `located`; any obligation with no locator, or a locator
-naming no live test, is `missing-at` and goes to a person under
-`missing-acceptance-test`, because nothing in this graph may write an assertion
-the step is then measured against. `activate-at` then strips the pending marker
-off each located test through the write path, one `replace-symbol` per test at
-the version the inventory reported. Neither node is a leaf: resolving a locator
-is a lookup and stripping a marker is a string operation, and a model asked to
-do either could get it wrong in a way nothing downstream would catch. The
-marker convention is `test.skip(` to `test(`, chosen because a symbol's
-identity is its kind, container and name, and a modifier is none of those: the
-strip is a body edit rather than a rename, which is what lets it through a
-write path that refuses an undeclared identity change.
+The cycle **starts at `implement`**, and nothing precedes it. There is no
+`oracle` node and no RED node, because neither has anything left to do: the
+oracle was authored by the acceptance designer in its own run and executed by
+software there, and what this graph reads is the recorded verdict. The row's
+own test ids come in with it, which is what lets `test.route` tell "my own
+oracle is still red" from "I broke something else" — a set membership rather
+than a judgement.
+
+What the crafter may do with that oracle is bounded by the executor rather than
+by the graph: the row's oracle file is a protected scope, so a `replace-symbol`
+or a `write-file` landing in it is `rejected: contract` before a lease is
+asked for. RED to GREEN is bought by production, and that is now a property of
+the data plane instead of a rule a reviewer applies.
 
 `run-tests` is not a leaf either, and the reason is sharper. Whether the suite
 passed is what running it answers, so the node emits a `run-tests` effect and
@@ -773,7 +684,7 @@ bound cannot be raised by a model, and running out of it is not a route to
 
 ### What decomposes and what stays wide
 
-The crafter today is one big model doing everything in the diagram. Most nodes are narrow leaves: classify why a suite is still red, classify a lint finding, decide whether a first run of a newly activated test is vacuous. Each is a small model with a validator. Some nodes decompose further than that and stop being leaves at all: locating an acceptance test is a lookup, stripping its pending marker is a string operation, and reading whether the suite passed is reading an effect's typed result. A node whose answer a cheaper thing already produces does not get a model.
+The crafter today is one big model doing everything in the diagram. Most nodes are narrow leaves: classify why a suite is still red, classify a lint finding. Each is a small model with a validator. Some nodes decompose further than that and stop being leaves at all: reading whether the suite passed is reading an effect's typed result, and reading whether the oracle was red is reading a row a different wave recorded. A node whose answer a cheaper thing already produces does not get a model, and "cheaper" includes "a measurement somebody already took".
 
 A failing test is classified before it is retried. `diagnose` answers
 `impl-wrong | at-wrong | design-missing | harness-failed`, and each cause routes
@@ -791,6 +702,8 @@ diagnosis lands in state, every enclosing `until` goes true because of it, and
 `cycle.verdict` routes it on the way out.
 
 The `implement` leaf stays wide. "Make this AT pass with the minimal change" is code generation, not a closed-enum decision. The framework does not require that leaf to be a small model. It requires it to be validated narrowly: the output schema admits only `replace-symbol` effects, the VCS gate runs typecheck and impacted tests, and the validator runs the API-surface diff. Put a mid-size model there if it earns it. "Many small models" is the default because most leaves are classifications. It is not a law forbidding a capable model where the output is genuinely open.
+
+`author-oracle` one wave earlier is the same case for the same reason, and it is worth naming because the instinct is to treat a test as smaller than an implementation. Writing an executable oracle that falsifies every obligation through a declared port is code generation too. What makes it safe is not a smaller model; it is the same narrow validation — a mechanical check that the turn returned exactly the paths it declared and no others, a rule that completeness is a total relation in both directions, an executor that refuses a byte outside the test paths, and a measurement software takes afterwards.
 
 What stays hard is the roadmap itself. Decomposing a design into steps that are each production-drivable vertical slices is the highest-judgment act in the pipeline. The framework validates the roadmap's shape and nothing about whether the decomposition is good. That is the frontier model's job, once per feature, and its output is a diff a person reads. Everything downstream of that diff is a graph.
 
@@ -820,10 +733,10 @@ The one way the graph can be fooled: an AC that depends on a step it does not de
 
 | Framework owns | Consumer owns |
 |---|---|
-| `Workflow`, `Node`, `Terminal`, `Effect`, `EffectResult` types and the runner | Requirement rows, the source of truth |
+| `Workflow`, `Node`, `Terminal`, `Effect`, `EffectResult`, `OracleMeasurement` and the runner | Requirement rows, the source of truth |
 | `StepDef` with a mandatory validator, `runStep`, retry and escalation policy | Graph rows and decision functions, committed and diffed in PRs |
 | A library of mechanical checks: verbatim-substring, enum-membership, id-in-set, symbol-set-difference | Model bindings: which small models, which validator family |
-| Journal interface plus a file or SQLite implementation | Effect executors: what `replace-symbol` and `run-tests` mean in this repo |
+| Journal interface plus a file or SQLite implementation | Effect executors: what `replace-symbol`, `write-file`, `run-tests` and `measure-oracle` mean in this repo |
 | Test harness: stub journal, path enumeration, trace matchers | The known-good hand-written graph used to validate the authoring workflow |
 | The authoring workflow: requirement rows to graph rows plus enumeration test. The roadmap-authoring shape of it is built, at `src/examples/nwave/roadmap/` | Rendered views for humans |
 
@@ -845,11 +758,11 @@ A consumer depends on `core`, `checks`, and `harness`, runs `codemod` from CI on
 Each piece is what validates the next.
 
 1. **Runtime, step contract, harness, by hand.** Roughly three hundred lines. No model involved. The only code a person writes from scratch.
-2. **One graph by hand.** The DISTILL classification graph above. This is the known-good answer.
-3. **The requirement rows for that graph, by hand.** Ten rows from `testing.md § Classify external execution`. The table-shaped section is the easy case.
+2. **One graph by hand.** The obligations graph above. This is the known-good answer.
+3. **The requirement rows for that graph, by hand.** The rules `des distill`'s own validator enforces, as rows. A closed rule set over a typed manifest is the easy case.
 4. **The authoring workflow, as a graph on the runtime.** Feed it the rows from step 3. Diff its output against the hand-written graph from step 2. The harness already exists to reject any graph with an unhandled decision or unreachable terminal.
 5. **Migrate the prose-heavy rules.** Reconciler triage, workflow triage, deferral handling. This is where "does this rule reduce to a closed enum" gets answered honestly, and where you learn which rules become `cannot-tell` edges.
-6. **The DELIVER step-cycle graph.** Fixed, hand-written once, the same for every consumer.
+6. **The oracle graph, then the DELIVER step-cycle graph.** Both fixed, hand-written once, the same for every consumer. In that order, because the step cycle reads a verdict the oracle graph records and a cycle with nothing to read has no RED.
 7. **Roadmap authoring and the scheduler.** The last piece, and the one that keeps frontier judgment in the loop. By now everything downstream of a roadmap diff is a graph.
 
 ## Open questions
@@ -861,3 +774,5 @@ These are the places where the design is a hypothesis, not a finding.
 - **Cost per completed task, not per call.** Many small calls plus validators plus retries versus one frontier call is not obviously cheaper. The claim is that it is cheaper *and* more legible. The first should be measured on a real feature before the second is used to justify it.
 - **Derived dependency edges assume declared symbol touches.** An AC or step that under-declares produces a false independence. The failure is bounded (a conflict or a wrong-reason `still-red`), but how often it happens in practice determines whether the scheduler's parallelism is real or nominal.
 - **The authoring workflow's validator is the compiler and the enumeration test.** That proves the graph is well-formed. It does not prove the graph encodes the rule correctly. The known-good hand-written graph is the only oracle for that, and there is one of it.
+- **Whether an oracle authored by a model is an oracle worth measuring.** The framework can prove a test was executed, that it failed on its assertion rather than on its scaffolding, and that the crafter never touched it. It cannot prove the test asserts the *right* thing. The rules bound to that leaf — a total relation in both directions, the declared public port, no invented expected result — are prose refuted by a small model, which is exactly the class this design is least confident about elsewhere.
+- **None of it has been run against a real model.** Every graph is enumerated, every gate is real, and the worked example is delivered end to end — with the inference removed. As of this cut no Anthropic credential was available in the environment: `ANTHROPIC_API_KEY` is unset and there is no `ant` CLI to check, so the `todo:*` commands refuse by name rather than proceeding, and nothing here fabricates a transcript. Every number in this document is a path count, a test count or a wall clock. None of them is a token count, an acceptance rate, or a cost, and none of the three questions above can be answered until one is.
