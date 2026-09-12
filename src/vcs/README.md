@@ -11,10 +11,10 @@ imports nothing from here, and `src/vcs/executor.ts` imports the `Effect` and
 `EffectResult` types from `src/core/effects.ts` and nothing else from the
 framework. Everything else under `src/vcs/` does not know the framework exists.
 
-**87 tests, 1.9 s, no network, no key, no model.** The verification stages are
+**95 tests, 3.0 s, no network, no key, no model.** The verification stages are
 injected everywhere except one file, so "typecheck failed" is an input rather
 than a compiler run; `real-tools.test.ts` runs the real `bunx tsc --noEmit` and
-`bun test` stages once, for 1.1 s of that total.
+`bun test` stages once, for most of that total.
 
 ## Map to the design document
 
@@ -66,7 +66,7 @@ What the inventory recognises, which is exactly what a lease can be taken on:
 | `type-alias` | type alias declarations |
 | `enum` | enum declarations |
 | `variable` | `const` / `let` / `var` declarators, outside a function body |
-| `test` | a `test(...)` or `it(...)` call whose first argument is a string, named by that string, with enclosing `describe(...)` labels as its container path |
+| `test` | a `test(...)` or `it(...)` call whose first argument is a string, named by that string, with enclosing `describe(...)` labels as its container path. A modifier — `test.skip`, `test.todo`, `test.only`, `test.failing` — is the **same** test, marked: identity is `(kind, container, name)` and a modifier is none of those, which is what makes stripping a pending marker a body edit rather than a rename |
 
 **The walk stops at a function-like symbol and descends into a class.** A
 function's body is its content, not a container of separately addressable
@@ -161,7 +161,15 @@ what identity delta they declare, and what lease mode they require.
 7. **Typecheck stage.** Pluggable; `bunx tsc --noEmit` over the project by
    default. `rejected: typecheck`.
 8. **Tests stage.** Pluggable; `impactedTests(symbolIds)` then
-   `bun test <file> -t <name>` per target by default. `rejected: tests`.
+   `bun test <file> -t <name>` per target by default. `rejected: tests`, with
+   the failing target's id on the result, because a caller routes on whether it
+   is one of its own. The impacted set **excludes any test this write is itself
+   rewriting**: running the very test you just activated to decide whether you
+   were allowed to activate it makes a pending acceptance test unactivatable,
+   since its first honest run fails by design. Every other test that reaches
+   the file still runs, so "did you break something else" is still answered,
+   and a production symbol's write is unaffected because its id is not a test
+   id.
 9. **Policy stage.** A stub that passes, because neither of § 6.1's policy
    mechanisms is built and saying so by passing beats pretending to check.
 10. **Commit.** Re-key the file, refresh every range and hash, bump the versions
@@ -181,7 +189,7 @@ The result union is deliberately the same shape as `EffectResult`'s:
 |---|---|
 | `committed { version, seq, verification }` | `committed { version }` |
 | `conflict { currentVersion }` | `conflict { currentVersion }` |
-| `rejected { by, detail }` | `rejected { by }` |
+| `rejected { by, detail, failed? }` | `rejected { by, detail? }` |
 | `infra-failed { detail }` | `infra-failed` |
 
 `by` is `structural \| contract \| typecheck \| tests`, which is
@@ -325,10 +333,13 @@ And the two effects that are not writes:
 - **`append-trail`** becomes a `trail` event under the task. The exhaustion
   trail of a step whose validator was never satisfied is provenance, and the
   event log is the provenance store.
-- **`upsert-artifact`** comes back `infra-failed`. The VCS is the data plane for
-  code; artifact rows are the other half of the design's state layer and no
-  executor is wired for them, which is an infrastructure fact rather than a
-  rejection.
+- **`upsert-artifact`** goes to the `ArtifactStore` the executor was handed
+  (`src/artifacts/store.ts`), under the same optimistic version check
+  `replace-symbol` gets one column over. The VCS is the data plane for CODE and
+  is not becoming the data plane for artifact rows: the store is a separate
+  module with its own database, and this is a route rather than an absorption.
+  Without a store it is still `infra-failed`, because an executor with nowhere
+  to write must not report that it wrote.
 
 The `Effect` union did **not** need extending. `replace-symbol` already carries
 `symbolId`, `expectedVersion` and `body`; the lease and the intent are the
@@ -419,6 +430,28 @@ not be writing lease ids into effect payloads.
     to the lease under which they occurred" and § 5.4 needs to read that link
     back at release. A log that stores the link and cannot query it would have
     forced a second bookkeeping structure that could drift from it.
+
+14. **The tests stage excludes any test the write is itself rewriting.** § 6.1
+    says the stage runs the impact-scoped subset without addressing the case
+    where the write's own target IS one of those tests. Running it to decide
+    whether the write was allowed makes activating a pending acceptance test
+    impossible, because its first honest run fails by design and that failure
+    is the caller's own next observation. See the write path, step 8.
+
+15. **A test's modifier does not change its identity.** § 4.1 lists what a test
+    symbol is without addressing `test.skip` / `test.todo` / `test.only` /
+    `test.failing`. They are recognised, and they map to the same identity key
+    as the unmodified call, because identity is `(kind, container, name)`. The
+    consequence is the point: a caller stripping a pending marker declares no
+    identity change and the structural stage agrees with it.
+
+16. **`StageOutcome`'s failed variant and `WriteResult`'s rejected gained
+    `failed?`.** The ids of the targets that failed, when the stage can name
+    them, which `bunTests` can. A caller routing "the test I was making pass is
+    still failing" against "I broke a different one" needs them, and that is a
+    set membership rather than a judgement. A stage with nothing to name leaves
+    it absent rather than reporting an empty set, which would claim that
+    nothing failed.
 
 ## Not built yet
 

@@ -338,6 +338,8 @@ What collapses once artifacts are rows:
 
 A step output schema and an artifact row schema are the same type, derived from one place. A classifier cannot produce a shape the table cannot hold, and `upsert-artifact` fails with `rejected: schema` exactly the way `replace-symbol` fails with `rejected: typecheck`.
 
+The store is built, as `src/artifacts/`: a version column on every row, the optimistic version check `upsert-artifact` already declares, an append-only event log of every accepted upsert, and a read of the body a row held at any past version. Both effect executors route to it.
+
 The closed enum lives in the requirement row. A requirement carries `decisions: ["needed", "not-needed", "cannot-tell"]`; the graph reads it rather than hardcoding it.
 
 ### Graph topology as data, decision functions as code
@@ -650,10 +652,16 @@ The same shape written with bounded loops is three nested `loop` nodes, and the
 nesting is the thing the back-edge drawing was hiding.
 
 ```
-activate-at ─► run-tests.red ─branch─┬─ red-observed ──────► cycle
-                                     ├─ already-green ─────► human   (the AT is vacuous)
-                                     ├─ harness-failed ────► human
-                                     └─ exhausted ─────────► human
+oracle ─► oracle.route ─branch─┬─ located ────────────► activate-at
+                               └─ missing-at ─────────► human   (nobody wrote the AT)
+
+activate-at ─► activate.verdict ─branch─┬─ committed ─────► run-tests.red
+                                        └─ everything else ► human
+
+run-tests.red ─► red ─branch─┬─ red-observed ──────► cycle
+                             ├─ already-green ─────► human   (the AT is vacuous)
+                             ├─ harness-failed ────► human
+                             └─ exhausted ─────────► human
 
 cycle  = loop(body: test-loop, until: gates are clean, max: 2) ─► cycle.verdict
 │
@@ -691,9 +699,12 @@ The sub-branch inside `test-loop`, where a still-red suite is classified before
 it is retried:
 
 ```
-run-tests ─► test.route ─branch─┬─ green ─────────────► test-loop  (until goes true)
-                                ├─ still-red ─────────► diagnose
-                                └─ everything else ───► test-loop  (iterate, or blocked)
+run-tests ─► test.route ─branch─┬─ green ─────────────────► test-loop  (until goes true)
+                                ├─ still-red ─────────────► diagnose
+                                ├─ broke-other ───────────► test-loop  (iterate)
+                                ├─ harness-failed ────────► test-loop  (blocked)
+                                ├─ selection-refused ─────► test-loop  (blocked)
+                                └─ not-run ───────────────► test-loop  (iterate)
 
 diagnose ─► diagnose.route ─branch─┬─ impl-wrong ──────► test-loop  (iterate: implement)
                                    ├─ at-wrong ────────► fix-acceptance-test ─► test-loop
@@ -710,6 +721,37 @@ current process catches only if a reviewer notices. `harness-failed` is distinct
 from `still-red` so a flaky run does not burn the implement retry budget, and
 `infra-failed` on the write is distinct from `rejected` for the same reason one
 level down.
+
+The `oracle` ahead of RED locates the step's acceptance tests. It does not
+author them. DISTILL pre-authors the bodies with a pending marker, so a roadmap
+row's acceptance obligations each name where their assertion lives, and the
+oracle resolves those locators against the VCS symbol inventory. Every
+obligation resolved is `located`; any obligation with no locator, or a locator
+naming no live test, is `missing-at` and goes to a person under
+`missing-acceptance-test`, because nothing in this graph may write an assertion
+the step is then measured against. `activate-at` then strips the pending marker
+off each located test through the write path, one `replace-symbol` per test at
+the version the inventory reported. Neither node is a leaf: resolving a locator
+is a lookup and stripping a marker is a string operation, and a model asked to
+do either could get it wrong in a way nothing downstream would catch. The
+marker convention is `test.skip(` to `test(`, chosen because a symbol's
+identity is its kind, container and name, and a modifier is none of those: the
+strip is a body edit rather than a rename, which is what lets it through a
+write path that refuses an undeclared identity change.
+
+`run-tests` is not a leaf either, and the reason is sharper. Whether the suite
+passed is what running it answers, so the node emits a `run-tests` effect and
+`test.route` is a pure function of the typed result and the step's own
+acceptance-test ids. A committed run is `green`. A run rejected by the tests
+gate whose failing tests are all the step's own is `still-red`, which is what
+`diagnose` then classifies; one that names anything else is `broke-other`, a
+different owner and not something the diagnosis leaf has evidence about. A run
+rejected by `contract` is the selecting leaf reaching below the impact floor,
+which nothing inside the cycle could repair, so it unwinds to a person. An
+`infra-failed` run is `harness-failed`, and so is a `conflict`, because running
+a suite claims no version and there is no optimistic check for it to lose. A
+model asked "did the suite pass" would be a second source of truth for a fact
+the runner already produced.
 
 There is one `human` node and it sits outside all three loops, which is what the
 body-boundary convention forces: a loop body leaves only through the loop's own
@@ -731,7 +773,7 @@ bound cannot be raised by a model, and running out of it is not a route to
 
 ### What decomposes and what stays wide
 
-The crafter today is one big model doing everything in the diagram. Most nodes are narrow leaves: classify a test outcome, classify a lint finding, decide whether a diff matches the design. Each is a small model with a validator.
+The crafter today is one big model doing everything in the diagram. Most nodes are narrow leaves: classify why a suite is still red, classify a lint finding, decide whether a first run of a newly activated test is vacuous. Each is a small model with a validator. Some nodes decompose further than that and stop being leaves at all: locating an acceptance test is a lookup, stripping its pending marker is a string operation, and reading whether the suite passed is reading an effect's typed result. A node whose answer a cheaper thing already produces does not get a model.
 
 A failing test is classified before it is retried. `diagnose` answers
 `impl-wrong | at-wrong | design-missing | harness-failed`, and each cause routes
@@ -756,7 +798,15 @@ What stays hard is the roadmap itself. Decomposing a design into steps that are 
 
 DELIVER is sequential today because one big model holds one context and one linear log. Sequencing is a property of the executor, not the work. Once the roadmap is a DAG in rows and the executor is a scheduler, the frontier is every step whose in-edges are all `accepted`, and the frontier runs concurrently.
 
-Three things bound the parallelism. One of them changes how roadmaps should be authored.
+This is built, as `src/core/scheduler.ts` plus `src/examples/nwave/deliver/pipeline.ts`. The scheduler is generic: a row is `{ id, dependencies }`, a run is an injected `runOne`, and the frontier is every row whose dependencies all read `accepted`. The pipeline is the composition: it reads `roadmap_steps` rows out of the artifact store, instantiates the fixed step cycle once per row with that row's obligations, predicted touches and authority, and runs the ready set up to a concurrency limit.
+
+State is a projection rather than something the scheduler holds. Each finished run appends a `step_runs` row carrying the step id, the run id, the outcome and a sequence number, and a step's status is read back as the latest of those. The scheduler persists nothing of its own: it asks for each row's status, reports each outcome, and re-reads. That is the stance nwave's `delivery_state.py` takes, where the next step is derived from persisted facts and never decided, and it buys the property that matters here: a scheduler that died mid-feature restarts by reading rather than by remembering. A row in flight has nothing persisted yet, so it reads `pending` and is simply run again.
+
+Resource leases serialize shared test infrastructure and nothing else. A row declares the names it needs, the scheduler takes the whole set atomically before the run and releases it after, and two rows that share one name serialize on that name while two rows that share none run together. Taking the set at once is what makes it deadlock-free, since a run never holds one name while waiting for another.
+
+A suspended row blocks only its subtree, and that falls out of the frontier rule rather than being enforced: a dependent of a row that is not `accepted` never becomes ready, and every row not downstream of it keeps running. Answering the suspension resumes that row through the framework's own `resume` and re-evaluates the frontier in the same call, so a person's answer continues the feature rather than the row.
+
+Three things still bound the parallelism. One of them changes how roadmaps should be authored.
 
 - **Dependency edges are only as good as the author declared them.** A frontier model will call two steps independent that both touch the same symbol. The VCS catches this at write time as `conflict`, so the failure is a bounded retry, not corruption. A high conflict rate between two steps means the decomposition was wrong, and that is a metric to feed back to authoring. Better: do not hand-author edges. Each AC declares the symbols it exercises; each step declares the symbols it will write. Derive `step_edges` from symbol overlap. The author proposes steps and ACs; the scheduler computes the DAG. That removes the highest-error part of roadmap authoring from the model.
 - **Shared test infrastructure needs leases the way symbols do.** Two steps with disjoint symbols can both need the same VM, the same kernel table, the same port. A `run-tests` effect acquires resource leases, and the test-impact graph says which resources each step's tests touch. Steps sharing none run fully parallel; steps sharing the kernel serialize on that one effect and nothing else. Overdrive's net-slot partitioning and `host-kernel-shared` nextest group are this problem solved by hand.
