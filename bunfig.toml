@@ -1,0 +1,4 @@
+# The test suite is `src/`. `targets/` is a template project a run copies, and
+# `runs/` holds those copies; neither is part of this repository's own suite.
+[test]
+root = "src"

@@ -26,5 +26,9 @@
     "noUnusedLocals": false,
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
-  }
+  },
+  // `targets/` is a template project with its own tsconfig, and `runs/` holds
+  // copies of it. Neither is this repository's own source; the copies are
+  // typechecked by the write path's own `tsc` stage, inside the run.
+  "exclude": ["node_modules", "targets", "runs"]
 }
