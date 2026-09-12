@@ -163,13 +163,13 @@ what identity delta they declare, and what lease mode they require.
 8. **Tests stage.** Pluggable; `impactedTests(symbolIds)` then
    `bun test <file> -t <name>` per target by default. `rejected: tests`, with
    the failing target's id on the result, because a caller routes on whether it
-   is one of its own. The impacted set **excludes any test this write is itself
-   rewriting**: running the very test you just activated to decide whether you
-   were allowed to activate it makes a pending acceptance test unactivatable,
-   since its first honest run fails by design. Every other test that reaches
-   the file still runs, so "did you break something else" is still answered,
-   and a production symbol's write is unaffected because its id is not a test
-   id.
+   is one of its own. The impacted set **excludes every test THIS BATCH is
+   rewriting** — the lease's whole symbol set, not just the write in hand:
+   running the very test you just activated to decide whether you were allowed
+   to activate it makes a pending acceptance test unactivatable, since its
+   first honest run fails by design. Every other test that reaches the file
+   still runs, so "did you break something else" is still answered, and a
+   production symbol's write is unaffected because its id is not a test id.
 9. **Policy stage.** A stub that passes, because neither of § 6.1's policy
    mechanisms is built and saying so by passing beats pretending to check.
 10. **Commit.** Re-key the file, refresh every range and hash, bump the versions
@@ -431,12 +431,21 @@ not be writing lease ids into effect payloads.
     back at release. A log that stores the link and cannot query it would have
     forced a second bookkeeping structure that could drift from it.
 
-14. **The tests stage excludes any test the write is itself rewriting.** § 6.1
-    says the stage runs the impact-scoped subset without addressing the case
-    where the write's own target IS one of those tests. Running it to decide
-    whether the write was allowed makes activating a pending acceptance test
+14. **The tests stage excludes every test the BATCH is rewriting.** § 6.1 says
+    the stage runs the impact-scoped subset without addressing the case where
+    the write's own target IS one of those tests. Running it to decide whether
+    the write was allowed makes activating a pending acceptance test
     impossible, because its first honest run fails by design and that failure
     is the caller's own next observation. See the write path, step 8.
+
+    The filter is over the LEASE's symbol set rather than the write in hand,
+    and that widening was forced by a target with two pending tests behind one
+    stub: a step whose acceptance criterion has two acceptance tests activates
+    both, as two writes under one lease, and a per-write filter leaves the
+    first-activated test in the second one's impacted set — where it fails, by
+    design, because the production code it asserts is still a stub. The second
+    activation was then refused for the first one's honest red. The lease is
+    what names the batch, so the lease is what the filter is over.
 
 15. **A test's modifier does not change its identity.** § 4.1 lists what a test
     symbol is without addressing `test.skip` / `test.todo` / `test.only` /

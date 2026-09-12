@@ -1,6 +1,7 @@
 # nWave as a consumer of the framework
 
-The three directories here are one consumer's waves. The framework lives in `src/core`, `src/harness`, `src/bindings`, `src/vcs`, and `src/artifacts`; this directory holds what a consumer owns: the graphs, the requirement rows, the prompts, the model bindings, and the fixtures. nWave is the consumer, and Overdrive is the first project it delivers.
+The four directories here are one consumer's waves, plus the target they are
+pointed at. The framework lives in `src/core`, `src/harness`, `src/bindings`, `src/vcs`, and `src/artifacts`; this directory holds what a consumer owns: the graphs, the requirement rows, the prompts, the model bindings, and the fixtures. nWave is the consumer, and Overdrive is the first project it delivers.
 
 The three connect through data, not through each other's code:
 
@@ -11,6 +12,9 @@ roadmap/   a request     ──►  roadmap rows in the artifact store   (roadma
                                         │
 deliver/   the scheduler reads the rows, takes the frontier, and runs the fixed step cycle once per row,
            recording each outcome as a step_runs row. Status is derived from those rows, never held.
+                                        │
+todo/      the composition that points the two at a real project — `targets/todo`, copied into a run
+           directory — and three commands that drive it against real models, with a run report.
 ```
 
 An agent never writes a workflow. It fills in leaves. The graphs below are fixed; the roadmap is the only thing authored per feature, and it is rows.
@@ -84,22 +88,78 @@ What is a model call and what is not:
 
 The end-to-end test in `pipeline.test.ts` runs a two-step roadmap against a temp TypeScript project with real `test.skip` scaffolds, real VCS writes, and a real `bun test`, with every leaf answered from the journal. It takes under a second.
 
+## `todo/` — the two waves pointed at a real project
+
+Files: `request.ts` (the one request, and the `roadmaps` row id), `run-dir.ts` (the run directory and the design source), `models.ts` (which model runs which leaf), `evidence.ts` (the RED evidence, measured), `report.ts` (the run report), `render.ts`, the four command scripts `roadmap.ts` / `review.ts` / `deliver.ts` / `resume.ts`, the report command `summary.ts`, and `todo.test.ts`.
+
+### The target
+
+[`targets/todo/`](../../../targets/todo) is a tiny TypeScript project: a `TodoStore` with `add`, `complete`, `remove` and `list`. `add` and `list` are implemented; **`complete` and `remove` are stubs whose bodies throw**. `test/todo.test.ts` holds eight acceptance tests, four active and **four pending behind `test.skip(`** — the marker convention the oracle locates and `activate-at` strips. `design.md` is the authority: the whole public surface, the behaviour of each method, and the locator of every pending test.
+
+The walking-skeleton shape is the point. The stub *symbols* exist with their declared signatures, so a `replace-symbol` effect has a target and the gap is a missing body rather than a missing surface — which is what the framework can actually write, since `Effect` has no way to create a file or a symbol.
+
+**It is a template and is never mutated.** Every run copies it.
+
+### The run directory
+
+```
+runs/<name>/
+  todo/              the copied target, which the VCS writes into
+  vcs.sqlite         symbol registry, lease table, event log
+  artifacts.sqlite   roadmaps, roadmap_steps, step_runs
+  journal.sqlite     what each step decided, keyed by content
+  mastra.sqlite      engine snapshots, so a parked run survives exit
+  report.jsonl       one line per leaf call
+  run.json           the manifest: which roadmap, which parked run
+```
+
+Five stores, all files rather than `:memory:`, because the commands are separate PROCESSES. `runs/` is gitignored.
+
+The **design source** every leaf reads is `design.md` plus the VCS symbol inventory, and the addition is load-bearing rather than decorative: `predictedTouches` and `implement`'s `symbolId` are opaque VCS ids assigned at track time, so a model that has never seen the inventory names one that does not exist and every write it proposes comes back `rejected: contract`.
+
+### The three commands
+
+```
+ANTHROPIC_API_KEY=... bun run todo:roadmap first          # author, park at human-review
+ANTHROPIC_API_KEY=... bun run todo:review  first approve  # resume in a second process, persist the rows
+ANTHROPIC_API_KEY=... bun run todo:deliver first          # the step cycle, once per row
+                      bun run todo:report  first          # the table. No key: it reads a file
+```
+
+- **`todo:roadmap`** copies the target, tracks it, and runs the roadmap authoring workflow. `decompose` is `anthropic/claude-opus-5`; `validate-slices` and every validator are `anthropic/claude-haiku-4-5`; `validate-shape` and `measure-disjointness` are pure functions. It runs to the `human-review` suspension, prints the proposed roadmap, the shape defects and the disjointness result, prints the run id, and exits. Nothing is persisted to the artifact store, because `persist` sits after the review.
+- **`todo:review <approve|revise|abandon> [notes]`** resumes that run **in a second process**. The run id is in `run.json`, the snapshot is in `mastra.sqlite`, and the graph is recompiled from source. `approve` leaves the loop and `persist` writes the rows; `revise` re-drives `decompose` with the notes, from inside the loop.
+- **`todo:deliver`** reads the rows and runs the step cycle once per row at **concurrency 1**. `implement` is `anthropic/claude-sonnet-5`; every other leaf is Haiku. The oracle, the activation and the suite are not models. Every write is gated by a real `tsc --noEmit` and a real impact-scoped `bun test`, and the whole suite runs once at the end. A parked row prints a `todo:resume` line.
+- **`todo:resume <row> <commit|abandon>`** answers a parked DELIVER row, also in a fresh process: `record` persisted the run id on the row's `step_runs` row, so the projection that answers "is this row parked" also answers "which run".
+
+No escalation is wired, deliberately: `escalateTo` is unset, so the report's exhaustion count is the number of decisions the *small* models could not get past their own validators.
+
+### The report
+
+Every leaf call appends one line to `report.jsonl` — run, row, step, attempt, model, decision, whether it was accepted, the validator's verdict and violations, the mechanical-check failures, and the token counts. A journal HIT writes nothing, because no model was called. `bun run todo:report <name>` prints one row per leaf: calls, decisions, first-attempt rate, exhaustions, validator rejections, mechanical failures, tokens.
+
+The gap between `calls` and `decided` is the number worth reading: it is what the validator and the mechanical checks cost, in inference, to keep the graph honest.
+
+Three facts join into a line and they come from three places: the attempt from `runStep`'s observer seam, the row from the per-row observer the pipeline builds, and the tokens from `mastraAgent`'s `onUsage`. Token attribution is **order-based**, which is why the deliver command runs at concurrency 1; a line written at a higher concurrency carries `concurrent: true` and its token columns are not to be trusted.
+
+### The RED evidence is measured, not supplied
+
+`run-tests.red` is a leaf whose question is a judgement — "is this acceptance test vacuous?" — so it reads runner output. The target's pending tests are `test.skip`, so running the project as it stands reports them SKIPPED, and a classifier handed that would answer `already-green` and park. `evidence.ts` therefore copies the run's project to a scratch directory, strips every marker there, runs the suite, and hands over what it printed. That is the output the acceptance tests actually produce against the stub bodies, byte for byte.
+
 ## Running things
 
 ```
-bun test src/examples/nwave         # all three examples, no network, no key
+bun test src/examples/nwave         # all four, no network, no key
 bun run smoke                        # DISTILL against a real Haiku through Mastra
 bun run smoke:deliver                # DELIVER against Haiku plus three Claude Code subagents
 ```
 
-Both smoke scripts refuse to run without `ANTHROPIC_API_KEY`. There is no roadmap smoke script yet.
+Every script that calls a model refuses to run without `ANTHROPIC_API_KEY`.
 
-**Nothing in this directory has been run against a real model.** The claim the tests support is that every graph is correct for every combination of answers a model could give. The claim they do not support is that a real model, given these prompts and schemas, gives useful answers at an acceptable rate. Expect the prompts in `steps.ts` and `classify.ts` to need a round of tuning the first time real output comes back.
+**Nothing in this directory has been run against a real model yet, and the commands that would do it now exist.** Before this cut the gap was that there was nothing to run: three graphs, no target, no run directory, no way for a person to answer a suspension in a second process, and no way to record what a real run cost. All four are built and exercised without inference — `todo.test.ts` drives the whole pipeline against a real checkout, with a real `tsc` and a real `bun test` at every write gate, in about 2.7 s. What is still untested is the inference itself: whether a real model, given these prompts and schemas, gives useful answers at an acceptable rate. Expect the prompts in `steps.ts` and `classify.ts` to need a round of tuning the first time real output comes back, and expect the report to be how you find out.
 
 ## Not built on the consumer side
 
 - An `author-at` leaf on the acceptance-designer binding for obligations whose test does not exist yet. It needs a `create-file` write the VCS does not have, so a missing test parks for a person today.
-- A roadmap smoke script, and the first real-model run of `decompose`.
 - Derived `step_edges` from measured touches. The scheduler runs the `dependencies` the roadmap persisted; the disjointness pass adds what the author missed but does not replace hand-authored edges.
-- DISTILL fed from a real `test-scenarios` artifact rather than a hand-built scenario.
-- RED classifies seeded evidence. `run-tests.red` should read the first real run's output instead.
+- DISTILL fed from a real `test-scenarios` artifact rather than a hand-built scenario, and pointed at the todo target like the other two.
+- RED reading an effect's result rather than a string. `evidence.ts` produces the string honestly — the target's own suite, markers stripped, in a scratch copy — but the built version makes the RED run an effect whose typed result the leaf reads, which is a graph change and is not made.

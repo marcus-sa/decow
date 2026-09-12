@@ -2,7 +2,7 @@
 
 A prototype of the framework described in [`DETERMINISTIC-WORKFLOWS.md`](./DETERMINISTIC-WORKFLOWS.md): a finite graph owns control flow, small models own one decision each, and the whole path space is enumerable before anything runs.
 
-The property the rest of the design rests on is testable in this repo right now, on three graphs: **162 paths through the DISTILL classification graph, 450 through the DELIVER step cycle, and 169 through the roadmap authoring workflow, zero model calls, no API key, no network.** The whole suite — 322 tests, including all 781 of those walked paths through the real Mastra engine — takes **about 10 s**.
+The property the rest of the design rests on is testable in this repo right now, on three graphs: **162 paths through the DISTILL classification graph, 450 through the DELIVER step cycle, and 169 through the roadmap authoring workflow, zero model calls, no API key, no network.** The whole suite — 335 tests, including all 781 of those walked paths through the real Mastra engine — takes **about 9 s**.
 
 DELIVER and the roadmap workflow are the two with cycles in them. Their path spaces are three figures rather than infinite because every repetition in them is a `loop` node with a required bound.
 
@@ -10,16 +10,20 @@ The three examples are one consumer's waves, so they live together under [`src/e
 
 The second half of the repo is the [VCS module](#vcs-module): `replace-symbol` and `run-tests` execute for real, under a lease, through a verification gate, into an append-only event log. `run-tests` is a **union**: the VCS owns the impact floor and the workflow owns selection above it, so a leaf may add a test and can never subtract one. Artifact rows now have [a real database](#artifact-rows) behind them too, so a roadmap outlives the process that authored it.
 
+As of this cut there is something to deliver *to*: [`targets/todo/`](#the-todo-target), a small TypeScript project with two stubbed methods and four pending acceptance tests, plus [three commands](#the-three-commands) that point the roadmap workflow and the step cycle at a copy of it and [a run report](#the-run-report) that records what every leaf call decided and cost. Suspensions are [durable](#durable-snapshots) now, so the human-review gate is one command parking a run and a second command answering it. **No real-model run has been performed yet** — see [The real run](#the-real-run).
+
 ## Install, test, run
 
 ```bash
 bun install
-bun test          # 322 tests, no network, no key, no model, ~10 s
+bun test          # 335 tests, no network, no key, no model, ~9 s
 bun run typecheck # tsc --noEmit
 bun run check     # both
 ```
 
-The two smoke scripts are the only things that talk to a model. Neither is invoked by the test suite and both refuse to run without a key:
+`bunfig.toml` scopes `bun test` to `src/`. `targets/` is a template project a run copies and `runs/` holds those copies; neither is this repository's own suite.
+
+Nothing in the test suite talks to a model. The two smoke scripts and the four `todo:*` commands do, and every one of them refuses to run without a key:
 
 ```bash
 ANTHROPIC_API_KEY=... bun run smoke
@@ -34,6 +38,17 @@ ANTHROPIC_API_KEY=... DW_WORKSPACE=/path/to/repo bun run smoke:deliver
 ```
 
 `smoke` pushes one scenario through four real classifiers and prints each lane verdict, the merge verdict, the terminal or the suspension, and the trace. `smoke:deliver` pushes one roadmap step through the step cycle, with the three diagnosis leaves bound to subagents — see [Bindings](#bindings).
+
+The four `todo:*` commands are the end-to-end path, against a real project rather than a literal:
+
+```bash
+ANTHROPIC_API_KEY=... bun run todo:roadmap first          # author, park at human-review
+ANTHROPIC_API_KEY=... bun run todo:review  first approve  # a SECOND process resumes it
+ANTHROPIC_API_KEY=... bun run todo:deliver first          # the step cycle, once per row
+                      bun run todo:report  first          # the table. No key: it reads a file
+```
+
+See [The todo target](#the-todo-target).
 
 ## Map to the design document
 
@@ -53,6 +68,8 @@ ANTHROPIC_API_KEY=... DW_WORKSPACE=/path/to/repo bun run smoke:deliver
 | `src/examples/nwave/distill/` | § Worked example: DISTILL test-lane classification. Bootstrap steps 2 and 3 — the known-good hand-written graph and its requirement rows. |
 | `src/examples/nwave/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops, with the `oracle` ahead of RED. `pipeline.ts` is bootstrap step 7's second half: the scheduler composed over one roadmap. |
 | `src/examples/nwave/roadmap/` | § DELIVER is two graphs → the roadmap half, and § Framework versus consumer → the authoring workflow. Bootstrap step 7's first half — the roadmap as rows, with two pure decision functions and no generator. |
+| `src/examples/nwave/todo/` | The composition that points the roadmap workflow and the step cycle at a real project, plus the run report. Not a wave: the consumer's own commands. |
+| `targets/todo/` | The delivery target. A template project with two stubbed methods and four pending acceptance tests, copied into a run directory and never mutated in place. |
 | `src/vcs/` | § The agent-native VCS is the effect executor and mechanical verifier, and the whole of [`ai-vcs.md`](./ai-vcs.md) phases 2 to 4. See [`src/vcs/README.md`](./src/vcs/README.md). |
 
 The model bindings live under `src/bindings/` and nothing in `core/` imports them: the design's framework/consumer table puts "which small models, which validator family" on the consumer side, and the smoke scripts are where a consumer picks.
@@ -179,7 +196,7 @@ if (outcome.kind === "suspended") {
 
 - `reason` is a closed enum per workflow; `trail` is the evidence behind it. Together they are the `suspendSchema` payload Mastra persists.
 - The answer is validated by the node's `resumeSchema` before `absorb` sees it, and the graph branches on it like any other decision. A model still never picks a transition — and neither does a free-text human reply.
-- `resume` recompiles the graph. The compilation is a pure function of the graph, so the step ids match the persisted snapshot and the run reattaches by `runId`. That is the same path a different process would take, which is what makes this crash-resume rather than a handle you have to hold onto.
+- `resume` recompiles the graph. The compilation is a pure function of the graph, so the step ids match the persisted snapshot and the run reattaches by `runId`. That is the same path a different process would take — and with a durable runtime it literally is one: `run(wf, state, execute, runtime?)` and `resume(wf, runId, answer, execute, runtime?)` take the runtime whose snapshots they use, so a run parked by one command is answered by another. See [Durable snapshots](#durable-snapshots).
 
 In the DISTILL example the person answers `proceed | abandon | override`. `abandon` rejects. `proceed` and `override` both re-run the merge — as a **second branch node**, not a back edge — whose edge table is terminal on every verdict, so a person's answer cannot bounce the run back to the same person. `override` sets one classifier's lane (and clears its `exhausted` flag, since a person answered what the validator could not), which is what typically clears the block.
 
@@ -205,7 +222,8 @@ Re-running a workflow against a warm journal is byte-identical and spends nothin
 - **`zod`** is Mastra's only peer dependency and the schema language for step outputs, requirement decision spaces, and resume payloads.
 - **`@anthropic-ai/claude-agent-sdk`** is what `src/bindings/claude-code.ts` dispatches a subagent through. It is a runtime dependency because the binding ships in `src/`, but it is imported lazily — `bun test` never loads it, and nothing outside that one file references it.
 - **`tree-sitter`** and **`tree-sitter-typescript`** are the structural layer of the VCS module. The native Node bindings, not `web-tree-sitter` plus wasm grammars, which do not load under bun; see [`src/vcs/README.md`](./src/vcs/README.md#the-parser-native-tree-sitter-not-wasm). Prebuilt binaries ship for every supported platform, so nothing compiles at install time, and the whole surface sits behind a three-method `Parser` interface.
-- **`@mastra/core`** supplies the workflow engine, the `Agent` used by the smoke scripts, and — the reason no storage package was needed — `InMemoryStore` from `@mastra/core/storage`. Snapshots go there, which is what makes suspend/resume work in the test suite with no file, no socket, and no `@mastra/libsql`. See [Not built yet](#not-built-yet) for what that store does *not* give you.
+- **`@mastra/core`** supplies the workflow engine, the `Agent` used by the smoke scripts and the `todo:*` commands, and `InMemoryStore` from `@mastra/core/storage`, which is where a snapshot goes by default.
+- **`@mastra/libsql`** is where a snapshot goes when a run directory is given. See [Durable snapshots](#durable-snapshots) for the measurement behind using two adapters rather than one.
 
 Mastra's model router takes a `provider/model` string (`anthropic/claude-haiku-4-5`), resolves `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from the environment itself, and needs no provider package — so `ai`, `@ai-sdk/anthropic`, and `@ai-sdk/openai` are not here. The `@ai-sdk/provider*` packages still under `node_modules` are Mastra's own transitive dependencies, not ours.
 
@@ -533,6 +551,85 @@ One honest finding from building that: with the impact floor covering the step's
 
 **5 tests, ~0.8 s** for the whole file, including five real `bun test` spawns. A `bun test` of one file with one test costs about 30 ms, which is what makes a real gate affordable in a test suite at all.
 
+## Durable snapshots
+
+`resume` rebuilds the graph rather than holding a live handle — the compilation is a pure function of the graph, so the step ids match the snapshot the engine persisted and the run reattaches by `runId`. The only thing standing between "a parked run is resumable from a fresh compile" and "a parked run is resumable from a fresh **process**" was where that snapshot lived.
+
+```ts
+export const openWorkflowRuntime = (url = ":memory:"): WorkflowRuntime => …
+run(wf, state, execute, runtime?)
+resume(wf, runId, answer, execute, runtime?)
+```
+
+`:memory:` is the default and is what the whole suite runs on. A `file:` URL opens libSQL, and that is what makes the roadmap workflow's human-review gate two commands instead of one: `todo:roadmap` parks a run and exits, a person reads it, `todo:review` opens a new runtime over the same file and continues the same run. `src/core/durable-snapshots.test.ts` proves it the only way that means anything — two runtime instances over one file, the first dropped before the second is built — and pairs it with the negative, a second runtime on a *different* file that cannot see the parked run.
+
+**Two adapters rather than one, and the split is measured.** Running the whole suite on `LibSQLStore({ url: ":memory:" })` also works, and takes **20.6 s** against **4.6 s** on `InMemoryStore`: the 781 enumerated paths write a snapshot per step, and a SQL round trip per write is 4.5× the cost of a map write. The durable path needs a database; the in-memory one needs a map.
+
+## The todo target
+
+[`targets/todo/`](./targets/todo) is what the two waves are pointed at. A `TodoStore` with `add`, `complete`, `remove` and `list`; `add` and `list` implemented; **`complete` and `remove` stubs whose bodies throw**; eight acceptance tests in `test/todo.test.ts`, four active and **four pending behind `test.skip(`**; and a `design.md` that is the authority for the whole public surface.
+
+The walking-skeleton shape is the point rather than a convenience. `Effect` has `replace-symbol` and no way to create a file or a symbol, and all three of the write path's operations resolve an existing symbol id first — so a stub is what gives DELIVER something to write into. The missing behaviour is a gap in a body, which the framework can close; a missing *symbol* is a gap it cannot.
+
+**The template is never mutated.** Every run copies it to `runs/<name>/todo/` and works there.
+
+### The three commands
+
+```
+ANTHROPIC_API_KEY=... bun run todo:roadmap first          # author, park at human-review
+ANTHROPIC_API_KEY=... bun run todo:review  first approve  # resume in a second process
+ANTHROPIC_API_KEY=... bun run todo:deliver first          # the step cycle, once per row
+                      bun run todo:report  first          # the table. No key: it reads a file
+```
+
+and `todo:resume <name> <row> <commit|abandon>` for a DELIVER row that parked. A run directory holds the copied project plus five files — `vcs.sqlite`, `artifacts.sqlite`, `journal.sqlite`, `mastra.sqlite`, `report.jsonl` — and `run.json`, because the commands are separate processes and nothing is held between them. `runs/` is gitignored.
+
+Models: `decompose` on `anthropic/claude-opus-5`, `implement` on `anthropic/claude-sonnet-5`, every other leaf and every validator on `anthropic/claude-haiku-4-5`. No escalation is wired, deliberately — `escalateTo` unset is what makes the report's exhaustion count the number of decisions the *small* models could not get past their own validators.
+
+**The design source is `design.md` plus the VCS symbol inventory**, and the addition is load-bearing: `predictedTouches` and `implement`'s `symbolId` are opaque VCS ids assigned at track time, so a model that has never seen the inventory names one that does not exist and every write it proposes comes back `rejected: contract`.
+
+Full detail in [`src/examples/nwave/README.md`](./src/examples/nwave/README.md#todo--the-two-waves-pointed-at-a-real-project).
+
+### The stubbed end-to-end
+
+`src/examples/nwave/todo/todo.test.ts` is the same path with the inference removed: the target copied to a temp directory, the roadmap authored through the roadmap workflow's own graph and persisted by its own `persist`, the scheduler reading the rows back, and one DELIVER run per row that locates the four pending tests, activates them through the write path, writes both stub bodies, and is gated by a **real** `bunx tsc --noEmit` and a **real** impact-scoped `bun test` on every write. Then the project's own suite runs: 8 pass, 0 skip, exit 0. **About 2.7 s, zero model calls.**
+
+## The run report
+
+Every leaf call appends one JSON line to `runs/<name>/report.jsonl`:
+
+```json
+{"run":"first","row":"01-01","step":"deliver.implement","attempt":2,"model":"anthropic/claude-sonnet-5",
+ "decision":"written","accepted":true,"verdict":"pass","violations":[],"mechanical":[],
+ "workerTokens":{"input":2104,"output":312},"validatorTokens":{"input":1580,"output":44}}
+```
+
+`bun run todo:report <name>` turns those into a table: per leaf, how many model calls it made, how many decisions those calls produced, how many were accepted first try, how many exhausted, how many attempts a validator or a mechanical check refused, and the tokens. **The gap between `calls` and `decided` is the number worth reading** — it is what the validator and the mechanical checks cost, in inference, to keep the graph honest, and it is the open question the design says should be measured before the legibility argument is used to justify the approach.
+
+A journal HIT writes no line, because no model was called; counting a replay as a call would make every rate a fiction.
+
+Three facts join into a line from three places: the attempt from `runStep`'s observer seam, the row from the per-row observer the pipeline builds, and the tokens from `mastraAgent`'s `onUsage`. Token attribution is **order-based** — inside one `runStep` the calls are worker, then validator, and the observer fires after both — so it holds only while one leaf is in flight, which is why `todo:deliver` runs at concurrency 1 and why a line written at a higher concurrency carries `concurrent: true`.
+
+## The real run
+
+**Not performed.** At the time of this cut no Anthropic credential was available in the environment: `ANTHROPIC_API_KEY` is unset and there is no `ant` CLI to check. Every `todo:*` command that calls a model refuses by name rather than proceeding, and nothing in this repository fabricates a transcript.
+
+Everything except the inference is exercised without it. What the real run would answer, and nothing else can:
+
+- whether Opus, given `design.md` plus the symbol inventory, proposes a decomposition a person would approve;
+- whether a Haiku validator refuting a Haiku worker catches what a frontier reviewer catches;
+- what a completed task costs, in calls and in tokens.
+
+To perform it:
+
+```bash
+ANTHROPIC_API_KEY=... bun run todo:roadmap first
+#   read the printed roadmap, then
+ANTHROPIC_API_KEY=... bun run todo:review first approve
+ANTHROPIC_API_KEY=... bun run todo:deliver first
+                      bun run todo:report first
+```
+
 ## Deviations from the design
 
 The document's code sketches are sketches. Where one of them is underspecified or does not survive contact with a type checker, here is what changed and why.
@@ -563,7 +660,7 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 13. **The graph is recompiled per `run` and per `resume`.** Compilation is a pure function of the graph and costs about 0.2 ms, so `run` builds the Mastra workflow each time rather than caching it. That is what lets `resume` take a `Workflow<S>` rather than a live handle: it rebuilds the identical workflow and reattaches by `runId`.
 
-14. **Tests beyond the two in the document.** The document shows two tests. This repo ships 152 outside the VCS module (95 more inside it), including the compiler's graph-bug rejections, six malformed-loop rejections, the snapshot assertions behind suspend/resume, a `Run.restart()` exercise, the `runStep` unit tests, the `leaf` constructor's ownership of the exhaustion trail, the Claude Code binding against a scripted `query`, the three mechanical checks, the effect executor's optimistic concurrency, the path walker's own arithmetic, and a source scanner that fails the build if `Date.now`, `Math.random`, or `new Date(` appears in the contract, the compiler, or any decision-function file. That scanner was verified by planting a violation in `compile.ts` and watching it fail.
+14. **Tests beyond the two in the document.** The document shows two tests. This repo ships 240 outside the VCS module (95 more inside it), including the compiler's graph-bug rejections, six malformed-loop rejections, the snapshot assertions behind suspend/resume, a cross-process resume over a libSQL file, a `Run.restart()` exercise, the `runStep` unit tests, the `leaf` constructor's ownership of the exhaustion trail, the Claude Code binding against a scripted `query`, the three mechanical checks, the effect executor's optimistic concurrency, the path walker's own arithmetic, the observer seam's view of a refused attempt, the todo target delivered end to end against a real gate, and a source scanner that fails the build if `Date.now`, `Math.random`, or `new Date(` appears in the contract, the compiler, or any decision-function file. That scanner was verified by planting a violation in `compile.ts` and watching it fail.
 
 15. **Nested workflow ids carry the path that reached them.** The previous cut named a branch tail `${branchId}=${key}`, which collides once a node is reachable by two different paths and has a branch of its own. DELIVER has exactly that shape: `commit` is reached from `cycle.verdict` and from `human.route`. Ids are now `${parentSegmentId}>${branchId}=${key}`, unique by construction. The top-level id is unchanged (`wf:${wf.start}`), so `resume` still reattaches.
 
@@ -618,14 +715,24 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 40. **The scheduler holds a parked row's `runId` in memory, and `RowStatus` has no `running`.** State is a projection, so nothing about an *unfinished* run is persisted, and `pending` therefore covers both "never run" and "in flight" — which is the honest reading, since the two are indistinguishable to a reader and the right thing to do with an unfinished run is to run it. The scheduler knows its own in-flight set and does not start one twice; a second scheduler over the same rows would, which is why `record` is the consumer's place to refuse that (the pipeline does, by id collision on `step_runs`).
 
-Source is ~16,370 lines: ~9,430 of implementation and ~6,940 of tests. The VCS module is ~4,780 of that, split ~2,830 implementation and ~1,960 tests; the DELIVER example is ~3,760, split ~2,080 and ~1,670; the roadmap example is ~2,280, split ~1,650 and ~630; the artifact store is ~420, split ~190 and ~230.
+41. **`runStep` gained an optional observer, and so did `leaf`.** New surface the design does not name, forced by the run report. The journal records what a step DECIDED and the exhaustion trail exists only when the validator was never satisfied; neither records what a *successful* step cost — how many attempts it took, which mechanical check refused the first one, what the validator said about the second. Those facts exist only inside `runStep`'s loop, and a report claiming a first-attempt acceptance rate needs them. So `runStep(def, raw, journal, observe?)` and `leaf({ …, observe? })` take a `StepObserver`, which is handed one `StepAttempt` per attempt and is **never read back**: nothing in the framework branches on an observation and removing the sink changes no trajectory. A journal hit emits nothing, because no model was called. The three graph builders thread it through as an optional last argument.
+
+42. **`mastraAgent` gained `onUsage`, and the shape it hands over is unshaped.** Token counts come from the provider layer and there is more than one shape of them in this dependency graph: `@mastra/core`'s own `TokenUsage` is flat (`promptTokens` / `completionTokens`) and the AI SDK's `LanguageModelUsage` nests (`inputTokens.total`). A binding that picked one would report zero against the other and say nothing about it, so the binding hands over whatever the provider reported, verbatim, and the consumer's `readTokens` reads all three known shapes — yielding an EMPTY object rather than a zero for anything else, because "the provider did not say" and "the call cost nothing" are different claims.
+
+43. **`openPipeline` gained a per-row observer factory, an `onRun` hook and `resumeParked`.** The observer is `(rowId) => StepObserver` rather than one observer, because a record's most useful field is which roadmap step it belongs to and the journal key does not carry it — the row id is inside the hashed input. `onRun` exists because the `step_runs` row records the outcome and the run id but the TRACE only exists on the outcome. `resumeParked` reads the parked run id off the row's own `step_runs` row instead of out of the scheduler's memory, which is deviation 40's limitation answered where the projection already lives: the same rows that say "this row is parked" say "under which run".
+
+44. **The tests stage excludes every test the BATCH is rewriting, not just the write in hand.** Deviation 34 established the exclusion and scoped it per write. The todo target broke it: a step whose acceptance criterion has TWO pending tests activates both, as two writes under one lease, and the per-write filter leaves the first-activated test in the second one's impacted set — where it fails, by design, because the production code it asserts is still a stub — so the second activation is refused for the first one's honest red. The lease is what names the batch, so the lease is what the filter is over. A defect found by pointing the framework at a real project, which is what the target is for.
+
+45. **`bun test` is scoped to `src/` by `bunfig.toml`.** `targets/todo/test/todo.test.ts` is a *fixture*, not a test of this repository, and `runs/` holds copies of it; both would otherwise be collected by a bare `bun test` at the root. The root `tsconfig.json` excludes the same two directories, because the target has its own and the copies are typechecked by the write path's own `tsc` stage, inside the run.
+
+Source is ~18,830 lines: ~11,080 of implementation and ~7,750 of tests. The VCS module is ~4,780 of that, split ~2,830 implementation and ~1,960 tests; the DELIVER example is ~3,760, split ~2,080 and ~1,670; the roadmap example is ~2,280, split ~1,650 and ~630; the artifact store is ~420, split ~190 and ~230.
 
 ## Not built yet
 
 - **Emitting a Mastra dynamic-workflow JSON definition from a `Workflow<S>`.** Mastra's dynamic workflows (beta) are the design's "graph topology as data" already built: a JSON graph over registered agents, tools, and nested workflows, validated and persisted by `addDynamicWorkflow()`. The compiler currently emits live `createStep` closures; emitting the JSON definition instead is what would let the authoring workflow write a graph without writing source.
-- **Durable snapshots.** Suspend and resume run against `InMemoryStore`, so a parked run survives a fresh compile but not a process restart. Pointing the runtime at a durable adapter is a storage swap, and it is not wired.
 - **An `author-at` leaf, which needs a `create-file` write the VCS does not have.** The `oracle` resolves an obligation's locator and reports `missing-at` when nothing answers it, which routes to a person. The design's other option is to author the missing acceptance test on the acceptance-designer's binding — and that cannot be built here honestly: `Effect` has `replace-symbol` and no way to create a file or a symbol that does not exist, and the write path's three operations all resolve an existing symbol id first. Faking it by rewriting a neighbouring symbol's body would put an assertion in a file the registry never observed. So the node is a person, and the leaf is listed here rather than stubbed.
-- **RED still classifies evidence the caller seeded.** `run-tests.red` is a leaf and its `evidence` is supplied rather than produced — the pipeline hands it a string. Its question is genuinely a judgement (`already-green` is "this acceptance test is vacuous", not "it passed"), so it is a leaf on purpose; but the *input* to that judgement should be the first run's real output, and making it so means the RED run becomes an effect whose result the leaf reads. That is a smaller change than it was before `run-tests` became effect-driven, and it is not made.
+- **RED reads a string rather than an effect's result.** `run-tests.red` is a leaf and its `evidence` is a string the pipeline hands it. Its question is genuinely a judgement (`already-green` is "this acceptance test is vacuous", not "it passed"), so it is a leaf on purpose. The string is no longer invented — `src/examples/nwave/todo/evidence.ts` produces it by copying the run's project to a scratch directory, stripping every pending marker, and running the suite, so what the leaf classifies is the output the acceptance tests actually produce against the stub bodies. The built version makes the RED run an effect whose typed result the leaf reads; that is a graph change and it is not made.
+- **A real-model run.** Every command exists and every one of them refuses without a key. None has been run against a model. See [The real run](#the-real-run).
 - **Derived `step_edges`.** The scheduler reads the `dependencies` the roadmap row declares, and the roadmap workflow's disjointness measurement is what adds the ones the author missed. The design's stronger version derives the DAG from symbol overlap *instead of* hand-authored edges, which would remove the highest-error part of roadmap authoring from the model. The measurement exists; the replacement does not.
 - **The proposal-shape binding.** `claudeCode` is the opaque shape: the agent edits the workspace through its own tools and the framework never sees the writes, so it cannot lease them, verify them, or roll them back — and a `conflict` is unrepresentable, because nothing crossed the effect boundary. The proposal shape returns the agent's writes as `replace-symbol` effects, which `vcsExecutor` now knows how to commit. The executor exists; the binding that would produce a proposal does not.
 - **`src/vcs`'s own remaining items**, in full in [`src/vcs/README.md`](./src/vcs/README.md#not-built-yet). The ones that matter to the framework: the **ast-grep pattern layer** and the **policy stage** it would carry (the stage is a stub that passes); the **LSP layer**, so there is no cross-file reference resolution and the typecheck stage shells out to `tsc` over the whole project; **coverage-refined impact**, so the test-impact graph is the static import graph alone; the **asynchronous verification tier**, so a slow test blocks a write rather than committing it `pending`; **wait-die** and **queued acquires**, so an acquire is fail-fast and hold-and-request has no fallback; **lease-level rollback**, so a lease whose second write fails leaves the first committed; **git export**; **cross-repository coordination**; and **authorization**, because a session is a string and any session may lease anything.
