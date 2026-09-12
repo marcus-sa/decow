@@ -22,11 +22,10 @@ import { join } from "node:path";
 import type { RunOutcome } from "../../../core/workflow.ts";
 import { HUMAN_DECISIONS, type HumanDecision, type State } from "../deliver/graph.ts";
 import { openPipeline } from "../deliver/pipeline.ts";
-import { redEvidence } from "./evidence.ts";
 import { todoDeliverDefs } from "./models.ts";
 import { heading, renderDeliverTrail, renderTrace } from "./render.ts";
 import { openReport } from "./report.ts";
-import { openRunDir, requireCredential, requireRunName, shortPath } from "./run-dir.ts";
+import { openRunDir, requireCredential, requireRunName, runSuite, shortPath } from "./run-dir.ts";
 
 const USAGE = `usage: bun run todo:resume <run-name> <row-id> <${HUMAN_DECISIONS.join("|")}>`;
 
@@ -48,7 +47,7 @@ const main = async (): Promise<void> => {
   const dir = openRunDir(name);
   const report = openReport({ path: join(dir.path, "report.jsonl"), run: name });
   const defs = todoDeliverDefs({ onUsage: report.onUsage });
-  const evidence = redEvidence(dir.project);
+  const evidence = runSuite(dir.project);
 
   const outcomes = new Map<string, RunOutcome<State>>();
   const { resumeParked, rows } = openPipeline({
@@ -84,8 +83,8 @@ const main = async (): Promise<void> => {
   }
 
   console.log(heading("the todo project's own suite"));
-  const suite = Bun.spawnSync(["bun", "test"], { cwd: dir.project });
-  console.log(`${suite.stdout.toString()}${suite.stderr.toString()}`.trim());
+  const suite = runSuite(dir.project);
+  console.log(suite.output);
   console.log(`\nexit code: ${suite.exitCode}`);
   console.log(`\nreport:  bun run todo:report ${name}`);
   dir.close();

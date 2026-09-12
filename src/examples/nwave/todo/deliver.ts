@@ -31,11 +31,10 @@ import { join } from "node:path";
 import type { RunOutcome } from "../../../core/workflow.ts";
 import { openPipeline } from "../deliver/pipeline.ts";
 import type { State } from "../deliver/graph.ts";
-import { redEvidence } from "./evidence.ts";
 import { describeModels, todoDeliverDefs } from "./models.ts";
 import { heading, renderDeliverTrail, renderTrace } from "./render.ts";
 import { openReport } from "./report.ts";
-import { openRunDir, requireCredential, requireRunName, shortPath } from "./run-dir.ts";
+import { openRunDir, requireCredential, requireRunName, runSuite, shortPath } from "./run-dir.ts";
 
 const main = async (): Promise<void> => {
   requireCredential("todo:deliver");
@@ -51,14 +50,15 @@ const main = async (): Promise<void> => {
   const report = openReport({ path: join(dir.path, "report.jsonl"), run: name });
   const defs = todoDeliverDefs({ onUsage: report.onUsage });
 
-  // The RED evidence, measured rather than supplied: the target's own suite
-  // with every pending marker stripped, in a scratch copy. See `evidence.ts`.
-  const evidence = redEvidence(dir.project);
+  // The evidence every classifying leaf quotes: the project's own suite, run
+  // for real, verbatim. The oracles are already active and already measured
+  // red, so this is the crafter looking at exactly what the runner printed.
+  const evidence = runSuite(dir.project);
 
   console.log(describeModels());
   console.log(`\nrun:      ${shortPath(dir.path)}`);
   console.log(`roadmap:  ${request}`);
-  console.log(`evidence: the target's suite with the markers stripped, exit ${evidence.exitCode}, ${evidence.output.length} chars`);
+  console.log(`evidence: the project's own suite, exit ${evidence.exitCode}, ${evidence.output.length} chars`);
 
   const outcomes = new Map<string, RunOutcome<State>>();
   const { scheduler, rows } = openPipeline({
@@ -115,8 +115,8 @@ const main = async (): Promise<void> => {
  */
 const printSuite = (project: string): void => {
   console.log(heading("the todo project's own suite"));
-  const suite = Bun.spawnSync(["bun", "test"], { cwd: project });
-  console.log(`${suite.stdout.toString()}${suite.stderr.toString()}`.trim());
+  const suite = runSuite(project);
+  console.log(suite.output);
   console.log(`\nexit code: ${suite.exitCode}`);
 };
 

@@ -17,13 +17,13 @@
  * payload: a set of test ids is not a closed enum, and letting one drive an
  * edge would make the path space the size of the suite.
  *
- * Ahead of RED sits the `oracle`, and it LOCATES rather than authors: DISTILL
- * pre-authored the acceptance-test bodies with a pending marker, so this graph
- * resolves each obligation's locator against the symbol inventory and
- * `activate-at` strips the marker through the write path. A missing test is a
- * person's, because nothing here may write an assertion the step is then
- * measured against. Neither node is a leaf — a lookup and a string operation
- * are not judgements.
+ * THE CYCLE STARTS AT `implement`, and there is no RED node ahead of it. RED is
+ * a fact this graph READS rather than one it establishes: `des oracle` authored
+ * the oracle, software executed it, and the recorded verdict was `red` before
+ * this row was ever ready (`src/examples/nwave/distill/oracle/`). A row with no
+ * recorded red oracle never becomes ready, so "no edge bypasses RED" is a
+ * readiness precondition here rather than a node — see `../distill/README` in
+ * the nwave example's own README.
  *
  * `run-tests` is NOT a leaf. It emits a `run-tests` effect and `test.route`
  * routes the typed result, because whether the suite passed is what running it
@@ -71,12 +71,6 @@ import {
   type Workflow,
 } from "../../../core/workflow.ts";
 import {
-  resolveObligations,
-  stripPendingMarker,
-  type OracleIndex,
-  type TestSymbol,
-} from "./oracle.ts";
-import {
   COMMIT_OUTCOMES,
   REFACTOR_OUTCOMES,
   SELECT_TESTS_OUTCOMES,
@@ -86,7 +80,6 @@ import {
   type LeafId,
   type LeafInput,
   type LeafOutputFor,
-  type RedOutcome,
   type SelectTestsOutcome,
   type StepUnderDelivery,
 } from "./steps.ts";
@@ -129,7 +122,6 @@ export type WriteOutcome = EffectResult["outcome"];
 
 /** The decision each leaf last returned. Cleared when its validator refused. */
 export type Leaves = {
-  "run-tests.red"?: RedOutcome;
   implement?: LeafOutputFor<"implement">["decision"];
   "select-tests"?: SelectTestsOutcome;
   diagnose?: DiagnoseOutcome;
@@ -150,9 +142,6 @@ export type HumanDecision = HumanAnswer["decision"];
 
 /** The closed set of reasons this workflow may park for a person. */
 export const HUMAN_REASONS = [
-  "missing-acceptance-test",
-  "activation-failed",
-  "already-green",
   "harness-failed",
   "design-gap",
   "validator-exhausted",
@@ -187,29 +176,13 @@ export type State = {
 
   leaf: Leaves;
   /**
-   * The test symbols this step's acceptance obligations resolved to, as the
-   * `oracle` located them. `activate-at` strips their pending markers; their
-   * ids are the set membership `test.route` reads to tell "my own acceptance
-   * test is still red" from "I broke something else".
-   */
-  located: TestSymbol[];
-  /** Obligation ids the oracle could not resolve to a test. */
-  missingAt: string[];
-  /**
-   * What the oracle found, recorded rather than recomputed — the same shape
-   * the roadmap example's `shape` and `disjointness` use. `blockedReason`
-   * needs to tell "the oracle ran and found nothing" from "the oracle has not
-   * run", and a step that declares NO obligations makes the two
-   * indistinguishable from `missingAt` alone.
-   */
-  oracle?: OracleVerdict;
-  /** How the activation writes landed. Absent until `activate-at` ran. */
-  activation?: WriteOutcome;
-  /**
-   * The test ids this step's own acceptance tests resolved to. Derived from
-   * `located` by the oracle rather than recomputed, so a run resumed after a
-   * suspension reads the ids the oracle saw and not the ones the inventory
-   * holds now.
+   * The test ids of this step's own oracle, as the inventory reported them
+   * when the row was made ready. Carried rather than resolved here: the oracle
+   * was authored and measured red in its own run, and this graph reads the
+   * result rather than re-deriving it.
+   *
+   * They are the set membership `test.route` uses to tell "my own oracle is
+   * still red" from "I broke something else".
    */
   acceptanceTests: string[];
   /** How `implement`'s write landed. Cleared when `implement` did not write. */
@@ -252,8 +225,6 @@ export const seed = (
   impacted: [...impacted],
   symbolVersion: 0,
   leaf: {},
-  located: [],
-  missingAt: [],
   acceptanceTests: [],
   extra: [],
   iterations: {},
@@ -270,18 +241,9 @@ export const seed = (
  * the enclosing loops' `until` true, and the run unwound immediately.
  */
 export const blockedReason = (s: State): HumanReason | undefined => {
-  // Ahead of everything: an obligation with no acceptance test behind it has
-  // no RED to observe, and nothing in this graph may author one — the design
-  // is the contract and a missing test is the acceptance designer's.
-  if (s.oracle === "missing-at") return "missing-acceptance-test";
-  if (s.activation !== undefined && s.activation !== "committed") return "activation-failed";
-  if (s.leaf["run-tests.red"] === "already-green") return "already-green";
-  if (
-    s.leaf["run-tests.red"] === "harness-failed" ||
-    testVerdict(s) === "harness-failed" ||
-    s.leaf.diagnose === "harness-failed"
-  )
+  if (testVerdict(s) === "harness-failed" || s.leaf.diagnose === "harness-failed") {
     return "harness-failed";
+  }
   // A selection that reached below the impact floor is the selecting leaf's
   // own contract violation, and there is nothing in the cycle that could
   // repair it: the floor is the VCS's and the leaf may only add to it.
@@ -302,21 +264,6 @@ export const blockedReason = (s: State): HumanReason | undefined => {
  * satisfied and the leaf therefore decided nothing. Every branch that follows
  * a leaf routes over one of these.
  */
-/**
- * Whether every obligation resolved to a test. Not a leaf's answer: a locator
- * either names a live test symbol or it does not.
- */
-export type OracleVerdict = "located" | "missing-at";
-
-/**
- * How the activation writes landed. `not-run` is defensive rather than
- * reachable — `activate-at` is entered only with at least one located test —
- * and it routes to a person rather than throwing, because rule 3 says an
- * outcome the graph cannot act on is still data.
- */
-export type ActivateVerdict = WriteOutcome | "not-run";
-
-export type RedVerdict = RedOutcome | "exhausted";
 export type WriteVerdict = WriteOutcome | "exhausted";
 export type SelectVerdict = SelectTestsOutcome | "exhausted";
 
@@ -354,20 +301,6 @@ export type CycleVerdict = "clean" | "design-gap" | "blocked";
  */
 export type TestPhase = "implement" | "run-tests";
 
-/** What the oracle recorded. Absent means it has not run. */
-export const oracleVerdict = (s: State): OracleVerdict => s.oracle ?? "missing-at";
-
-/**
- * What the oracle found, from the resolutions themselves. Every obligation
- * resolved, or at least one did not — and a step with NO obligations is
- * `missing-at` too: a step whose completion nothing asserts has no acceptance
- * test to activate, which is the same finding by a different route.
- */
-export const oracleFinding = (located: readonly unknown[], missing: readonly unknown[]): OracleVerdict =>
-  missing.length === 0 && located.length > 0 ? "located" : "missing-at";
-
-export const activateVerdict = (s: State): ActivateVerdict => s.activation ?? "not-run";
-export const redVerdict = (s: State): RedVerdict => s.leaf["run-tests.red"] ?? "exhausted";
 export const writeVerdict = (s: State): WriteVerdict => s.write ?? "exhausted";
 export const selectVerdict = (s: State): SelectVerdict => s.leaf["select-tests"] ?? "exhausted";
 
@@ -470,7 +403,6 @@ export const humanTrail = (s: State): unknown[] => [
   { designGap: s.designGap },
   { impacted: s.impacted, extra: s.extra },
   { tests: testVerdict(s), acceptanceTests: s.acceptanceTests, testRun: s.testRun },
-  { missingAt: s.missingAt, activation: s.activation, located: s.located.map((t) => t.id) },
 ];
 
 /**
@@ -548,28 +480,9 @@ const absorbLoop =
     loopExhausted: exit.exhausted ? (s.loopExhausted ?? id) : s.loopExhausted,
   });
 
-/**
- * The first outcome in a batch that is not `committed`, or `committed`. A
- * partial activation is not a smaller success: if one acceptance test could
- * not be activated the step has no RED to observe, and naming the first
- * failure keeps the reason deterministic in the order the effects were
- * emitted.
- */
-export const batchOutcome = (results: readonly EffectResult[]): WriteOutcome | undefined => {
-  const writes = results.filter((r) => r.effect.type === "replace-symbol");
-  if (writes.length === 0) return undefined;
-  return (writes.find((r) => r.outcome !== "committed") ?? writes[0])?.outcome;
-};
-
 export const deliverGraph = (
   journal: Journal,
   defs: DeliverDefs,
-  /**
-   * The symbol inventory the `oracle` resolves locators against. A read port
-   * rather than the VCS itself: the graph needs to look a test up and the
-   * enumeration walk needs to be able to answer without a database.
-   */
-  oracle: OracleIndex,
   /**
    * Where each leaf's attempts are reported. Optional and inert: a leaf is
    * still one `runStep` call whose `decision` is the only thing the graph
@@ -577,104 +490,8 @@ export const deliverGraph = (
    */
   observe?: StepObserver,
 ): Workflow<State> => ({
-  start: "oracle",
+  start: "cycle",
   nodes: {
-    /* ---- RED: locate the acceptance tests, activate them, watch them fail */
-
-    /**
-     * Locate, do not author. DISTILL pre-authored these bodies with a pending
-     * marker and this is where they are found; a gap is the acceptance
-     * designer's to close and goes to a person.
-     */
-    oracle: {
-      type: "step",
-      run: async (s) => {
-        const resolved = await resolveObligations(oracle, s.step.acceptance);
-        const located = resolved.flatMap((r) => (r.outcome === "located" ? [r.test] : []));
-        const missingAt = resolved.flatMap((r) => (r.outcome === "missing" ? [r.obligationId] : []));
-        return {
-          state: {
-            ...s,
-            located,
-            missingAt,
-            oracle: oracleFinding(located, missingAt),
-            acceptanceTests: located.map((t) => t.id),
-          },
-          effects: [],
-        };
-      },
-      absorb: (s) => s,
-      next: "oracle.route",
-    },
-
-    // A missing acceptance test is a block, not a retry: nothing in this graph
-    // may write one, and inventing an assertion to have something to fail is
-    // the testing theatre `already-green` exists to catch one node later.
-    "oracle.route": branch<State, OracleVerdict>(oracleVerdict, {
-      located: "activate-at",
-      "missing-at": "human",
-    }),
-
-    /**
-     * Strip the pending marker off every located test, through the write path
-     * like any other change. Not a leaf: the strip is a string operation, and
-     * a model that got it wrong would be rewriting the assertion this step is
-     * measured against.
-     *
-     * A test somebody already activated needs no activation, so a body with
-     * no marker produces no effect. When that is true of every located test
-     * there is nothing to write and the activation is `committed` by having
-     * nothing to do.
-     */
-    "activate-at": {
-      type: "step",
-      run: async (s) => {
-        const pending = s.located.flatMap((test) => {
-          const body = stripPendingMarker(test.body);
-          return body === undefined ? [] : [{ test, body }];
-        });
-        return {
-          state: pending.length === 0 ? { ...s, activation: "committed" } : { ...s, activation: undefined },
-          effects: pending.map(({ test, body }) => ({
-            type: "replace-symbol",
-            symbolId: test.id,
-            expectedVersion: test.version,
-            body,
-          })),
-        };
-      },
-      // The same fold `implement` uses, minus the rebase: there is no loop
-      // around this node to retry into, so a conflict is a person's.
-      absorb: (s, results) => {
-        const outcome = batchOutcome(results);
-        return outcome === undefined ? s : { ...s, activation: outcome };
-      },
-      next: "activate.verdict",
-    },
-
-    // Only a committed activation reaches RED. Every other outcome is the
-    // world disagreeing with what the oracle read, and there is no iteration
-    // here to absorb it.
-    "activate.verdict": branch<State, ActivateVerdict>(activateVerdict, {
-      committed: "run-tests.red",
-      conflict: "human",
-      rejected: "human",
-      "infra-failed": "human",
-      "not-run": "human",
-    }),
-
-    "run-tests.red": leafNode("run-tests.red", defs, journal, { next: "red" }, observe),
-
-    // A test that passes before implementation is testing theatre, and a
-    // harness failure is not a red test. Both are first-class outcomes routed
-    // to a person rather than swallowed.
-    red: branch<State, RedVerdict>(redVerdict, {
-      "red-observed": "cycle",
-      "already-green": "human",
-      "harness-failed": "human",
-      exhausted: "human",
-    }),
-
     /* ---- the cycle: test, refactor, gate, repeat until clean ------------ */
 
     cycle: loop<State>({

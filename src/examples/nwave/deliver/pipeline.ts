@@ -31,43 +31,7 @@ import { vcsExecutor } from "../../../vcs/executor.ts";
 import type { Vcs } from "../../../vcs/index.ts";
 import { identityKey } from "../../../vcs/structural/parser.ts";
 import { deliverGraph, seed, type State } from "./graph.ts";
-import { parseLocator, type OracleIndex, type TestSymbol } from "./oracle.ts";
 import type { DeliverDefs, StepUnderDelivery } from "./steps.ts";
-
-/* ----------------------------------------------------------- the inventory */
-
-/**
- * The `oracle`'s read port, over a real VCS symbol inventory.
- *
- * A locator is `path::name` or a bare `name`. A bare name that matches more
- * than one test resolves to NOTHING: an ambiguous locator names nothing in
- * particular, and activating the wrong test is worse than reporting that the
- * roadmap did not say which.
- *
- * This lives with the composition rather than in `./oracle.ts` so that the
- * graph — and the walk of it — can read the port's type without dragging a
- * database and a native parser behind it.
- */
-export const vcsOracleIndex = (vcs: Vcs): OracleIndex => ({
-  locate: async (locator: string): Promise<TestSymbol | undefined> => {
-    const { path, name } = parseLocator(locator);
-    const files = path === undefined ? vcs.registry.files() : [vcs.registry.file(path)];
-
-    const found: TestSymbol[] = [];
-    for (const file of files) {
-      if (file === undefined) continue;
-      for (const symbol of vcs.registry.symbolsOf(file.id)) {
-        if (symbol.kind !== "test" || symbol.name !== name) continue;
-        found.push({
-          id: symbol.id,
-          version: symbol.version,
-          body: file.content.slice(symbol.start, symbol.end),
-        });
-      }
-    }
-    return found.length === 1 ? found[0] : undefined;
-  },
-});
 
 /* --------------------------------------------------------------- the rows */
 
@@ -235,7 +199,6 @@ export const openPipeline = (options: PipelineOptions) => {
   const { artifacts, vcs, journal, defs, design } = options;
   const rows = readRoadmap(artifacts, options.roadmapId);
   const byId = new Map(rows.map((row) => [row.id, row] as const));
-  const oracle = vcsOracleIndex(vcs);
 
   const rowFor = (id: string): RoadmapRow => {
     const row = byId.get(id);
@@ -270,7 +233,7 @@ export const openPipeline = (options: PipelineOptions) => {
     runOne: async (r) => {
       const row = rowFor(r.id);
       return await run<State>(
-        deliverGraph(journal, defs, oracle, options.observe?.(row.id)),
+        deliverGraph(journal, defs, options.observe?.(row.id)),
         stateFor(row),
         executorFor(row),
         options.runtime,
@@ -280,7 +243,7 @@ export const openPipeline = (options: PipelineOptions) => {
     resumeOne: async (r, runId, answer) => {
       const row = rowFor(r.id);
       return await resume<State>(
-        deliverGraph(journal, defs, oracle, options.observe?.(row.id)),
+        deliverGraph(journal, defs, options.observe?.(row.id)),
         runId,
         answer,
         executorFor(row),
@@ -334,7 +297,7 @@ export const openPipeline = (options: PipelineOptions) => {
       throw new Error(`pipeline: row ${rowId} is not parked, so there is no run to resume`);
     }
     const outcome = await resume<State>(
-      deliverGraph(journal, defs, oracle, options.observe?.(rowId)),
+      deliverGraph(journal, defs, options.observe?.(rowId)),
       last.runId,
       answer,
       executorFor(row),
@@ -351,7 +314,7 @@ export const openPipeline = (options: PipelineOptions) => {
     return { outcome, statuses: await scheduler.run() };
   };
 
-  return { scheduler, rows, oracle, resumeParked };
+  return { scheduler, rows, resumeParked };
 };
 
 /** A run outcome, in the scheduler's vocabulary. */

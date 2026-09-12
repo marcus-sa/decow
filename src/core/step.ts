@@ -16,8 +16,8 @@ import type { Requirement, Violation } from "./requirement.ts";
 
 /**
  * The seam between a step and a model. Production binds this to a Mastra
- * Agent (see src/examples/nwave/distill/smoke.ts); tests bind a fake, so the test
- * suite never constructs an agent, reads an API key, or opens a socket.
+ * Agent (see src/examples/nwave/deliver/smoke.ts); tests bind a fake, so the
+ * test suite never constructs an agent, reads an API key, or opens a socket.
  *
  * Replaces the design's `LanguageModel` slot from the Vercel AI SDK.
  */

@@ -57,19 +57,19 @@ const source = (name: string, value: number) =>
   `export function ${name}(): number {\n  return ${value};\n}\n`;
 
 /**
- * A PENDING acceptance test: `test.skip`, which the oracle locates and
- * `activate-at` activates. It asserts a value the production symbol does not
- * return yet, so it is genuinely red until `implement` writes one.
+ * The row's oracle, as `des oracle` left it: authored, ACTIVE, and measured
+ * red before the row was ever ready. It asserts a value the production symbol
+ * does not return yet, so it is genuinely red until `implement` writes one.
  */
-const pendingTest = (name: string, value: number) =>
+const oracleFor = (name: string, value: number) =>
   `import { expect, test } from "bun:test";\nimport { ${name} } from "./${name}.ts";\n\n` +
-  `test.skip("${name} returns ${value}", () => {\n  expect(${name}()).toBe(${value});\n});\n`;
+  `test("${name} returns ${value}", () => {\n  expect(${name}()).toBe(${value});\n});\n`;
 
 const PROJECT = {
   "src/alpha.ts": source("alpha", 1),
   "src/bravo.ts": source("bravo", 1),
-  "src/alpha.test.ts": pendingTest("alpha", 42),
-  "src/bravo.test.ts": pendingTest("bravo", 7),
+  "src/alpha.test.ts": oracleFor("alpha", 42),
+  "src/bravo.test.ts": oracleFor("bravo", 7),
 };
 
 /** The body `implement` writes. The symbol's span includes `export`. */
@@ -196,7 +196,6 @@ const persistRoadmap = async (roadmap: Roadmap, effects: ReturnType<typeof memor
  * is in the input, so two rows never share a key.
  */
 const HAPPY: Partial<Record<LeafId, string>> = {
-  "run-tests.red": "red-observed",
   implement: "written",
   "select-tests": "no-extra",
   refactor: "refactored",
@@ -225,7 +224,7 @@ const payloadFor = (leaf: LeafId, rowId: string, symbolId: string, body: string)
  * journal working as designed, and seeding it means saying which half a leaf
  * is in.
  */
-const BEFORE_THE_WRITE: readonly LeafId[] = ["run-tests.red", "implement"];
+const BEFORE_THE_WRITE: readonly LeafId[] = ["implement"];
 
 /** Seed one row's leaves, at the exact keys `runStep` will compute. */
 const seedRow = (
@@ -302,11 +301,10 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     expect(runs.map((r) => `${r.stepId}#${r.seq}`).sort()).toEqual(["01-01#0", "01-02#0"]);
     expect(runs.every((r) => r.outcome === "accepted")).toBe(true);
 
-    // 4. The acceptance tests were activated for real, and the production
-    //    bodies were written for real.
-    expect(project.read("src/alpha.test.ts")).toContain('test("alpha returns 42"');
-    expect(project.read("src/alpha.test.ts")).not.toContain("test.skip(");
-    expect(project.read("src/bravo.test.ts")).toContain('test("bravo returns 7"');
+    // 4. The production bodies were written for real, and the oracles were
+    //    not touched: RED to GREEN is bought by production.
+    expect(project.read("src/alpha.test.ts")).toBe(oracleFor("alpha", 42));
+    expect(project.read("src/bravo.test.ts")).toBe(oracleFor("bravo", 7));
     expect(project.read("src/alpha.ts")).toContain("return 42;");
     expect(project.read("src/bravo.ts")).toContain("return 7;");
 
@@ -314,7 +312,7 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     for (const row of ["01-01", "01-02"]) {
       const events = project.vcs.log.byTask(row);
       expect(events.map((e) => e.kind)).toContain("lease-acquired");
-      expect(events.filter((e) => e.kind === "symbol-modified").length).toBeGreaterThanOrEqual(2);
+      expect(events.filter((e) => e.kind === "symbol-modified").length).toBeGreaterThanOrEqual(1);
       expect(events.filter((e) => e.kind === "tests-run").length).toBeGreaterThanOrEqual(1);
       expect(events.every((e) => e.parentTaskId === REQUEST)).toBe(true);
       // The session is the row id, so two rows in flight hold two leases
@@ -371,9 +369,8 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     // pipeline.
     expect(statuses.get("01-01")).toBe("suspended");
     expect(project.read("src/alpha.ts")).toContain("return 1;");
-    // The activation survived, because it committed before the implement did
-    // not: a rolled-back write restores its own file, not the run.
-    expect(project.read("src/alpha.test.ts")).toContain('test("alpha returns 42"');
+    // The oracle is untouched, because the crafter never held it.
+    expect(project.read("src/alpha.test.ts")).toBe(oracleFor("alpha", 42));
     // And B never became ready, because A was not `accepted`.
     expect(statuses.get("01-02")).toBe("pending");
 

@@ -40,7 +40,9 @@ const EXEMPT = new Set([join(SRC, "vcs/defaults.ts")]);
  * leaves. A clock read in either would make the shape of a roadmap depend on
  * when it was authored, so they are scanned like any branch's `on`. Its
  * schemas and its hand-written fixtures are scanned too: a fixture that read a
- * clock would make the oracle a different roadmap on every run.
+ * clock would make the oracle a different roadmap on every run. DISTILL's
+ * `manifest.ts` is the same shape one wave over: `validate-manifest` is a pure
+ * function of the proposal and the roadmap.
  *
  * The scheduler is scanned for the same reason the compiler is: it decides
  * which rows run, and a frontier that depended on when it was computed would
@@ -60,7 +62,7 @@ const scanned = async (): Promise<string[]> => {
   ]);
   for (const pattern of [
     "examples/**/graph.ts",
-    "examples/**/classify.ts",
+    "examples/**/manifest.ts",
     "examples/**/steps.ts",
     "examples/**/shape.ts",
     "examples/**/disjointness.ts",
@@ -88,13 +90,11 @@ describe("no nondeterminism inside the graph", () => {
     const files = (await scanned()).map((f) => relative(SRC, f));
     expect(files).toContain("core/workflow.ts");
     expect(files).toContain("core/compile.ts");
-    expect(files).toContain("examples/nwave/distill/graph.ts");
     expect(files).toContain("examples/nwave/deliver/graph.ts");
     expect(files).toContain("examples/nwave/roadmap/graph.ts");
     expect(files).toContain("examples/nwave/roadmap/shape.ts");
     expect(files).toContain("examples/nwave/roadmap/disjointness.ts");
     expect(files).toContain("core/scheduler.ts");
-    expect(files).toContain("examples/nwave/deliver/oracle.ts");
     expect(files).toContain("examples/nwave/deliver/pipeline.ts");
     expect(files).toContain("artifacts/store.ts");
     expect(files).toContain("vcs/registry.ts");
@@ -103,7 +103,7 @@ describe("no nondeterminism inside the graph", () => {
     expect(files).toContain("vcs/executor.ts");
     expect(files).toContain("vcs/structural/typescript.ts");
     expect(files).not.toContain("vcs/defaults.ts");
-    expect(files.length).toBeGreaterThanOrEqual(26);
+    expect(files.length).toBeGreaterThanOrEqual(22);
   });
 
   test("no scanned file reads a clock or an RNG", async () => {

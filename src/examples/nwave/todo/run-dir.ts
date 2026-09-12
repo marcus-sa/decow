@@ -71,6 +71,9 @@ export type RunDir = {
   close(): void;
 };
 
+/** The directories every command tracks, in order, when they exist. */
+export const TRACKED = ["src", "test"] as const;
+
 const manifestPath = (path: string): string => join(path, "run.json");
 
 export const readManifest = (path: string): RunManifest =>
@@ -150,8 +153,14 @@ export const openRunDir = (name: string, options: OpenRunOptions = {}): RunDir =
   if (options.track !== false) {
     // `track` returns the tracked file untouched when the path is already
     // known, so a re-open costs a lookup and changes nothing.
-    vcs.trackTree("src");
-    vcs.trackTree("test");
+    //
+    // `test/` is tracked only once it EXISTS. The target ships without one:
+    // the oracle is authored by a `write-file` into `test/`, so the first
+    // command to open this directory finds nothing there and the next one
+    // finds the oracle the previous one wrote.
+    for (const dir of TRACKED) {
+      if (existsSync(join(project, dir))) vcs.trackTree(dir);
+    }
   }
 
   const artifacts = openArtifacts({ path: join(path, "artifacts.sqlite") });
@@ -181,6 +190,26 @@ export const openRunDir = (name: string, options: OpenRunOptions = {}): RunDir =
       artifacts.close();
       vcs.close();
     },
+  };
+};
+
+/** What running the project's own suite printed, and how it exited. */
+export type SuiteRun = { output: string; exitCode: number };
+
+/**
+ * The run's project, tested for real.
+ *
+ * This is the honest source of the `evidence` string every classifying leaf
+ * quotes: the runner's own output, both channels, verbatim. There is nothing
+ * to strip and nothing to reconstruct — the oracles are ACTIVE as `des oracle`
+ * authored them, so what the suite prints against the stub bodies IS the red
+ * the crafter is looking at.
+ */
+export const runSuite = (project: string): SuiteRun => {
+  const run = Bun.spawnSync(["bun", "test"], { cwd: project });
+  return {
+    output: `${run.stdout.toString()}${run.stderr.toString()}`.trim(),
+    exitCode: run.exitCode ?? 1,
   };
 };
 

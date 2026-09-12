@@ -22,11 +22,11 @@
  * a closed decision space and a validator, and the graph branches on `decision`
  * whether the thing behind the binding spent one call or forty turns.
  *
- * Two honest gaps, both in the README's "Not built yet". There is no VCS, so
- * the executor below acknowledges `replace-symbol` rather than landing it; and
- * `claudeCode` is the **opaque** binding shape, so an agent that edited the
- * workspace did so outside the effect boundary, where no lease or version check
- * could see it.
+ * Two honest gaps. There is no VCS, so the executor below acknowledges
+ * `replace-symbol` rather than landing it; and these three leaves run on the
+ * **opaque** `claudeCode` shape, so an agent that edited the workspace did so
+ * outside the effect boundary, where no lease or version check could see it.
+ * The proposal shape is what `smoke:oracle` exercises.
  */
 
 import { claudeCode } from "../../../bindings/claude-code.ts";
@@ -80,22 +80,8 @@ const STEP = {
   predictedTouches: ["ExecDriver::start"],
 };
 
-/**
- * The inventory the `oracle` resolves against. There is no VCS behind this
- * script, so the one acceptance test is answered from a literal — already
- * pending, so the activation has a marker to strip and the write is a real
- * effect the executor below acknowledges.
- */
-const oracle = {
-  locate: async (locator: string) =>
-    locator === STEP.acceptance[0]?.oracleLocator
-      ? {
-          id: "test-submit-to-running",
-          version: 1,
-          body: 'test.skip("a submitted allocation reaches Running", () => {\n  /* … */\n})',
-        }
-      : undefined,
-};
+/** The step's own oracle, as the row carries it in. */
+const ACCEPTANCE_TESTS = ["test-submit-to-running"];
 
 const EVIDENCE =
   "running 1 test\n" +
@@ -152,8 +138,8 @@ const main = async () => {
   console.log(`\nstep ${STEP.id}: ${STEP.criteria}\n`);
 
   const outcome = await run<State>(
-    deliverGraph(memoryJournal(), defs, oracle),
-    seed(STEP, EVIDENCE, IMPACTED),
+    deliverGraph(memoryJournal(), defs),
+    { ...seed(STEP, EVIDENCE, IMPACTED), acceptanceTests: ACCEPTANCE_TESTS },
     acknowledge,
   );
 

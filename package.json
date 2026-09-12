@@ -7,7 +7,6 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun test",
-    "smoke": "bun run src/examples/nwave/distill/smoke.ts",
     "smoke:deliver": "bun run src/examples/nwave/deliver/smoke.ts",
     "todo:roadmap": "bun run src/examples/nwave/todo/roadmap.ts",
     "todo:review": "bun run src/examples/nwave/todo/review.ts",

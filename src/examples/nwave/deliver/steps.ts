@@ -3,32 +3,32 @@
  *
  * nWave's DELIVER wave runs each roadmap step through a RED -> GREEN -> COMMIT
  * cycle with a crafter, a reviewer, a mutation gate, and a phase log. Today
- * that order is enforced after the fact, by hooks checking the log. Here it is
- * enforced by topology: no edge bypasses RED.
+ * that order is enforced after the fact, by hooks checking the log. Here RED is
+ * enforced one layer up, as a readiness precondition: a row whose oracle has no
+ * recorded `red` verdict never becomes ready, so no run of this cycle exists
+ * that skipped it.
  *
  * This file is consumer-side: the closed decision space of each leaf, its
  * requirement rows, and its prompt. The model bindings are injected (see
  * `deliverDefs`), so a test constructs no agent and spends no token.
  *
- * Three leaves classify and their enums are the interesting ones. The rest are
+ * Two leaves classify and their enums are the interesting ones. The rest are
  * generative — "make this AT pass with the minimal change" is code generation,
  * not a closed-enum decision — so their decision space is a singleton and the
  * routable outcome downstream is the effect's result or the validator's.
- *
- * There is no leaf for "activate the acceptance test" either, and for the same
- * kind of reason one step further: locating a test by its declared locator is
- * a lookup and stripping a pending marker is a string operation. See
- * `./oracle.ts`.
  *
  * There is no leaf for "did the suite pass". There used to be, classifying
  * runner output the caller had seeded, and it was the wrong shape: a suite's
  * outcome is the outcome of running it, so the graph asks for a `run-tests`
  * effect and routes the typed result. A model is not needed to read an exit
  * code, and one that could disagree with it is a second source of truth for a
- * fact the runner already answered. `run-tests.red` is still a leaf, because
- * its question is not "did it pass" but "is this acceptance test vacuous",
- * which is a judgement about WHY it passed rather than a reading of whether it
- * did.
+ * fact the runner already answered.
+ *
+ * There is no leaf for RED either, for the same reason one layer further out.
+ * `des oracle` authored the oracle and SOFTWARE executed it: the two roles that
+ * hold an oracle cannot run it, so "this oracle fails on its assertion and not
+ * on its scaffolding" is a property the runner owns and measures. The verdict
+ * is a row this cycle reads, never a judgement it makes.
  *
  * Nothing else here runs a test, writes a symbol, or shells out. The leaves
  * are classifications over evidence the state carries, and `implement`'s
@@ -90,7 +90,6 @@ export type LeafInput = z.infer<typeof LeafInput>;
 /* ------------------------------------------------------------------ leaves */
 
 export const LEAF_IDS = [
-  "run-tests.red",
   "implement",
   "select-tests",
   "diagnose",
@@ -103,10 +102,6 @@ export const LEAF_IDS = [
   "commit",
 ] as const;
 export type LeafId = (typeof LEAF_IDS)[number];
-
-/** The first run of the activated acceptance test, before any production code. */
-export const RED_OUTCOMES = ["red-observed", "already-green", "harness-failed"] as const;
-export type RedOutcome = (typeof RED_OUTCOMES)[number];
 
 /**
  * Which tests to run, ABOVE the impact floor. The floor is the VCS's — the
@@ -169,7 +164,6 @@ export type DesignGapOutcome = (typeof DESIGN_GAP_OUTCOMES)[number];
 
 /** The decision space of each leaf, by id. One table, read by the harness too. */
 export const LEAF_DECISIONS = {
-  "run-tests.red": RED_OUTCOMES,
   implement: IMPLEMENT_OUTCOMES,
   "select-tests": SELECT_TESTS_OUTCOMES,
   diagnose: DIAGNOSE_OUTCOMES,
@@ -293,15 +287,6 @@ export const outcomesAreDistinct = (decisions: readonly string[]): Requirement<L
   decisions,
 });
 
-export const vacuousAtIsTestingTheatre = (decisions: readonly string[]): Requirement<LeafCtx> => ({
-  id: "deliver.already-green-is-testing-theatre",
-  sourceId: "testing.red-scaffolds-and-activation",
-  text:
-    "An acceptance test that passes before any production code is written proves nothing. Report " +
-    "already-green; it is a testing-theatre signal, not a shortcut to COMMIT.",
-  decisions,
-});
-
 /**
  * The rule that makes `design-missing` a route rather than a judgement call. A
  * gap the design left is surfaced to a person; it is never closed by inventing
@@ -393,7 +378,6 @@ export const scopeIsTheStep = (decisions: readonly string[]): Requirement<LeafCt
  * decision spaces without either of them hardcoding the other.
  */
 const REQUIREMENTS: { [K in LeafId]: ((d: readonly string[]) => Requirement<LeafCtx>)[] } = {
-  "run-tests.red": [anchorMustBeVerbatim, vacuousAtIsTestingTheatre, outcomesAreDistinct],
   implement: [noInventedApi, minimalChange],
   "select-tests": [testsMayBeAddedNeverRemoved, selectionMatchesItsDecision],
   diagnose: [anchorMustBeVerbatim, outcomesAreDistinct, designGapIsNotInventedApi],
@@ -409,9 +393,6 @@ const REQUIREMENTS: { [K in LeafId]: ((d: readonly string[]) => Requirement<Leaf
 /* ----------------------------------------------------------------- prompts */
 
 const SYSTEM: Record<LeafId, string> = {
-  "run-tests.red":
-    "You classify the FIRST run of a newly activated acceptance test, before any production code. " +
-    "Answer with one word. Quote the runner output verbatim in `anchor`.",
   implement:
     "You make one acceptance test pass with the minimal change to one symbol. Build only the API the " +
     "design names. Report `written` and return the symbol and its new body.",
@@ -442,7 +423,6 @@ const SYSTEM: Record<LeafId, string> = {
 };
 
 const PROMPT: Record<LeafId, (i: LeafInput) => string> = {
-  "run-tests.red": (i) => `Step ${i.step.id}\n\nRunner output:\n${i.evidence}`,
   implement: (i) =>
     `Step ${i.step.id}\n\nAcceptance criteria:\n${i.step.criteria}\n\n` +
     `The design declares exactly this surface:\n${i.step.design}\n\nRunner output:\n${i.evidence}`,
