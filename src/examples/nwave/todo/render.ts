@@ -31,9 +31,9 @@ export const renderStep = (step: RoadmapStep): string =>
     `      authority:  ${step.authority}`,
     `      depends on: ${step.dependencies.length === 0 ? "(nothing)" : step.dependencies.join(", ")}`,
     `      touches:    ${step.predictedTouches.length === 0 ? "(nothing)" : step.predictedTouches.join(", ")}`,
-    ...step.acceptance.map(
-      (a) => `      ${a.id}: ${a.text}${a.oracleLocator === undefined ? "" : `\n          oracle: ${a.oracleLocator}`}`,
-    ),
+    `      oracle:     ${step.oracle ?? "(none yet: DISTILL has not run)"}`,
+    ...(step.supports.length === 0 ? [] : [`      supports:   ${step.supports.join(", ")}`]),
+    ...step.acceptance.map((a) => `      ${a.id}: ${a.stimulus} -> ${a.expected}`),
   ].join("\n");
 
 export const renderRoadmap = (roadmap: Roadmap): string =>

@@ -155,6 +155,15 @@ export type Verifier = {
 /** The separator a `path::selector` oracle locator uses. */
 export const LOCATOR_SEPARATOR = "::";
 
+/** An oracle locator, split. A bare path selects the whole file. */
+export const parseOracleLocator = (locator: string): { path: string; selector?: string } => {
+  const at = locator.indexOf(LOCATOR_SEPARATOR);
+  if (at < 0) return { path: locator.trim() };
+  const path = locator.slice(0, at).trim();
+  const selector = locator.slice(at + LOCATOR_SEPARATOR.length).trim();
+  return selector.length === 0 ? { path } : { path, selector };
+};
+
 /**
  * The command one oracle locator names.
  *
@@ -165,11 +174,8 @@ export const LOCATOR_SEPARATOR = "::";
  * when they run the printed command by hand.
  */
 export const oracleArgv = (locator: string): string[] => {
-  const at = locator.indexOf(LOCATOR_SEPARATOR);
-  if (at < 0) return ["bun", "test", locator.trim()];
-  const path = locator.slice(0, at).trim();
-  const selector = locator.slice(at + LOCATOR_SEPARATOR.length).trim();
-  return selector.length === 0 ? ["bun", "test", path] : ["bun", "test", path, "-t", selector];
+  const { path, selector } = parseOracleLocator(locator);
+  return selector === undefined ? ["bun", "test", path] : ["bun", "test", path, "-t", selector];
 };
 
 /**

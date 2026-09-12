@@ -41,16 +41,14 @@ import type { Requirement } from "../../../core/requirement.ts";
 import { stepOutput, type ModelBinding, type StepDef } from "../../../core/step.ts";
 
 /**
- * One acceptance obligation of the row, as the roadmap declared it.
- * `oracleLocator` names where its assertion lives when the acceptance designer
- * has already placed it; an obligation without one has no oracle for the
- * `oracle` node to locate, which is the normal state of a roadmap authored
- * before its tests were written.
+ * One acceptance obligation of the row, as DISTILL left it: a stimulus and the
+ * result it expects. The crafter reads both, because "what would I do and what
+ * should I then see" is the question an implementation answers.
  */
 export const AcceptanceObligation = z.object({
   id: z.string(),
-  text: z.string(),
-  oracleLocator: z.string().optional(),
+  stimulus: z.string(),
+  expected: z.string(),
 });
 export type AcceptanceObligation = z.infer<typeof AcceptanceObligation>;
 
@@ -67,6 +65,12 @@ export const StepUnderDelivery = z.object({
   acceptance: z.array(AcceptanceObligation),
   /** Symbol ids or paths the row predicted it would write. */
   predictedTouches: z.array(z.string()),
+  /**
+   * The oracle measuring this row, as DISTILL declared it. Carried so the
+   * crafter can READ the assertion it is being measured against; the executor
+   * is what stops it writing there.
+   */
+  oracle: z.string().optional(),
 });
 export type StepUnderDelivery = z.infer<typeof StepUnderDelivery>;
 

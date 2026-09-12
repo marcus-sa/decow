@@ -60,7 +60,13 @@ import {
   type State,
 } from "./graph.ts";
 import type { Roadmap, RoadmapStep } from "./schema.ts";
-import { roadmapDefs, SLICE_VERDICTS, type SliceVerdict } from "./steps.ts";
+import {
+  acceptanceIsDistills,
+  observationsSayEnough,
+  roadmapDefs,
+  SLICE_VERDICTS,
+  type SliceVerdict,
+} from "./steps.ts";
 
 /** A model binding that fails the test if anything reaches a model. */
 const forbidden = (id: string) => ({
@@ -201,12 +207,12 @@ describe("roadmap graph", () => {
 
     // The person reads the same named defects `decompose` was re-prompted
     // with, which is the whole reason they are rows rather than a boolean.
-    expect(defectsOf(outcome.trail).map((d) => d.kind).sort()).toEqual([
+    expect([...new Set(defectsOf(outcome.trail).map((d) => d.kind))].sort()).toEqual([
       "cycle",
       "dangling-dependency",
       "duplicate-id",
       "empty-authority",
-      "no-acceptance",
+      "observation-too-short",
     ]);
   });
 
@@ -351,12 +357,26 @@ describe("validate-shape names its defects", () => {
     expect(shapeDefects(duplicated)).toContainEqual({ kind: "duplicate-id", stepId: "01-01" });
   });
 
-  test("a step with no acceptance obligation is named", () => {
-    const bare = {
+  test("an observation too short to be worked from is named, with its length", () => {
+    // The check that replaced `no-acceptance` when obligations became
+    // DISTILL's. What ROADMAP can still ask is whether the observation says
+    // enough to decide anything about.
+    const terse = {
       ...KNOWN_GOOD,
-      steps: [{ ...(stepAt(KNOWN_GOOD, 0)), acceptance: [] }, ...KNOWN_GOOD.steps.slice(1)],
+      steps: [{ ...(stepAt(KNOWN_GOOD, 0)), observation: "it works" }, ...KNOWN_GOOD.steps.slice(1)],
     };
-    expect(shapeDefects(bare)).toContainEqual({ kind: "no-acceptance", stepId: "01-01" });
+    expect(shapeDefects(terse)).toContainEqual({
+      kind: "observation-too-short",
+      stepId: "01-01",
+      characters: 8,
+    });
+  });
+
+  test("a proposal with no obligations at all is well-formed, because they are DISTILL's", () => {
+    // The boundary this wave keeps. Refusing a roadmap for not having done a
+    // later wave's job would refuse every roadmap.
+    expect(KNOWN_GOOD.steps.every((step) => step.acceptance.length === 0)).toBe(true);
+    expect(shapeDefects(KNOWN_GOOD)).toEqual([]);
   });
 
   test("a step whose authority is blank is named, whitespace included", () => {
@@ -379,8 +399,75 @@ describe("validate-shape names its defects", () => {
       "dangling-dependency:03-01",
       "duplicate-id:03-01",
       "empty-authority:03-02",
-      "no-acceptance:03-01",
+      "observation-too-short:03-01",
+      "observation-too-short:03-01",
+      "observation-too-short:03-02",
+      "observation-too-short:03-03",
+      "observation-too-short:03-04",
     ]);
+  });
+});
+
+/**
+ * `decompose`'s own mechanical guardrails, which run before a validator model
+ * is spent. Each delegates to `shape.ts`, so the step's guardrail and the
+ * graph's gate cannot drift; the exception is the wave boundary, which is
+ * about what a decomposition is ALLOWED to decide rather than about shape.
+ */
+describe("decompose's mechanical guardrails", () => {
+  const check = (
+    row: (d: readonly string[]) => { check?: (ctx: never) => unknown },
+    output: unknown,
+  ) => row(["proposed", "cannot-decompose"]).check?.({ output } as never);
+
+  test("a proposal that fills in acceptance facts is refused at the model boundary", () => {
+    // The wave boundary, mechanical. What a value must be observed to do is
+    // DISTILL's act; a decomposer that answered it would have its answer
+    // persisted as though a wave had produced it.
+    const filled = {
+      decision: "proposed",
+      payload: {
+        roadmap: {
+          ...KNOWN_GOOD,
+          steps: [
+            {
+              ...(stepAt(KNOWN_GOOD, 0)),
+              acceptance: [{ id: "x", stimulus: "do it", expected: "it happened" }],
+            },
+            ...KNOWN_GOOD.steps.slice(1),
+          ],
+        },
+      },
+    };
+    expect(check(acceptanceIsDistills, filled)).toMatchObject({
+      requirementId: "roadmap.acceptance-facts-are-distills",
+    });
+    // An oracle and a support list are the same finding by the same rule.
+    const oracled = {
+      decision: "proposed",
+      payload: {
+        roadmap: {
+          ...KNOWN_GOOD,
+          steps: [{ ...(stepAt(KNOWN_GOOD, 0)), oracle: "test/a.test.ts::x" }, ...KNOWN_GOOD.steps.slice(1)],
+        },
+      },
+    };
+    expect(check(acceptanceIsDistills, oracled)).not.toBeNull();
+  });
+
+  test("the known-good proposal passes every guardrail", () => {
+    const proposed = { decision: "proposed", payload: { roadmap: KNOWN_GOOD } };
+    expect(check(acceptanceIsDistills, proposed)).toBeNull();
+    expect(check(observationsSayEnough, proposed)).toBeNull();
+  });
+
+  test("a cannot-decompose answer carries no roadmap, so every guardrail passes vacuously", () => {
+    const refused = {
+      decision: "cannot-decompose",
+      payload: { roadmap: { request: REQUEST, steps: [] } },
+    };
+    expect(check(acceptanceIsDistills, refused)).toBeNull();
+    expect(check(observationsSayEnough, refused)).toBeNull();
   });
 });
 

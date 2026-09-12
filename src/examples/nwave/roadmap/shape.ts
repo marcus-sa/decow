@@ -1,8 +1,8 @@
 /**
  * `validate-shape`, as a pure function. No model.
  *
- * The five things nwave-experimental's `read_handover` refuses a persisted
- * handover for, plus the one its parser gets for free. Each is a NAMED defect
+ * The things nwave-experimental refuses a persisted handover for, each a NAMED
+ * defect
  * rather than a boolean, because the defects are the feedback `decompose`
  * reads on the next iteration: "invalid" alone tells a model nothing it can
  * act on.
@@ -37,9 +37,20 @@ export const SHAPE_DEFECT_KINDS = [
   "duplicate-id",
   "dangling-dependency",
   "cycle",
-  "no-acceptance",
+  "observation-too-short",
   "empty-authority",
 ] as const;
+
+/**
+ * The floor an observation has to clear, from nwave-experimental's
+ * `ports/driven_ports/task_invocation_port.py`.
+ *
+ * Forty is measured rather than chosen: the shortest real accepted-turn
+ * DIAGNOSTIC there is 41 characters, so a forty-character floor on the
+ * diagnostic would have left one character of margin against a real answer.
+ * The OBSERVATION is the byte that costs, and forty is the floor it carries.
+ */
+export const MINIMUM_OBSERVATION_CHARACTERS = 40;
 export type ShapeDefectKind = (typeof SHAPE_DEFECT_KINDS)[number];
 
 /**
@@ -52,7 +63,7 @@ export type ShapeDefect =
   | { kind: "duplicate-id"; stepId: string }
   | { kind: "dangling-dependency"; stepId: string; dependency: string }
   | { kind: "cycle"; stepIds: string[] }
-  | { kind: "no-acceptance"; stepId: string }
+  | { kind: "observation-too-short"; stepId: string; characters: number }
   | { kind: "empty-authority"; stepId: string };
 
 /** One defect, rendered for a prompt or a person. */
@@ -66,8 +77,12 @@ export const describeDefect = (defect: ShapeDefect): string => {
       return `step ${defect.stepId} depends on ${defect.dependency}, which is not a step in this roadmap`;
     case "cycle":
       return `the dependency graph has a cycle through ${defect.stepIds.join(" -> ")}`;
-    case "no-acceptance":
-      return `step ${defect.stepId} declares no acceptance obligation`;
+    case "observation-too-short":
+      return (
+        `step ${defect.stepId}'s observation is ${defect.characters} characters; ` +
+        `${MINIMUM_OBSERVATION_CHARACTERS} is the floor, because an observation nobody could ` +
+        `work from is not one`
+      );
     case "empty-authority":
       return `step ${defect.stepId} names no authority`;
   }
@@ -138,7 +153,10 @@ export const shapeDefects = (roadmap: Roadmap): ShapeDefect[] => {
   if (cycle !== undefined) defects.push({ kind: "cycle", stepIds: cycle });
 
   for (const step of roadmap.steps) {
-    if (step.acceptance.length === 0) defects.push({ kind: "no-acceptance", stepId: step.id });
+    const characters = step.observation.trim().length;
+    if (characters < MINIMUM_OBSERVATION_CHARACTERS) {
+      defects.push({ kind: "observation-too-short", stepId: step.id, characters });
+    }
   }
   for (const step of roadmap.steps) {
     if (step.authority.trim().length === 0) {

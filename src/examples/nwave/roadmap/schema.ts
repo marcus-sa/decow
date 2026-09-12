@@ -27,15 +27,25 @@
 import { z } from "zod";
 
 /**
- * One obligation the step must satisfy to be accepted, in the roadmap's own
- * words. `oracleLocator` names where the assertion lives when the acceptance
- * designer has already placed it; a roadmap authored before the tests exist
- * has obligations without oracles, which is the normal case.
+ * One obligation the step must satisfy to be accepted.
+ *
+ * Three fields, and the split between the last two is the whole of it: a
+ * STIMULUS a reader could apply and an EXPECTED result they could observe. One
+ * sentence of prose saying "complete works" is neither, and an oracle author
+ * handed it has to invent both halves before it can write an assertion. This
+ * is `AcceptanceObligation` from nwave-experimental's
+ * `des/domain/distill_document.py`, field for field.
+ *
+ * It carries no locator. Where the assertion lives is the VALUE's property
+ * rather than the obligation's — one oracle per value, covering every
+ * obligation it declares — so it sits on `RoadmapStep` beside `supports`.
  */
 export const AcceptanceObligation = z.object({
   id: z.string(),
-  text: z.string(),
-  oracleLocator: z.string().optional(),
+  /** What a reader would DO. "Complete a todo the store holds." */
+  stimulus: z.string(),
+  /** What they would then OBSERVE. "It is returned with done set." */
+  expected: z.string(),
 });
 export type AcceptanceObligation = z.infer<typeof AcceptanceObligation>;
 
@@ -53,10 +63,31 @@ export const RoadmapStep = z.object({
   dependencies: z.array(z.string()),
   /** A locator into the design source this step implements. */
   authority: z.string(),
-  /** At least one, enforced by `validate-shape` rather than by the schema. */
-  acceptance: z.array(AcceptanceObligation),
   /** Symbol ids or paths the step expects to write. */
   predictedTouches: z.array(z.string()),
+
+  /* ---- the three fields DISTILL fills, and ROADMAP leaves empty --------- */
+
+  /**
+   * What the step must satisfy to be accepted. Empty as ROADMAP proposes it:
+   * deciding what a value must be observed to do is DISTILL's act, not the
+   * decomposer's, and a decomposer that filled these in would be answering a
+   * question nobody asked it.
+   */
+  acceptance: z.array(AcceptanceObligation),
+  /**
+   * The ONE executable oracle covering this value's obligations, as a
+   * `path::selector` or a bare path. Exactly one, because the thing that
+   * measures a value has to be a thing software can run and read a verdict
+   * off; two would make "the oracle was red" ambiguous.
+   */
+  oracle: z.string().optional(),
+  /**
+   * Whole-file test-substrate paths the oracle depends on: a driver, a
+   * fixture, a builder. Whole FILES rather than locators, because a support is
+   * a dependency of the oracle rather than a thing that is run.
+   */
+  supports: z.array(z.string()),
 });
 export type RoadmapStep = z.infer<typeof RoadmapStep>;
 

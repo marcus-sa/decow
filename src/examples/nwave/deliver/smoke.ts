@@ -73,11 +73,12 @@ const STEP = {
   acceptance: [
     {
       id: "02-03-AC-1",
-      text: "A submitted allocation reaches Running through the production driver.",
-      oracleLocator: "tests/alloc.test.ts::a submitted allocation reaches Running",
+      stimulus: "Submit an allocation through the production driver.",
+      expected: "It reaches Running, observed as an alloc_status row written by the exit observer.",
     },
   ],
   predictedTouches: ["ExecDriver::start"],
+  oracle: "tests/alloc.test.ts::a submitted allocation reaches Running",
 };
 
 /** The step's own oracle, as the row carries it in. */

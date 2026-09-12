@@ -30,8 +30,34 @@ import { resume, run, type RunOutcome } from "../../../core/workflow.ts";
 import { vcsExecutor } from "../../../vcs/executor.ts";
 import type { Vcs } from "../../../vcs/index.ts";
 import { identityKey } from "../../../vcs/structural/parser.ts";
+import { parseOracleLocator } from "../../../vcs/verify.ts";
 import { deliverGraph, seed, type State } from "./graph.ts";
 import type { DeliverDefs, StepUnderDelivery } from "./steps.ts";
+
+/**
+ * The test ids one oracle locator names, out of the symbol inventory.
+ *
+ * `test.route` reads these as the set membership that tells "my own oracle is
+ * still red" from "I broke something else". They are resolved ONCE, where the
+ * row becomes a run, rather than inside the graph: the oracle was authored and
+ * measured in an earlier run, and a graph that re-resolved it would be reading
+ * an inventory that has moved since.
+ *
+ * A bare path names every test in the file; a `path::selector` names the tests
+ * whose name is that selector. A locator naming nothing resolves to nothing,
+ * and the graph reads the absence honestly: with no ids of its own, every
+ * failure is `broke-other`.
+ */
+export const oracleTests = (vcs: Vcs, oracle: string | undefined): string[] => {
+  if (oracle === undefined) return [];
+  const { path, selector } = parseOracleLocator(oracle);
+  const file = vcs.registry.file(path);
+  if (file === undefined) return [];
+  return vcs.registry
+    .symbolsOf(file.id)
+    .filter((s) => s.kind === "test" && (selector === undefined || s.name === selector))
+    .map((s) => s.id);
+};
 
 /* --------------------------------------------------------------- the rows */
 
@@ -48,8 +74,11 @@ export type RoadmapRow = {
   observation: string;
   dependencies: string[];
   authority: string;
-  acceptance: { id: string; text: string; oracleLocator?: string }[];
+  acceptance: { id: string; stimulus: string; expected: string }[];
   predictedTouches: string[];
+  /** The one oracle DISTILL declared for this row, and measured red. */
+  oracle?: string;
+  supports: string[];
 };
 
 /** What a finished run is persisted as. */
@@ -148,16 +177,18 @@ export type PipelineOptions = {
 /**
  * One roadmap row as the step cycle's input.
  *
- * `criteria` is the observation plus every obligation's text, because that is
- * what "the acceptance criteria, verbatim" means when the criteria are rows.
+ * `criteria` is the observation plus every obligation rendered as the pair it
+ * is, `stimulus -> expected`, because that is what "the acceptance criteria,
+ * verbatim" means when the criteria are rows.
  */
 export const stepUnderDelivery = (row: RoadmapRow, design: string): StepUnderDelivery => ({
   id: row.id,
-  criteria: [row.observation, ...row.acceptance.map((a) => a.text)].join("\n"),
+  criteria: [row.observation, ...row.acceptance.map((a) => `${a.stimulus} -> ${a.expected}`)].join("\n"),
   design,
   authority: row.authority,
   acceptance: row.acceptance,
   predictedTouches: row.predictedTouches,
+  ...(row.oracle === undefined ? {} : { oracle: row.oracle }),
 });
 
 /**
@@ -219,6 +250,7 @@ export const openPipeline = (options: PipelineOptions) => {
     return {
       ...seed(stepUnderDelivery(row, design), options.evidence ?? "", impacted),
       symbolVersion,
+      acceptanceTests: oracleTests(vcs, row.oracle),
     };
   };
 

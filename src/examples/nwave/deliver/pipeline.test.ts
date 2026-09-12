@@ -110,13 +110,11 @@ const roadmapFor = (symbolId: (path: string, name: string) => string): Roadmap =
       dependencies: [],
       authority: "DESIGN § alpha",
       acceptance: [
-        {
-          id: "01-01-AC-1",
-          text: "alpha() returns 42.",
-          oracleLocator: "src/alpha.test.ts::alpha returns 42",
-        },
+        { id: "01-01-AC-1", stimulus: "Call alpha().", expected: "It returns 42." },
       ],
       predictedTouches: [symbolId("src/alpha.ts", "alpha")],
+      oracle: "src/alpha.test.ts::alpha returns 42",
+      supports: [],
     },
     {
       id: "01-02",
@@ -124,13 +122,11 @@ const roadmapFor = (symbolId: (path: string, name: string) => string): Roadmap =
       dependencies: ["01-01"],
       authority: "DESIGN § bravo",
       acceptance: [
-        {
-          id: "01-02-AC-1",
-          text: "bravo() returns 7.",
-          oracleLocator: "src/bravo.test.ts::bravo returns 7",
-        },
+        { id: "01-02-AC-1", stimulus: "Call bravo().", expected: "It returns 7." },
       ],
       predictedTouches: [symbolId("src/bravo.ts", "bravo")],
+      oracle: "src/bravo.test.ts::bravo returns 7",
+      supports: [],
     },
   ],
 });

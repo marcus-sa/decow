@@ -27,7 +27,12 @@ import { z } from "zod";
 import { verbatim } from "../../../checks/verbatim.ts";
 import type { Requirement } from "../../../core/requirement.ts";
 import { stepOutput, type ModelBinding, type StepDef } from "../../../core/step.ts";
-import { describeDefect, firstDefectOfKind, type ShapeDefect } from "./shape.ts";
+import {
+  describeDefect,
+  firstDefectOfKind,
+  MINIMUM_OBSERVATION_CHARACTERS,
+  type ShapeDefect,
+} from "./shape.ts";
 import { Roadmap, stepById, type RoadmapStep } from "./schema.ts";
 
 /* ------------------------------------------------------------------ leaves */
@@ -115,13 +120,43 @@ export const everyStepNamesAnAuthority = shapeRule(
   "empty-authority",
 );
 
-export const everyStepHasAnObligation = shapeRule(
-  "roadmap.every-step-has-an-acceptance-obligation",
-  "handover.acceptance-facts-are-invalid",
-  "Every step declares at least one acceptance obligation. A step whose completion is not " +
-    "observable is not a step; it is a hope.",
-  "no-acceptance",
+export const observationsSayEnough = shapeRule(
+  "roadmap.observation-says-enough-to-be-worked-from",
+  "handover.value-fields-are-invalid",
+  `Every step's observation is at least ${MINIMUM_OBSERVATION_CHARACTERS} characters and names ` +
+    "what will be observably true. \"It works\" is not an observation; it is a hope with a full stop.",
+  "observation-too-short",
 );
+
+/**
+ * The wave boundary, as a rule the decomposer is held to.
+ *
+ * Deciding what a value must be OBSERVED to do is DISTILL's act. A decomposer
+ * that filled in obligations, an oracle or a support list would be answering a
+ * question nobody asked it, and the answer would be persisted as though a
+ * wave had produced it.
+ */
+export const acceptanceIsDistills = (decisions: readonly string[]): Requirement<DecomposeCtx> => ({
+  id: "roadmap.acceptance-facts-are-distills",
+  sourceId: "des.distill.acceptance-facts",
+  text:
+    "Leave `acceptance`, `oracle` and `supports` empty on every step. What a value must be " +
+    "observed to do, which oracle measures it, and what that oracle depends on are DISTILL's to " +
+    "decide. Propose the decomposition, not its acceptance.",
+  decisions,
+  check: ({ output }) => {
+    if (output.decision !== "proposed") return null;
+    const filled = output.payload.roadmap.steps.find(
+      (step) => step.acceptance.length > 0 || step.supports.length > 0 || step.oracle !== undefined,
+    );
+    return filled === undefined
+      ? null
+      : {
+          requirementId: "roadmap.acceptance-facts-are-distills",
+          evidence: `step ${filled.id} declares acceptance facts a decomposition does not decide`,
+        };
+  },
+});
 
 export const stepIdsAreUnique = shapeRule(
   "roadmap.step-ids-are-unique",
@@ -278,10 +313,13 @@ export const slicesNeedNoUndeclaredApi = (
 
 const DECOMPOSE_SYSTEM =
   "You decompose one request into an ordered roadmap of production-drivable vertical slices. " +
-  "Every step names an authority — a locator into the design source it implements — declares at " +
-  "least one acceptance obligation, lists the steps it depends on, and predicts the symbols it " +
-  "will write. Step ids are unique. If the design source does not support a decomposition, report " +
-  "cannot-decompose with an empty step list; do not invent an authority.";
+  "Every step names an authority — a locator into the design source it implements — states an " +
+  `observation of at least ${MINIMUM_OBSERVATION_CHARACTERS} characters saying what will be ` +
+  "observably true when it is done, lists the steps it depends on, and predicts the symbols it " +
+  "will write. Step ids are unique. Leave `acceptance`, `oracle` and `supports` EMPTY: what a " +
+  "value must be observed to do is decided in a later wave, not here. If the design source does " +
+  "not support a decomposition, report cannot-decompose with an empty step list; do not invent " +
+  "an authority.";
 
 const SLICES_SYSTEM =
   "You judge, for every step of one roadmap, whether it is a production-drivable vertical slice " +
@@ -295,7 +333,7 @@ const renderStep = (step: RoadmapStep): string =>
     `  observation: ${step.observation}`,
     `  authority: ${step.authority}`,
     `  dependencies: ${step.dependencies.length === 0 ? "(none)" : step.dependencies.join(", ")}`,
-    `  acceptance: ${step.acceptance.map((a) => `${a.id}: ${a.text}`).join(" | ") || "(none)"}`,
+    `  acceptance: ${step.acceptance.map((a) => `${a.id}: ${a.stimulus} -> ${a.expected}`).join(" | ") || "(none)"}`,
     `  predictedTouches: ${step.predictedTouches.join(", ") || "(none)"}`,
   ].join("\n");
 
@@ -353,7 +391,8 @@ export const roadmapDefs = (models: RoadmapModels): RoadmapDefs => ({
     output: DecomposeOutput,
     requirements: [
       everyStepNamesAnAuthority,
-      everyStepHasAnObligation,
+      observationsSayEnough,
+      acceptanceIsDistills,
       stepIdsAreUnique,
       slicesAreProductionDrivable,
       cannotDecomposeIsAnHonestAnswer,
