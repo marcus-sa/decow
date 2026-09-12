@@ -1,0 +1,22 @@
+{
+  "name": "deterministic-workflows",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "check": "bun run typecheck && bun test",
+    "smoke": "bun run src/examples/distill/smoke.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@mastra/core": "^1.66.0",
+    "zod": "^4.6.2"
+  }
+}

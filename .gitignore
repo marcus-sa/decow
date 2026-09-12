@@ -1,0 +1,37 @@
+# dependencies (bun install)
+node_modules
+
+# output
+out
+dist
+*.tgz
+
+# code coverage
+coverage
+*.lcov
+
+# logs
+logs
+*.log
+
+# journals
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# dotenv environment variable files
+.env
+.env.*.local
+.env.local
+
+# caches
+.eslintcache
+.cache
+*.tsbuildinfo
+
+# editors
+.idea
+.vscode
+
+# Finder (macOS) folder config
+.DS_Store
