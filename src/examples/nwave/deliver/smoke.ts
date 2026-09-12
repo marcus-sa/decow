@@ -29,13 +29,13 @@
  * could see it.
  */
 
-import { claudeCode } from "../../bindings/claude-code.ts";
-import { mastraAgent } from "../../bindings/mastra.ts";
-import type { EffectResult } from "../../core/effects.ts";
-import { memoryJournal } from "../../core/journal.ts";
-import type { ModelBinding } from "../../core/step.ts";
-import { run } from "../../core/workflow.ts";
-import { describeTrace } from "../../harness/matchers.ts";
+import { claudeCode } from "../../../bindings/claude-code.ts";
+import { mastraAgent } from "../../../bindings/mastra.ts";
+import type { EffectResult } from "../../../core/effects.ts";
+import { memoryJournal } from "../../../core/journal.ts";
+import type { ModelBinding } from "../../../core/step.ts";
+import { run } from "../../../core/workflow.ts";
+import { describeTrace } from "../../../harness/matchers.ts";
 import { deliverGraph, seed, type State } from "./graph.ts";
 import { deliverDefs, type LeafId } from "./steps.ts";
 

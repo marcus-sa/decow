@@ -22,9 +22,9 @@
  */
 
 import { z } from "zod";
-import { verbatim } from "../../checks/verbatim.ts";
-import type { Requirement } from "../../core/requirement.ts";
-import { stepOutput, type ModelBinding, type StepDef } from "../../core/step.ts";
+import { verbatim } from "../../../checks/verbatim.ts";
+import type { Requirement } from "../../../core/requirement.ts";
+import { stepOutput, type ModelBinding, type StepDef } from "../../../core/step.ts";
 
 /** The roadmap row under delivery. Authored upstream; never inferred here. */
 export const StepUnderDelivery = z.object({

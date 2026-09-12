@@ -24,9 +24,9 @@
  */
 
 import { z } from "zod";
-import { verbatim } from "../../checks/verbatim.ts";
-import type { Requirement } from "../../core/requirement.ts";
-import { stepOutput, type ModelBinding, type StepDef } from "../../core/step.ts";
+import { verbatim } from "../../../checks/verbatim.ts";
+import type { Requirement } from "../../../core/requirement.ts";
+import { stepOutput, type ModelBinding, type StepDef } from "../../../core/step.ts";
 import { describeDefect, firstDefectOfKind, type ShapeDefect } from "./shape.ts";
 import { Roadmap, stepById, type RoadmapStep } from "./schema.ts";
 

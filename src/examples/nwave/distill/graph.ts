@@ -14,9 +14,9 @@
  */
 
 import { z } from "zod";
-import type { Journal } from "../../core/journal.ts";
-import type { StepDef } from "../../core/step.ts";
-import { branch, leaf, suspend, type Node, type Workflow } from "../../core/workflow.ts";
+import type { Journal } from "../../../core/journal.ts";
+import type { StepDef } from "../../../core/step.ts";
+import { branch, leaf, suspend, type Node, type Workflow } from "../../../core/workflow.ts";
 import { KINDS, Lane, type Classification, type Kind, type Scenario } from "./classify.ts";
 
 /**

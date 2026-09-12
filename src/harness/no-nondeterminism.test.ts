@@ -41,6 +41,12 @@ const EXEMPT = new Set([join(SRC, "vcs/defaults.ts")]);
  * when it was authored, so they are scanned like any branch's `on`. Its
  * schemas and its hand-written fixtures are scanned too: a fixture that read a
  * clock would make the oracle a different roadmap on every run.
+ *
+ * The examples live one directory deeper than they used to — `examples/nwave/`
+ * groups the three that model one consumer's waves — and the globs are
+ * unchanged, because `**` spans any depth. They are deliberately NOT narrowed
+ * to `examples/nwave/**`: a second consumer's example set must be scanned the
+ * day it lands, not the day somebody remembers to add a glob for it.
  */
 const scanned = async (): Promise<string[]> => {
   const files = new Set<string>([join(SRC, "core/workflow.ts"), join(SRC, "core/compile.ts")]);
@@ -71,11 +77,11 @@ describe("no nondeterminism inside the graph", () => {
     const files = (await scanned()).map((f) => relative(SRC, f));
     expect(files).toContain("core/workflow.ts");
     expect(files).toContain("core/compile.ts");
-    expect(files).toContain("examples/distill/graph.ts");
-    expect(files).toContain("examples/deliver/graph.ts");
-    expect(files).toContain("examples/roadmap/graph.ts");
-    expect(files).toContain("examples/roadmap/shape.ts");
-    expect(files).toContain("examples/roadmap/disjointness.ts");
+    expect(files).toContain("examples/nwave/distill/graph.ts");
+    expect(files).toContain("examples/nwave/deliver/graph.ts");
+    expect(files).toContain("examples/nwave/roadmap/graph.ts");
+    expect(files).toContain("examples/nwave/roadmap/shape.ts");
+    expect(files).toContain("examples/nwave/roadmap/disjointness.ts");
     expect(files).toContain("vcs/registry.ts");
     expect(files).toContain("vcs/leases.ts");
     expect(files).toContain("vcs/writes.ts");

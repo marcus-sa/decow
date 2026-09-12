@@ -13,9 +13,9 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { memoryEffects, type Effect, type EffectResult } from "../../core/effects.ts";
-import { stepIdFromKey, type Journal } from "../../core/journal.ts";
-import type { StepResult } from "../../core/step.ts";
+import { memoryEffects, type Effect, type EffectResult } from "../../../core/effects.ts";
+import { stepIdFromKey, type Journal } from "../../../core/journal.ts";
+import type { StepResult } from "../../../core/step.ts";
 import {
   loop,
   resume,
@@ -23,10 +23,10 @@ import {
   type EffectExecutor,
   type Node,
   type Workflow,
-} from "../../core/workflow.ts";
-import { enumeratePaths, graphDefects, inspectGraph, type Choose } from "../../harness/enumerate-paths.ts";
-import { describeTrace, endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "../../harness/matchers.ts";
-import { exhausted, ok, stubJournal } from "../../harness/stub-journal.ts";
+} from "../../../core/workflow.ts";
+import { enumeratePaths, graphDefects, inspectGraph, type Choose } from "../../../harness/enumerate-paths.ts";
+import { describeTrace, endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "../../../harness/matchers.ts";
+import { exhausted, ok, stubJournal } from "../../../harness/stub-journal.ts";
 import {
   cycleDone,
   deliverGraph,

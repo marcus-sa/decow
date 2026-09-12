@@ -12,10 +12,10 @@
  * the reusable binding itself is `src/bindings/mastra.ts`.
  */
 
-import { mastraAgent } from "../../bindings/mastra.ts";
-import { memoryJournal } from "../../core/journal.ts";
-import { run } from "../../core/workflow.ts";
-import { describeTrace } from "../../harness/matchers.ts";
+import { mastraAgent } from "../../../bindings/mastra.ts";
+import { memoryJournal } from "../../../core/journal.ts";
+import { run } from "../../../core/workflow.ts";
+import { describeTrace } from "../../../harness/matchers.ts";
 import { classifierDefs, KINDS, type Kind } from "./classify.ts";
 import { distillGraph, mergeVerdict, seed, type State } from "./graph.ts";
 

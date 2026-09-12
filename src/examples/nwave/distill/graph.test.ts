@@ -10,11 +10,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { resume, run } from "../../core/workflow.ts";
-import type { StepResult } from "../../core/step.ts";
-import { cartesian, graphDefects } from "../../harness/enumerate-paths.ts";
-import { endedOnDeclaredNode, isDeclaredOutcome, visited } from "../../harness/matchers.ts";
-import { exhausted, ok, stubJournal } from "../../harness/stub-journal.ts";
+import { resume, run } from "../../../core/workflow.ts";
+import type { StepResult } from "../../../core/step.ts";
+import { cartesian, graphDefects } from "../../../harness/enumerate-paths.ts";
+import { endedOnDeclaredNode, isDeclaredOutcome, visited } from "../../../harness/matchers.ts";
+import { exhausted, ok, stubJournal } from "../../../harness/stub-journal.ts";
 import {
   classifierDefs,
   classifierStepId,

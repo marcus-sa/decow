@@ -41,8 +41,8 @@
  */
 
 import { z } from "zod";
-import type { Effect, EffectResult } from "../../core/effects.ts";
-import type { Journal } from "../../core/journal.ts";
+import type { Effect, EffectResult } from "../../../core/effects.ts";
+import type { Journal } from "../../../core/journal.ts";
 import {
   branch,
   leaf,
@@ -52,7 +52,7 @@ import {
   type Node,
   type NodeId,
   type Workflow,
-} from "../../core/workflow.ts";
+} from "../../../core/workflow.ts";
 import {
   ACTIVATE_OUTCOMES,
   COMMIT_OUTCOMES,

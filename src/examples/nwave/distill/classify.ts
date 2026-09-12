@@ -12,9 +12,9 @@
  */
 
 import { z } from "zod";
-import type { Requirement } from "../../core/requirement.ts";
-import { stepOutput, type ModelBinding, type StepDef } from "../../core/step.ts";
-import { verbatim } from "../../checks/verbatim.ts";
+import type { Requirement } from "../../../core/requirement.ts";
+import { stepOutput, type ModelBinding, type StepDef } from "../../../core/step.ts";
+import { verbatim } from "../../../checks/verbatim.ts";
 
 export const Scenario = z.object({
   id: z.string(),

@@ -46,9 +46,9 @@ ANTHROPIC_API_KEY=... DW_WORKSPACE=/path/to/repo bun run smoke:deliver
 | `src/bindings/` | § Framework versus consumer → "model bindings: which small models, which validator family". `mastra.ts` is one model call; `claude-code.ts` is a Claude Code subagent. |
 | `src/checks/` | § Framework versus consumer → "a library of mechanical checks": `verbatim.ts`, `enum-member.ts`, `id-in-set.ts`. |
 | `src/harness/` | § Framework versus consumer → "test harness": `stub-journal.ts`, `enumerate-paths.ts` (the graph inspector plus the reachable-path walker), `matchers.ts`. |
-| `src/examples/distill/` | § Worked example: DISTILL test-lane classification. Bootstrap steps 2 and 3 — the known-good hand-written graph and its requirement rows. |
-| `src/examples/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops. |
-| `src/examples/roadmap/` | § DELIVER is two graphs → the roadmap half, and § Framework versus consumer → the authoring workflow. Bootstrap step 7's first half — the roadmap as rows, with two pure decision functions and no generator. |
+| `src/examples/nwave/distill/` | § Worked example: DISTILL test-lane classification. Bootstrap steps 2 and 3 — the known-good hand-written graph and its requirement rows. |
+| `src/examples/nwave/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops. |
+| `src/examples/nwave/roadmap/` | § DELIVER is two graphs → the roadmap half, and § Framework versus consumer → the authoring workflow. Bootstrap step 7's first half — the roadmap as rows, with two pure decision functions and no generator. |
 | `src/vcs/` | § The agent-native VCS is the effect executor and mechanical verifier, and the whole of [`ai-vcs.md`](./ai-vcs.md) phases 2 to 4. See [`src/vcs/README.md`](./src/vcs/README.md). |
 
 The model bindings live under `src/bindings/` and nothing in `core/` imports them: the design's framework/consumer table puts "which small models, which validator family" on the consumer side, and the smoke scripts are where a consumer picks.
@@ -343,7 +343,7 @@ So this graph is fixed and hand-written like the other two, and what it produces
 
 #### The rows
 
-Modelled on nWave's own `handover.json`, with our naming. A `StoredHandover` there is a request plus an ordered tuple of `HandoverValue`s; these are the same facts, as zod schemas, in `src/examples/roadmap/schema.ts`:
+Modelled on nWave's own `handover.json`, with our naming. A `StoredHandover` there is a request plus an ordered tuple of `HandoverValue`s; these are the same facts, as zod schemas, in `src/examples/nwave/roadmap/schema.ts`:
 
 ```ts
 RoadmapStep = {
@@ -415,7 +415,7 @@ That is a position rather than an omission. Every route into `human` is a block 
 
 **It resumes.** DELIVER's person sits outside all three loops, so its walk stops at the suspension and leaves `human.route` to the resume tests. Here the review is in the middle, and `persist`, `accept`, `review.route` and `human.route` are only reachable through an answer. So the walk answers: while a run is parked it chooses from that node's own closed enum and resumes. The walker allows it because the choice point's id is `resume:${reason}`, and the reason is a function of the choices already made, which is the walker's one requirement. The coverage assertion is therefore stronger than DELIVER's: **every node the graph declares is visited, with nothing excused.**
 
-**It chooses data, not just decisions.** Two branches read pure functions of the roadmap, so to reach `shape.route`'s `invalid` edge or `disjointness.route`'s `consistent` and `drift-unresolvable` edges the walk has to vary the *roadmap*. The choice point at `decompose` is therefore a choice of **proposal**, drawn from the hand-written roadmaps in `src/examples/roadmap/fixture.ts`: `KNOWN_GOOD` (three steps, one declared dependency, one deliberate overlap → `edges-added`), `DISJOINT` (→ `consistent`), `UNRESOLVABLE` (→ `drift-unresolvable`), `MALFORMED` (every shape defect at once), plus `cannot-decompose` and the exhausted validator. Enumerating a graph whose decisions are functions of its data means enumerating enough data to reach every edge.
+**It chooses data, not just decisions.** Two branches read pure functions of the roadmap, so to reach `shape.route`'s `invalid` edge or `disjointness.route`'s `consistent` and `drift-unresolvable` edges the walk has to vary the *roadmap*. The choice point at `decompose` is therefore a choice of **proposal**, drawn from the hand-written roadmaps in `src/examples/nwave/roadmap/fixture.ts`: `KNOWN_GOOD` (three steps, one declared dependency, one deliberate overlap → `edges-added`), `DISJOINT` (→ `consistent`), `UNRESOLVABLE` (→ `drift-unresolvable`), `MALFORMED` (every shape defect at once), plus `cannot-decompose` and the exhausted validator. Enumerating a graph whose decisions are functions of its data means enumerating enough data to reach every edge.
 
 `KNOWN_GOOD` is also the oracle in the framework/consumer sense: the harness proves a roadmap is well-formed, and a hand-written one is the only thing that says a well-formed one is *right*. `KNOWN_GOOD_RESOLVED` beside it is the expected output rows, which is what makes "the resolution is not advice" a testable claim rather than a comment.
 
