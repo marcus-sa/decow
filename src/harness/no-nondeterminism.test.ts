@@ -58,6 +58,7 @@ const scanned = async (): Promise<string[]> => {
     "examples/**/disjointness.ts",
     "examples/**/schema.ts",
     "examples/**/fixture.ts",
+    "artifacts/**/*.ts",
     "vcs/**/*.ts",
   ]) {
     for await (const match of new Glob(pattern).scan({ cwd: SRC, absolute: true })) {
@@ -82,6 +83,7 @@ describe("no nondeterminism inside the graph", () => {
     expect(files).toContain("examples/nwave/roadmap/graph.ts");
     expect(files).toContain("examples/nwave/roadmap/shape.ts");
     expect(files).toContain("examples/nwave/roadmap/disjointness.ts");
+    expect(files).toContain("artifacts/store.ts");
     expect(files).toContain("vcs/registry.ts");
     expect(files).toContain("vcs/leases.ts");
     expect(files).toContain("vcs/writes.ts");

@@ -43,11 +43,18 @@
  *                                  channel outside the system is not the
  *                                  agent's error and must not burn its budget
  *
+ * `upsert-artifact` is the one effect this executor does not answer out of the
+ * VCS. Artifact rows are the other half of the design's state layer and they
+ * are not code, so they go to an `ArtifactStore` (`src/artifacts/store.ts`)
+ * this executor is handed, under the same optimistic version check. Without
+ * one it is still `infra-failed`.
+ *
  * No nondeterminism lives in this file. No Date.now, no Math.random, no
  * new Date, no randomUUID. src/harness/no-nondeterminism.test.ts enforces that
  * mechanically.
  */
 
+import type { ArtifactStore } from "../artifacts/store.ts";
 import type { Effect, EffectResult } from "../core/effects.ts";
 import type { Intent } from "./log.ts";
 import type { Vcs } from "./index.ts";
@@ -62,6 +69,15 @@ export type VcsExecutorOptions = {
   session: string;
   /** The task every event this executor produces is attributed to (§ 4.5). */
   intent: { taskId: string; parentTaskId?: string; description: string };
+  /**
+   * Where `upsert-artifact` lands. The VCS is the data plane for CODE and it
+   * is not becoming the data plane for artifact rows: the store is a separate
+   * module with its own database, and this executor routes to it rather than
+   * answering `infra-failed` for a write it now has somewhere to put. Absent
+   * store, `upsert-artifact` is still `infra-failed`, because an executor with
+   * nowhere to write must not pretend otherwise.
+   */
+  artifacts?: ArtifactStore;
 };
 
 type ReplaceSymbol = Extract<Effect, { type: "replace-symbol" }>;
@@ -170,12 +186,29 @@ export const vcsExecutor = (
             version: vcs.appendTrail(effect.line, intentFor({})),
           });
           break;
-        case "upsert-artifact":
-          // The VCS is the data plane for code. Artifact rows are the other
-          // half of the design's state layer and no executor is wired for
-          // them, which is an infrastructure fact rather than a rejection.
-          out.push({ effect, outcome: "infra-failed" });
+        case "upsert-artifact": {
+          // The other half of the design's state layer. It is not the VCS's —
+          // the VCS is the data plane for code — so it is a store this
+          // executor was handed, and the optimistic version check is the same
+          // one `replace-symbol` gets one column over.
+          const store = options.artifacts;
+          if (store === undefined) {
+            out.push({ effect, outcome: "infra-failed" });
+            break;
+          }
+          const written = store.upsert({
+            table: effect.table,
+            id: effect.id,
+            expectedVersion: effect.expectedVersion,
+            row: effect.row,
+          });
+          out.push(
+            written.outcome === "committed"
+              ? { effect, outcome: "committed", version: written.version }
+              : { effect, outcome: "conflict", currentVersion: written.currentVersion },
+          );
           break;
+        }
         case "replace-symbol":
           throw new Error(`vcs executor bug: replace-symbol on ${effect.symbolId} produced no result`);
       }

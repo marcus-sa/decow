@@ -10,6 +10,8 @@
  * needs-human terminal with a typed reason.
  */
 
+import { openArtifacts, type ArtifactStore } from "../artifacts/store.ts";
+
 export type Effect =
   | { type: "replace-symbol"; symbolId: string; expectedVersion: number; body: string }
   | { type: "upsert-artifact"; table: string; id: string; expectedVersion: number; row: unknown }
@@ -49,23 +51,50 @@ export type EffectResult =
 export type Artifact = { version: number; row: unknown };
 
 /**
- * In-memory effect executor. Artifacts live in a Map under an optimistic
- * version check; the trail is an array. `replace-symbol` and `run-tests` come
- * back `infra-failed` because there is no VCS and no test runner behind this
- * executor yet — that is the honest outcome, not `rejected`.
+ * The read surface the artifact `Map` had, over a store that is now a
+ * database. Read-only and live: every call projects the store's own event log
+ * rather than answering from a copy, so there is no second bookkeeping
+ * structure to drift from the rows.
  */
-export const memoryEffects = () => {
-  const artifacts = new Map<string, Artifact>();
+export type ArtifactView = {
+  get(key: string): Artifact | undefined;
+  has(key: string): boolean;
+  keys(): IterableIterator<string>;
+  values(): IterableIterator<Artifact>;
+  readonly size: number;
+};
+
+export type MemoryEffectsOptions = {
+  /**
+   * Where `upsert-artifact` lands. Defaults to an in-memory
+   * `openArtifacts({ path: ":memory:" })`, so a caller that wants rows and does
+   * not care where they live passes nothing; a caller that wants them to
+   * outlive the process passes a store opened on a path.
+   */
+  store?: ArtifactStore;
+};
+
+/**
+ * In-memory effect executor. `upsert-artifact` goes to a real artifact store
+ * under the optimistic version check the effect declares; the trail is an
+ * array. `replace-symbol` and `run-tests` come back `infra-failed` because
+ * there is no VCS and no test runner behind this executor — that is the honest
+ * outcome, not `rejected`.
+ */
+export const memoryEffects = (options: MemoryEffectsOptions = {}) => {
+  const store = options.store ?? openArtifacts();
   const trail: string[] = [];
 
   const upsert = (e: Extract<Effect, { type: "upsert-artifact" }>): EffectResult => {
-    const key = `${e.table}/${e.id}`;
-    const current = artifacts.get(key);
-    const currentVersion = current?.version ?? 0;
-    if (e.expectedVersion !== currentVersion) return { effect: e, outcome: "conflict", currentVersion };
-    const version = currentVersion + 1;
-    artifacts.set(key, { version, row: e.row });
-    return { effect: e, outcome: "committed", version };
+    const result = store.upsert({
+      table: e.table,
+      id: e.id,
+      expectedVersion: e.expectedVersion,
+      row: e.row,
+    });
+    return result.outcome === "committed"
+      ? { effect: e, outcome: "committed", version: result.version }
+      : { effect: e, outcome: "conflict", currentVersion: result.currentVersion };
   };
 
   const execute = async (effects: Effect[]): Promise<EffectResult[]> =>
@@ -82,5 +111,33 @@ export const memoryEffects = () => {
       }
     });
 
-  return { execute, artifacts, trail };
+  /**
+   * The store's rows, keyed `table/id`. Derived from the store's own
+   * append-only log — the last event for a key is that row's current state —
+   * so nothing is cached and nothing can drift.
+   */
+  const snapshot = (): Map<string, Artifact> => {
+    const rows = new Map<string, Artifact>();
+    for (const event of store.events()) {
+      rows.set(`${event.table}/${event.id}`, { version: event.version, row: event.row });
+    }
+    return rows;
+  };
+
+  /**
+   * A live view rather than a snapshot, because `const { artifacts } =
+   * memoryEffects()` is how every caller reads it: a getter would hand out the
+   * state at destructuring time, which is empty.
+   */
+  const artifacts: ArtifactView = {
+    get: (key) => snapshot().get(key),
+    has: (key) => snapshot().has(key),
+    keys: () => snapshot().keys(),
+    values: () => snapshot().values(),
+    get size() {
+      return snapshot().size;
+    },
+  };
+
+  return { execute, trail, store, artifacts };
 };
