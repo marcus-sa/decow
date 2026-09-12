@@ -183,9 +183,11 @@ export async function runStep<I, O>(def: StepDef<I, O>, raw: unknown, journal: J
 
 Two design choices worth defending. Temperature zero is not for determinism; it narrows the distribution so retries with feedback converge instead of wandering. Mixing model families for worker and validator is the reason to stay provider-agnostic: a Haiku worker refuted by a GPT-mini validator shares fewer blind spots than Haiku refuting Haiku.
 
+The model slot is one method. It takes a system prompt, a prompt and a schema, and returns something the schema accepts. That is the seam where an agent plugs in, not just a provider. A Claude Code subagent is a binding: from the step's side there is no difference between one model call and a subagent that spent forty turns reading a checkout, as long as what comes back satisfies the schema and the decision is a member of the closed enum. There are two shapes of that, and the difference is not stylistic. In the **opaque** shape the agent edits the workspace itself and returns only the object; the writes happened outside the effect boundary, so the framework cannot lease them, verify them, or roll them back, and a lease conflict is unrepresentable because nothing ever crossed the boundary where a version check could happen. In the **proposal** shape the agent returns its writes as `replace-symbol` effects and the runner commits them through the agent-native VCS, under a lease, with the write-boundary gate and the journal key as the intent; a conflict comes back as a decision value a branch routes. The VCS is what makes the second shape possible, which is why it is the data plane in "The agent-native VCS is the effect executor and mechanical verifier" below and not an optional extra.
+
 ### Workflow graph and runner
 
-Six node types. `branch` is the load-bearing one: its edge table is typed by the decision union. `suspend` is the same guarantee one level over: it ties the schema a person answers with to the function that folds that answer into state. `loop` is the third: it ties a sub-graph to the condition that ends it and the bound that ends it anyway.
+Six node types. `branch` is the load-bearing one: its edge table is typed by the decision union. `suspend` is the same guarantee one level over: it ties the schema a person answers with to the function that folds that answer into state. `loop` is the third: it ties a sub-graph to the condition that ends it and the bound that ends it anyway. `leaf` is the fourth constructor and the only one that is not about types: it builds an ordinary `step` node around one `runStep` call and owns the exhaustion trail, so a graph author cannot forget to record why a validator was never satisfied.
 
 ```ts
 export type NodeId = string;
@@ -235,6 +237,22 @@ export const loop = <S>(spec: {
   absorb: (s: S, exit: LoopExit) => S;
   next: NodeId;
 }): Node<S> => ({ type: "loop", ...spec });
+
+// One `runStep` call as a node. `absorb` folds the step's own result; the
+// optional `absorbEffects` folds the effect results, which arrive later. A
+// `validator-exhausted` result always emits an `append-trail` effect carrying
+// the trail, whatever `effects` returned, because that is the part a graph
+// author forgets.
+export const leaf = <S, I, O>(spec: {
+  id?: string;                                 // defaults to def.id
+  def: StepDef<I, O>;
+  journal: Journal;
+  input: (s: S) => I;
+  absorb: (s: S, r: StepResult<O>) => S;
+  effects?: (s: S, r: StepResult<O>) => Effect[];
+  absorbEffects?: (s: S, results: EffectResult[]) => S;
+  next: NodeId;
+}): Node<S> => …;
 ```
 
 A loop's body is delimited by a convention the graph declares rather than one the
@@ -634,10 +652,12 @@ activate-at ─► run-tests.red ─branch─┬─ red-observed ─────
 
 cycle  = loop(body: test-loop, until: gates are clean, max: 2) ─► cycle.verdict
 │
-├─ test-loop  = loop(body: implement, until: not still-red and not broke-other, max: 2)
+├─ test-loop  = loop(body: test-loop.head, until: not still-red and not broke-other, max: 2)
 │  │            ─► test.verdict ─branch─┬─ green ──────► refactor
 │  │                                    └─ everything else ─► cycle   (iterate, or leave)
-│  └─ implement ─► write.verdict ─branch─┬─ committed ───► run-tests ─► test-loop
+│  ├─ test-loop.head ─branch─┬─ implement ──► implement   (the usual entry)
+│  │                         └─ run-tests ──► run-tests   (an AT was just corrected)
+│  └─ implement ─► write.verdict ─branch─┬─ committed ───► run-tests ─► test.route
 │                                        ├─ conflict ────► test-loop  (rebase and retry)
 │                                        ├─ rejected ────► test-loop  (retry)
 │                                        ├─ infra-failed ► test-loop  (blocked; until goes true)
@@ -653,9 +673,28 @@ cycle  = loop(body: test-loop, until: gates are clean, max: 2) ─► cycle.verd
    └─ gates ─► gate.route ─branch─┬─ clippy-in-scope ──────► fix-lint ─► gates-loop
                                   └─ everything else ──────► gates-loop
 
-cycle.verdict ─branch─┬─ clean ───► commit ─► commit.verdict ─┬─ committed ─► accepted
-                      └─ blocked ─► human ─► human.route ─────┼─ commit ────► commit
-                                                              └─ abandon ───► rejected
+cycle.verdict ─branch─┬─ clean ──────► commit ─► commit.verdict ─┬─ committed ─► accepted
+                      │                                          └─ exhausted ─► rejected
+                      ├─ design-gap ─► surface-design-gap ─► human
+                      └─ blocked ────► human
+
+human ─► human.route ─branch─┬─ commit ──► commit
+                             └─ abandon ─► rejected
+```
+
+The sub-branch inside `test-loop`, where a still-red suite is classified before
+it is retried:
+
+```
+run-tests ─► test.route ─branch─┬─ green ─────────────► test-loop  (until goes true)
+                                ├─ still-red ─────────► diagnose
+                                └─ everything else ───► test-loop  (iterate, or blocked)
+
+diagnose ─► diagnose.route ─branch─┬─ impl-wrong ──────► test-loop  (iterate: implement)
+                                   ├─ at-wrong ────────► fix-acceptance-test ─► test-loop
+                                   │                     (next iteration enters at run-tests)
+                                   ├─ design-missing ──► test-loop  (blocked: design-gap)
+                                   └─ harness-failed ──► test-loop  (blocked)
 ```
 
 `human` is a suspend node, not a terminal: the cycle parks, a person answers
@@ -688,6 +727,21 @@ bound cannot be raised by a model, and running out of it is not a route to
 ### What decomposes and what stays wide
 
 The crafter today is one big model doing everything in the diagram. Most nodes are narrow leaves: classify a test outcome, classify a lint finding, decide whether a diff matches the design. Each is a small model with a validator.
+
+A failing test is classified before it is retried. `diagnose` answers
+`impl-wrong | at-wrong | design-missing | harness-failed`, and each cause routes
+to the agent that owns it: `impl-wrong` is the implement loop as it always was,
+`at-wrong` goes to the acceptance designer and re-runs the suite without
+re-implementing, `design-missing` goes to the architect, and `harness-failed` is
+the same "the runner produced no verdict" distinction one leaf up. Looping
+straight back to `implement` on every red assumes the answer to a question
+nobody asked, and a wrong acceptance test burns the whole implement budget
+proving it. `design-missing` is the one that leaves the cycle: a gap in the
+design is never closed by inventing the surface a test happens to need, so the
+architect's leaf describes what is missing and the run parks for a person under
+`design-gap`. It leaves by the body-boundary route rather than by an edge: the
+diagnosis lands in state, every enclosing `until` goes true because of it, and
+`cycle.verdict` routes it on the way out.
 
 The `implement` leaf stays wide. "Make this AT pass with the minimal change" is code generation, not a closed-enum decision. The framework does not require that leaf to be a small model. It requires it to be validated narrowly: the output schema admits only `replace-symbol` effects, the VCS gate runs typecheck and impacted tests, and the validator runs the API-surface diff. Put a mid-size model there if it earns it. "Many small models" is the default because most leaves are classifications. It is not a law forbidding a capable model where the output is genuinely open.
 

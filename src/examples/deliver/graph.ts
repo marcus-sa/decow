@@ -5,10 +5,17 @@
  * `loop` nodes, each with a required bound:
  *
  *   cycle      repeat [ test-loop, refactor, gates-loop ] until gates are clean
- *     test-loop  repeat [ implement, run-tests ] until the test outcome is
- *                neither still-red nor broke-other
+ *     test-loop  repeat [ implement, run-tests, diagnose ] until the test
+ *                outcome is neither still-red nor broke-other
  *     gates-loop repeat [ gates, fix-lint ] until the gate outcome is not
  *                clippy-in-scope
+ *
+ * A still-red suite is classified before it is retried. `diagnose` answers
+ * with the cause, and each cause goes to whoever owns it: `impl-wrong` is the
+ * implement loop as it always was, `at-wrong` corrects the acceptance test and
+ * re-runs the suite without re-implementing, `design-missing` leaves the cycle
+ * for the architect and then a person, and `harness-failed` is the block it
+ * already was one leaf up.
  *
  * A loop body leaves only through the loop's own id, so the "route this to a
  * person" edges the diagram draws from inside the cycle are, here, a block
@@ -29,9 +36,9 @@
 import { z } from "zod";
 import type { Effect, EffectResult } from "../../core/effects.ts";
 import type { Journal } from "../../core/journal.ts";
-import { runStep } from "../../core/step.ts";
 import {
   branch,
+  leaf,
   loop,
   suspend,
   type LoopExit,
@@ -44,8 +51,10 @@ import {
   COMMIT_OUTCOMES,
   REFACTOR_OUTCOMES,
   type DeliverDefs,
+  type DiagnoseOutcome,
   type GateOutcome,
   type LeafId,
+  type LeafInput,
   type LeafOutputFor,
   type RedOutcome,
   type StepUnderDelivery,
@@ -77,6 +86,9 @@ export type Leaves = {
   "run-tests.red"?: RedOutcome;
   implement?: LeafOutputFor<"implement">["decision"];
   "run-tests"?: TestOutcome;
+  diagnose?: DiagnoseOutcome;
+  "fix-acceptance-test"?: LeafOutputFor<"fix-acceptance-test">["decision"];
+  "surface-design-gap"?: LeafOutputFor<"surface-design-gap">["decision"];
   refactor?: LeafOutputFor<"refactor">["decision"];
   gates?: GateOutcome;
   "fix-lint"?: LeafOutputFor<"fix-lint">["decision"];
@@ -94,6 +106,7 @@ export type HumanDecision = HumanAnswer["decision"];
 export const HUMAN_REASONS = [
   "already-green",
   "harness-failed",
+  "design-gap",
   "validator-exhausted",
   "write-infra-failed",
   "out-of-scope-structural",
@@ -125,6 +138,8 @@ export type State = {
   loopExhausted?: LoopId;
   /** Iterations each loop last ran, folded in by that loop's `absorb`. */
   iterations: Partial<Record<LoopId, number>>;
+  /** What `surface-design-gap` wrote for a person. Payload; never branched on. */
+  designGap?: string;
 
   /** Absorbed by the `human` suspend node; read only by `human.route`. */
   human?: HumanAnswer;
@@ -150,8 +165,16 @@ export const seed = (step: StepUnderDelivery, evidence: string): State => ({
  */
 export const blockedReason = (s: State): HumanReason | undefined => {
   if (s.leaf["run-tests.red"] === "already-green") return "already-green";
-  if (s.leaf["run-tests.red"] === "harness-failed" || s.leaf["run-tests"] === "harness-failed")
+  if (
+    s.leaf["run-tests.red"] === "harness-failed" ||
+    s.leaf["run-tests"] === "harness-failed" ||
+    s.leaf.diagnose === "harness-failed"
+  )
     return "harness-failed";
+  // Ahead of `exhausted` deliberately: once a design gap is the finding, it
+  // stays the reason a person is handed, even when the leaf that was supposed
+  // to describe it could not satisfy its own validator.
+  if (s.leaf.diagnose === "design-missing") return "design-gap";
   if (s.exhausted !== undefined) return "validator-exhausted";
   if (s.write === "infra-failed") return "write-infra-failed";
   if (s.leaf.gates === "out-of-scope-structural") return "out-of-scope-structural";
@@ -168,15 +191,27 @@ export type ActivateVerdict = (typeof ACTIVATE_OUTCOMES)[number] | "exhausted";
 export type RedVerdict = RedOutcome | "exhausted";
 export type WriteVerdict = WriteOutcome | "exhausted";
 export type TestVerdict = TestOutcome | "exhausted";
+export type DiagnoseVerdict = DiagnoseOutcome | "exhausted";
 export type RefactorVerdict = (typeof REFACTOR_OUTCOMES)[number] | "exhausted";
 export type GateVerdict = GateOutcome | "exhausted";
 export type CommitVerdict = (typeof COMMIT_OUTCOMES)[number] | "exhausted";
-export type CycleVerdict = "clean" | "blocked";
+export type CycleVerdict = "clean" | "design-gap" | "blocked";
+
+/**
+ * Where the next iteration of the test loop starts. An acceptance test that
+ * has just been corrected is re-run, not re-implemented: `fix-acceptance-test`
+ * left its verdict in the slot, so the head routes to `run-tests` once and
+ * `run-tests` clears the slot on its way past.
+ */
+export type TestPhase = "implement" | "run-tests";
 
 export const activateVerdict = (s: State): ActivateVerdict => s.leaf["activate-at"] ?? "exhausted";
 export const redVerdict = (s: State): RedVerdict => s.leaf["run-tests.red"] ?? "exhausted";
 export const writeVerdict = (s: State): WriteVerdict => s.write ?? "exhausted";
 export const testVerdict = (s: State): TestVerdict => s.leaf["run-tests"] ?? "exhausted";
+export const diagnoseVerdict = (s: State): DiagnoseVerdict => s.leaf.diagnose ?? "exhausted";
+export const testPhase = (s: State): TestPhase =>
+  s.leaf["fix-acceptance-test"] === undefined ? "implement" : "run-tests";
 export const refactorVerdict = (s: State): RefactorVerdict => s.leaf.refactor ?? "exhausted";
 export const gateVerdict = (s: State): GateVerdict => s.leaf.gates ?? "exhausted";
 export const commitVerdict = (s: State): CommitVerdict => s.leaf.commit ?? "exhausted";
@@ -206,8 +241,11 @@ export const cycleDone = (s: State): boolean =>
  * COMMIT, and nothing reaches it except a clean gate run on an unblocked
  * cycle, which is what "no edge leads from partial to accepted" means here.
  */
-export const cycleVerdict = (s: State): CycleVerdict =>
-  blockedReason(s) === undefined && s.leaf.gates === "clean" ? "clean" : "blocked";
+export const cycleVerdict = (s: State): CycleVerdict => {
+  const blocked = blockedReason(s);
+  if (blocked === "design-gap") return "design-gap";
+  return blocked === undefined && s.leaf.gates === "clean" ? "clean" : "blocked";
+};
 
 /**
  * `human` is reachable only from a branch that already established a block, so
@@ -225,6 +263,7 @@ export const humanTrail = (s: State): unknown[] => [
   { leaves: s.leaf },
   { write: s.write, symbolVersion: s.symbolVersion },
   { exhausted: s.exhausted, loopExhausted: s.loopExhausted, iterations: s.iterations },
+  { designGap: s.designGap },
 ];
 
 /**
@@ -246,40 +285,46 @@ type LeafSpec = {
   absorb?: (s: State, results: EffectResult[]) => State;
   /** Slots this leaf invalidates, applied whether it decided or not. */
   reset?: (s: State) => State;
+  /** Carry one payload field into state. The graph never branches on it. */
+  carry?: (s: State, payload: Record<string, unknown>) => State;
 };
 
 /**
  * Every leaf is one `runStep` call. On `ok` the leaf's closed decision lands in
  * `leaf[id]`; on `validator-exhausted` that slot is cleared and `exhausted`
  * names the leaf, so `blockedReason` sees it, every enclosing `until` goes
- * true, and the next branch routes the run to a person. The whole trail comes
- * along as an `append-trail` effect.
+ * true, and the next branch routes the run to a person. The `leaf` constructor
+ * owns the trail: the whole thing comes along as an `append-trail` effect
+ * whether this file remembers to ask for it or not.
  */
 const leafNode = <K extends LeafId>(
   id: K,
   defs: DeliverDefs,
   journal: Journal,
   spec: LeafSpec,
-): Node<State> => ({
-  type: "step",
-  run: async (s) => {
-    const base = spec.reset ? spec.reset(s) : s;
-    const result = await runStep(defs[id], { step: s.step, evidence: s.evidence }, journal);
-    if (result.decision !== "ok") {
-      return {
-        state: { ...base, leaf: { ...base.leaf, [id]: undefined }, exhausted: id },
-        effects: [{ type: "append-trail", line: JSON.stringify({ leaf: id, trail: result.trail }) }],
-      };
-    }
-    const payload = result.output.payload as Record<string, unknown>;
-    return {
-      state: { ...base, leaf: { ...base.leaf, [id]: result.output.decision } },
-      effects: spec.effects?.(base, payload) ?? [],
-    };
-  },
-  absorb: spec.absorb ?? ((s) => s),
-  next: spec.next,
-});
+): Node<State> => {
+  const rebase = (s: State): State => (spec.reset ? spec.reset(s) : s);
+  return leaf<State, LeafInput, LeafOutputFor<K>>({
+    id,
+    def: defs[id],
+    journal,
+    input: (s) => ({ step: s.step, evidence: s.evidence }),
+    absorb: (s, r) => {
+      const base = rebase(s);
+      if (r.decision !== "ok") {
+        return { ...base, leaf: { ...base.leaf, [id]: undefined }, exhausted: id };
+      }
+      const decided: State = { ...base, leaf: { ...base.leaf, [id]: r.output.decision } };
+      return spec.carry?.(decided, r.output.payload as Record<string, unknown>) ?? decided;
+    },
+    effects: (s, r) =>
+      r.decision === "ok"
+        ? spec.effects?.(rebase(s), r.output.payload as Record<string, unknown>) ?? []
+        : [],
+    absorbEffects: spec.absorb,
+    next: spec.next,
+  });
+};
 
 /**
  * A loop's exit facts. `iterations` is what a person reads; `exhausted` is what
@@ -331,11 +376,19 @@ export const deliverGraph = (journal: Journal, defs: DeliverDefs): Workflow<Stat
     /* ---- GREEN: implement until the suite is green ---------------------- */
 
     "test-loop": loop<State>({
-      body: "implement",
+      body: "test-loop.head",
       until: testDone,
       max: MAX_TEST_ATTEMPTS,
       absorb: absorbLoop("test-loop"),
       next: "test.verdict",
+    }),
+
+    // An iteration normally implements and then runs the suite. The one
+    // exception is an iteration that follows a corrected acceptance test:
+    // re-implementing then would answer a question nobody asked.
+    "test-loop.head": branch<State, TestPhase>(testPhase, {
+      implement: "implement",
+      "run-tests": "run-tests",
     }),
 
     implement: leafNode("implement", defs, journal, {
@@ -377,7 +430,43 @@ export const deliverGraph = (journal: Journal, defs: DeliverDefs): Workflow<Stat
       exhausted: "test-loop",
     }),
 
-    "run-tests": leafNode("run-tests", defs, journal, { next: "test-loop" }),
+    // A run of the suite invalidates both the previous diagnosis and the
+    // acceptance-test correction that produced this run: the head routes to
+    // `implement` again from here on unless a new diagnosis says otherwise.
+    "run-tests": leafNode("run-tests", defs, journal, {
+      next: "test.route",
+      reset: (s) => ({
+        ...s,
+        leaf: { ...s.leaf, diagnose: undefined, "fix-acceptance-test": undefined },
+      }),
+    }),
+
+    // The one new edge inside the loop: a still-red suite is classified before
+    // it is retried, rather than looping straight back to `implement`.
+    "test.route": branch<State, TestVerdict>(testVerdict, {
+      green: "test-loop",
+      "still-red": "diagnose",
+      "broke-other": "test-loop",
+      "harness-failed": "test-loop",
+      exhausted: "test-loop",
+    }),
+
+    diagnose: leafNode("diagnose", defs, journal, { next: "diagnose.route" }),
+
+    // Each cause routes to whoever owns it. `impl-wrong` is the loop it always
+    // was. `at-wrong` corrects the test. `design-missing` and `harness-failed`
+    // are blocks: `blockedReason` sees them, every enclosing `until` goes true,
+    // and the run unwinds to `cycle.verdict` rather than jumping out of the
+    // body, which the boundary rule does not allow.
+    "diagnose.route": branch<State, DiagnoseVerdict>(diagnoseVerdict, {
+      "impl-wrong": "test-loop",
+      "at-wrong": "fix-acceptance-test",
+      "design-missing": "test-loop",
+      "harness-failed": "test-loop",
+      exhausted: "test-loop",
+    }),
+
+    "fix-acceptance-test": leafNode("fix-acceptance-test", defs, journal, { next: "test-loop" }),
 
     // still-red and broke-other are reachable here only at the bound: below
     // it, `testDone` is false and the loop went round again.
@@ -434,14 +523,34 @@ export const deliverGraph = (journal: Journal, defs: DeliverDefs): Workflow<Stat
     // loop rather than proceeding.
     "add-test": leafNode("add-test", defs, journal, {
       next: "cycle",
-      reset: (s) => ({ ...s, leaf: { ...s.leaf, "run-tests": undefined }, write: undefined }),
+      reset: (s) => ({
+        ...s,
+        leaf: {
+          ...s.leaf,
+          "run-tests": undefined,
+          diagnose: undefined,
+          "fix-acceptance-test": undefined,
+        },
+        write: undefined,
+      }),
     }),
 
     /* ---- out of the cycle: commit, or a person ---------------------------- */
 
     "cycle.verdict": branch<State, CycleVerdict>(cycleVerdict, {
       clean: "commit",
+      "design-gap": "surface-design-gap",
       blocked: "human",
+    }),
+
+    // The design is the contract, and a gap in it is not a thing a model may
+    // close by inventing the surface a test happens to need. The architect
+    // describes what is missing; the description rides the trail; a person
+    // decides. This leaf writes nothing and has no branch: whether it managed
+    // to describe the gap or not, the run parks under `design-gap`.
+    "surface-design-gap": leafNode("surface-design-gap", defs, journal, {
+      next: "human",
+      carry: (s, payload) => ({ ...s, designGap: String(payload.gap ?? "") }),
     }),
 
     human: suspend<State, HumanAnswer>({

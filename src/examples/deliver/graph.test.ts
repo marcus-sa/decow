@@ -61,12 +61,13 @@ const STEP = {
 };
 const EVIDENCE = "test result: FAILED. assertion failed: expected Running, got Pending";
 
-/** One payload shape covers both leaf output schemas; the graph reads neither. */
+/** One payload shape covers every leaf output schema; the graph reads none of them. */
 const PAYLOAD = {
   anchor: "expected Running, got Pending",
   rationale: "stubbed",
   symbolId: "ExecDriver::start",
   body: "fn start(&self) { /* ... */ }",
+  gap: "the design names no way to observe the allocation's state",
 };
 
 /** The sentinel for "this leaf's validator was never satisfied". */
@@ -129,6 +130,10 @@ const start = (script: Script, execute: EffectExecutor = landsCleanly) =>
 const iterationsOf = (trail: readonly unknown[]) =>
   (trail[3] as { iterations: Record<string, number> }).iterations;
 
+/** The design-gap row of the same trail. */
+const designGapOf = (trail: readonly unknown[]) =>
+  (trail[4] as { designGap?: string }).designGap;
+
 describe("deliver graph", () => {
   test("the graph is structurally well-formed", () => {
     expect(graphDefects(deliverGraph(journalFor(HAPPY), defs))).toEqual([]);
@@ -145,9 +150,11 @@ describe("deliver graph", () => {
       "red",
       "cycle",
       "test-loop",
+      "test-loop.head",
       "implement",
       "write.verdict",
       "run-tests",
+      "test.route",
       "test.verdict",
       "refactor",
       "refactor.verdict",
@@ -187,7 +194,7 @@ describe("deliver graph", () => {
     });
 
     // The bounds are what make this a number rather than an infinity.
-    expect(paths).toHaveLength(1270);
+    expect(paths).toHaveLength(2215);
 
     // Every node the graph declares was exercised, except the one that is only
     // reachable by answering a suspension. The resume tests below cover it.
@@ -201,7 +208,7 @@ describe("deliver graph", () => {
   }, 60_000);
 
   test("the test loop retries implement inside its bound, then hands the bound to a person", async () => {
-    const outcome = await start({ ...HAPPY, "run-tests": "still-red" });
+    const outcome = await start({ ...HAPPY, "run-tests": "still-red", diagnose: "impl-wrong" });
 
     expect(outcome.kind).toBe("suspended");
     if (outcome.kind !== "suspended") return;
@@ -303,6 +310,100 @@ describe("deliver graph", () => {
     if (outcome.kind !== "suspended") return;
     expect(outcome.reason).toBe("validator-exhausted");
     expect(outcome.trail[3]).toMatchObject({ exhausted: "gates" });
+  });
+});
+
+/**
+ * The diagnosis branch. A still-red suite is classified before it is retried,
+ * and the classification is the whole point: each cause has a different owner,
+ * so each one has a different route. The four tests below are one per member of
+ * the enum, plus the validator's own refusal.
+ */
+describe("deliver graph, the diagnosis branch", () => {
+  const stillRed = (diagnosis: string, extra: Script = {}) =>
+    start({ ...HAPPY, "run-tests": "still-red", diagnose: diagnosis, ...extra });
+
+  test("impl-wrong retries implement, which is the loop it always was", async () => {
+    const outcome = await stillRed("impl-wrong");
+
+    expect(outcome.kind === "suspended" && outcome.reason).toBe("test-loop-exhausted");
+    expect(visitCount(outcome.trace, "diagnose")).toBe(MAX_TEST_ATTEMPTS);
+    // The implement loop ran again, which is the pre-diagnosis behaviour.
+    expect(visitCount(outcome.trace, "implement")).toBe(MAX_TEST_ATTEMPTS);
+    expect(visited(outcome.trace, "fix-acceptance-test")).toBe(false);
+  });
+
+  test("at-wrong corrects the test and re-runs the suite without re-implementing", async () => {
+    const outcome = await stillRed("at-wrong", { "fix-acceptance-test": "fixed" });
+
+    expect(outcome.kind === "suspended" && outcome.reason).toBe("test-loop-exhausted");
+    expect(visited(outcome.trace, "fix-acceptance-test")).toBe(true);
+    // The suite ran twice; the implementation was written once. That is the
+    // whole difference between at-wrong and impl-wrong.
+    expect(visitCount(outcome.trace, "run-tests")).toBe(MAX_TEST_ATTEMPTS);
+    expect(visitCount(outcome.trace, "implement")).toBe(1);
+    // The second iteration entered at `run-tests`, not at `implement`.
+    const second = outcome.trace.lastIndexOf("test-loop.head");
+    expect(outcome.trace.slice(second, second + 6)).toEqual([
+      "test-loop.head",
+      "run-tests",
+      "test.route",
+      "diagnose",
+      "diagnose.route",
+      "fix-acceptance-test",
+    ]);
+  });
+
+  test("design-missing leaves the cycle, surfaces the gap, and parks under design-gap", async () => {
+    const outcome = await stillRed("design-missing", { "surface-design-gap": "surfaced" });
+
+    expect(outcome.kind).toBe("suspended");
+    if (outcome.kind !== "suspended") return;
+    expect(outcome.reason).toBe("design-gap");
+    expect(outcome.trace.at(-1)).toBe("human");
+
+    // It left the loop rather than spending the budget: one implement, one
+    // cycle, no second test attempt. The body-boundary rule is what makes this
+    // an unwind — `design-missing` routes to the loop's own id, `testDone` and
+    // `cycleDone` go true because `blockedReason` sees it, and `cycle.verdict`
+    // routes it on the way out.
+    expect(visitCount(outcome.trace, "implement")).toBe(1);
+    expect(visitCount(outcome.trace, "cycle")).toBe(1);
+    expect(visitCount(outcome.trace, "test-loop")).toBe(1);
+    expect(visited(outcome.trace, "commit")).toBe(false);
+
+    // The architect's leaf ran between the cycle and the person, and what it
+    // wrote is in the trail the person reads.
+    expect(outcome.trace.slice(-3)).toEqual(["cycle.verdict", "surface-design-gap", "human"]);
+    expect(designGapOf(outcome.trail)).toBe(PAYLOAD.gap);
+  });
+
+  test("harness-failed from the diagnosis blocks at once, like the one a leaf up", async () => {
+    const outcome = await stillRed("harness-failed");
+
+    expect(outcome.kind === "suspended" && outcome.reason).toBe("harness-failed");
+    expect(visitCount(outcome.trace, "implement")).toBe(1);
+    expect(visited(outcome.trace, "surface-design-gap")).toBe(false);
+  });
+
+  test("a diagnosis whose validator refuses parks under validator-exhausted", async () => {
+    const outcome = await stillRed(EXHAUSTED);
+
+    expect(outcome.kind).toBe("suspended");
+    if (outcome.kind !== "suspended") return;
+    expect(outcome.reason).toBe("validator-exhausted");
+    expect(outcome.trail[3]).toMatchObject({ exhausted: "diagnose" });
+  });
+
+  test("an architect that cannot describe the gap still parks under design-gap", async () => {
+    // `blockedReason` puts the design gap ahead of `exhausted` deliberately:
+    // once a design gap is the finding, it stays the reason a person is handed.
+    const outcome = await stillRed("design-missing", { "surface-design-gap": EXHAUSTED });
+
+    expect(outcome.kind === "suspended" && outcome.reason).toBe("design-gap");
+    expect(outcome.kind === "suspended" && outcome.trail[3]).toMatchObject({
+      exhausted: "surface-design-gap",
+    });
   });
 });
 

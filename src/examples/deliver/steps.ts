@@ -54,6 +54,9 @@ export const LEAF_IDS = [
   "run-tests.red",
   "implement",
   "run-tests",
+  "diagnose",
+  "fix-acceptance-test",
+  "surface-design-gap",
   "refactor",
   "gates",
   "fix-lint",
@@ -69,6 +72,21 @@ export type RedOutcome = (typeof RED_OUTCOMES)[number];
 /** Every later run of the suite. */
 export const TEST_OUTCOMES = ["green", "still-red", "broke-other", "harness-failed"] as const;
 export type TestOutcome = (typeof TEST_OUTCOMES)[number];
+
+/**
+ * Why the suite is still red. Four causes, each owned by a different agent: the
+ * implementation, the acceptance test, the design, or the runner. Classifying
+ * before retrying is what stops a wrong acceptance test from burning the
+ * implement budget, and what stops a missing design from being filled in by
+ * inventing API.
+ */
+export const DIAGNOSE_OUTCOMES = [
+  "impl-wrong",
+  "at-wrong",
+  "design-missing",
+  "harness-failed",
+] as const;
+export type DiagnoseOutcome = (typeof DIAGNOSE_OUTCOMES)[number];
 
 /** The quality gate: clippy, the mutation kill rate, and scope. */
 export const GATE_OUTCOMES = [
@@ -86,6 +104,8 @@ export const REFACTOR_OUTCOMES = ["refactored"] as const;
 export const FIX_LINT_OUTCOMES = ["fixed"] as const;
 export const ADD_TEST_OUTCOMES = ["added"] as const;
 export const COMMIT_OUTCOMES = ["committed"] as const;
+export const FIX_AT_OUTCOMES = ["fixed"] as const;
+export const DESIGN_GAP_OUTCOMES = ["surfaced"] as const;
 
 export type ActivateOutcome = (typeof ACTIVATE_OUTCOMES)[number];
 export type ImplementOutcome = (typeof IMPLEMENT_OUTCOMES)[number];
@@ -93,6 +113,8 @@ export type RefactorOutcome = (typeof REFACTOR_OUTCOMES)[number];
 export type FixLintOutcome = (typeof FIX_LINT_OUTCOMES)[number];
 export type AddTestOutcome = (typeof ADD_TEST_OUTCOMES)[number];
 export type CommitOutcome = (typeof COMMIT_OUTCOMES)[number];
+export type FixAtOutcome = (typeof FIX_AT_OUTCOMES)[number];
+export type DesignGapOutcome = (typeof DESIGN_GAP_OUTCOMES)[number];
 
 /** The decision space of each leaf, by id. One table, read by the harness too. */
 export const LEAF_DECISIONS = {
@@ -100,6 +122,9 @@ export const LEAF_DECISIONS = {
   "run-tests.red": RED_OUTCOMES,
   implement: IMPLEMENT_OUTCOMES,
   "run-tests": TEST_OUTCOMES,
+  diagnose: DIAGNOSE_OUTCOMES,
+  "fix-acceptance-test": FIX_AT_OUTCOMES,
+  "surface-design-gap": DESIGN_GAP_OUTCOMES,
   refactor: REFACTOR_OUTCOMES,
   gates: GATE_OUTCOMES,
   "fix-lint": FIX_LINT_OUTCOMES,
@@ -114,11 +139,14 @@ export type LeafDecision = { [K in LeafId]: (typeof LEAF_DECISIONS)[K][number] }
 
 /**
  * The payload the graph carries but never reads. A classifying leaf quotes the
- * evidence; the one generative leaf that writes returns the symbol it rewrote.
+ * evidence; the one generative leaf that writes returns the symbol it rewrote;
+ * the leaf that surfaces a design gap returns the description a person reads.
  */
 export type LeafPayload<K extends LeafId> = K extends "implement"
   ? { symbolId: string; body: string; rationale: string }
-  : { anchor: string; rationale: string };
+  : K extends "surface-design-gap"
+    ? { gap: string; rationale: string }
+    : { anchor: string; rationale: string };
 
 export type LeafOutputFor<K extends LeafId> = {
   decision: LeafDecision[K];
@@ -137,6 +165,15 @@ const change = <D extends readonly [string, ...string[]]>(decisions: D) =>
   stepOutput(decisions, {
     symbolId: z.string(),
     body: z.string(),
+    rationale: z.string().max(300),
+  });
+
+/** The leaf that surfaces a design gap: the description a person has to read. */
+const gapReport = <D extends readonly [string, ...string[]]>(decisions: D) =>
+  stepOutput(decisions, {
+    gap: z
+      .string()
+      .describe("The surface the acceptance test needs that the design does not name"),
     rationale: z.string().max(300),
   });
 
@@ -200,6 +237,34 @@ export const vacuousAtIsTestingTheatre = (decisions: readonly string[]): Require
   decisions,
 });
 
+/**
+ * The rule that makes `design-missing` a route rather than a judgement call. A
+ * gap the design left is surfaced to a person; it is never closed by inventing
+ * the surface the test happens to need.
+ */
+export const designGapIsNotInventedApi = (decisions: readonly string[]): Requirement<LeafCtx> => ({
+  id: "deliver.design-gap-goes-to-a-person",
+  sourceId: "claude.implement-to-the-design",
+  text:
+    "When the acceptance test needs a public surface the accepted design does not name, that is " +
+    "design-missing. Do not report impl-wrong and do not invent the surface: the gap is surfaced " +
+    "to a person, who decides.",
+  decisions,
+});
+
+/**
+ * The rule that stops `at-wrong` becoming a licence to weaken the test. Fixing
+ * an acceptance test changes how the criterion is asserted, never which one.
+ */
+export const atFixPreservesTheCriterion = (decisions: readonly string[]): Requirement<LeafCtx> => ({
+  id: "deliver.at-fix-preserves-the-criterion",
+  sourceId: "testing.red-scaffolds-and-activation",
+  text:
+    "An acceptance test may be corrected only in how it asserts the step's criterion, never in " +
+    "which criterion it asserts. An assertion weakened until the suite is green is testing theatre.",
+  decisions,
+});
+
 export const scopeIsTheStep = (decisions: readonly string[]): Requirement<LeafCtx> => ({
   id: "deliver.gate-findings-are-in-scope-fixes",
   sourceId: "claude.deferrals-require-issues",
@@ -219,6 +284,9 @@ const REQUIREMENTS: { [K in LeafId]: ((d: readonly string[]) => Requirement<Leaf
   "run-tests.red": [anchorMustBeVerbatim, vacuousAtIsTestingTheatre, outcomesAreDistinct],
   implement: [noInventedApi, minimalChange],
   "run-tests": [anchorMustBeVerbatim, outcomesAreDistinct],
+  diagnose: [anchorMustBeVerbatim, outcomesAreDistinct, designGapIsNotInventedApi],
+  "fix-acceptance-test": [atFixPreservesTheCriterion, noInventedApi],
+  "surface-design-gap": [designGapIsNotInventedApi, noInventedApi],
   refactor: [noInventedApi],
   gates: [anchorMustBeVerbatim, scopeIsTheStep],
   "fix-lint": [noInventedApi, scopeIsTheStep],
@@ -239,6 +307,18 @@ const SYSTEM: Record<LeafId, string> = {
     "design names. Report `written` and return the symbol and its new body.",
   "run-tests":
     "You classify one run of the suite. Answer with one word. Quote the runner output verbatim in `anchor`.",
+  diagnose:
+    "You classify WHY one acceptance test is still red, so the failure is routed to whoever owns " +
+    "it: impl-wrong (the production code), at-wrong (the test asserts the criterion wrongly), " +
+    "design-missing (the test needs a surface the design does not name), harness-failed (the " +
+    "runner produced no verdict). Answer with one word. Quote the runner output verbatim in `anchor`.",
+  "fix-acceptance-test":
+    "You correct how one acceptance test asserts its step's criterion, and nothing else. You do " +
+    "not change which criterion it asserts and you do not touch production code. Report `fixed`.",
+  "surface-design-gap":
+    "You describe the public surface the acceptance test needs that the accepted design does not " +
+    "name. You do not invent it and you do not write code. Report `surfaced` and put the " +
+    "description in `gap`.",
   refactor:
     "You refactor the change you just made without altering behaviour or public surface. Report `refactored`.",
   gates:
@@ -256,6 +336,14 @@ const PROMPT: Record<LeafId, (i: LeafInput) => string> = {
     `Step ${i.step.id}\n\nAcceptance criteria:\n${i.step.criteria}\n\n` +
     `The design declares exactly this surface:\n${i.step.design}\n\nRunner output:\n${i.evidence}`,
   "run-tests": (i) => `Step ${i.step.id}\n\nRunner output:\n${i.evidence}`,
+  diagnose: (i) =>
+    `Step ${i.step.id}\n\nAcceptance criteria:\n${i.step.criteria}\n\n` +
+    `The design declares exactly this surface:\n${i.step.design}\n\nRunner output:\n${i.evidence}`,
+  "fix-acceptance-test": (i) =>
+    `Step ${i.step.id}\n\nAcceptance criteria:\n${i.step.criteria}\n\nRunner output:\n${i.evidence}`,
+  "surface-design-gap": (i) =>
+    `Step ${i.step.id}\n\nAcceptance criteria:\n${i.step.criteria}\n\n` +
+    `The design declares exactly this surface:\n${i.step.design}\n\nRunner output:\n${i.evidence}`,
   refactor: (i) => `Step ${i.step.id}\n\nThe design declares exactly this surface:\n${i.step.design}`,
   gates: (i) => `Step ${i.step.id}\n\nGate output:\n${i.evidence}`,
   "fix-lint": (i) => `Step ${i.step.id}\n\nGate output:\n${i.evidence}`,
@@ -273,6 +361,13 @@ export type DeliverModels = {
   worker: ModelBinding;
   validator: ModelBinding;
   escalateTo?: ModelBinding;
+  /**
+   * Per-leaf worker override, falling back to `worker`. The diagnosis branch
+   * routes each cause to the agent that owns it, and "which agent" is a
+   * binding, so the routing is expressed here rather than in the graph. A test
+   * that supplies only `worker` stubs every leaf the same way.
+   */
+  workers?: Partial<Record<LeafId, ModelBinding>>;
 };
 
 /** Step id for a leaf. The journal keys on this. */
@@ -289,14 +384,20 @@ export const leafDef = <K extends LeafId>(leaf: K, models: DeliverModels): LeafD
     // One cast, here and nowhere else: the concrete zod schema per leaf is
     // what `generateObject` is handed, and `LeafOutputFor<K>` is what the
     // graph sees. The two agree by construction of LEAF_DECISIONS.
-    output: (leaf === "implement" ? change(decisions) : classification(decisions)) as unknown as z.ZodType<
-      LeafOutputFor<K>
-    >,
+    output: (leaf === "implement"
+      ? change(decisions)
+      : leaf === "surface-design-gap"
+        ? gapReport(decisions)
+        : classification(decisions)) as unknown as z.ZodType<LeafOutputFor<K>>,
     requirements: REQUIREMENTS[leaf].map((row) => row(decisions)) as Requirement<{
       input: LeafInput;
       output: LeafOutputFor<K>;
     }>[],
-    worker: { model: models.worker, system: SYSTEM[leaf], prompt: PROMPT[leaf] },
+    worker: {
+      model: models.workers?.[leaf] ?? models.worker,
+      system: SYSTEM[leaf],
+      prompt: PROMPT[leaf],
+    },
     validator: { model: models.validator },
     maxAttempts: 2,
     escalateTo: models.escalateTo,

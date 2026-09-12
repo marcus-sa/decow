@@ -7,7 +7,8 @@
     "test": "bun test",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun test",
-    "smoke": "bun run src/examples/distill/smoke.ts"
+    "smoke": "bun run src/examples/distill/smoke.ts",
+    "smoke:deliver": "bun run src/examples/deliver/smoke.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
