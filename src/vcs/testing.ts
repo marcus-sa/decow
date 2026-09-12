@@ -19,7 +19,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import type { Clock, IdGen } from "./registry.ts";
-import { alwaysPasses, type StageOutcome, type Verifier } from "./verify.ts";
+import { alwaysPasses, type OracleVerdict, type StageOutcome, type Verifier } from "./verify.ts";
 
 /** Ids of the form `sym-1`, `lease-2`, counted per prefix. */
 export const counterIds = (): IdGen => {
@@ -51,7 +51,26 @@ export const passingVerifier = (overrides: Partial<Verifier> = {}): Verifier => 
   typecheck: alwaysPasses,
   tests: alwaysPasses,
   policy: alwaysPasses,
+  // Not a stage, so "passes" is not its neutral answer. The neutral answer is
+  // "the runner never started", which is what a fixture that never measures an
+  // oracle should produce: an infrastructure failure, charged to nobody.
+  measure: neverMeasures,
   ...overrides,
+});
+
+/** An oracle measurement that never happened. The neutral fixture answer. */
+export const neverMeasures = async (): Promise<undefined> => undefined;
+
+/** An oracle that measured this verdict, for a test that needs one. */
+export const measuresAs = (
+  verdict: OracleVerdict,
+  output = `measured ${verdict}`,
+): Verifier["measure"] => async (ctx) => ({
+  verdict,
+  axis: "counts",
+  output,
+  exitCode: verdict === "green" ? 0 : 1,
+  argv: ctx.argv,
 });
 
 /** A stage that always fails, for asserting rollback and the failure category. */

@@ -45,7 +45,75 @@ export type Effect =
    * `rejected { by: "contract" }` with the omitted ids, not as a smaller run.
    */
   | { type: "run-tests"; impacted: string[]; extra?: string[] }
+  /**
+   * Execute one oracle and read a verdict off it.
+   *
+   * This is `run-tests` asking a different question and it is a different
+   * effect because of it. `run-tests` asks "did the change break anything",
+   * and a failure is a refusal. This asks "what does this one test do, on its
+   * own, right now", and a failure — `red` — is the DESIRED answer.
+   *
+   * The reason it is software rather than a leaf is the rule nwave-experimental
+   * names `boundary:software-measures-model-decides`: the two roles that hold
+   * an oracle, the author and its reviewer, cannot run it. "This oracle fails
+   * on its assertion and not on its scaffolding" is therefore a property the
+   * runner owns and measures, and an observation is a fixed floor rather than
+   * a rigor knob.
+   *
+   * `oracle` is a locator: `path::selector`, or a bare path for the whole file.
+   * `argv` overrides the command the locator would derive, for a project whose
+   * runner is not the default.
+   */
+  | { type: "measure-oracle"; oracle: string; argv?: string[] }
   | { type: "append-trail"; line: string };
+
+/**
+ * What executing one oracle established. Four answers, and the middle two are
+ * the ones that earn the type.
+ *
+ *   green          it passed. Before any production code that is a VACUOUS
+ *                  oracle — it proves nothing — and it is a person's
+ *   red            it failed on its assertion. The desired answer
+ *   broken         it failed on its scaffolding: an import that does not
+ *                  resolve, a fixture that threw, a file that does not parse.
+ *                  The defect is the ORACLE's and it goes back to its author
+ *   indeterminate  the runner exited non-zero while its own summary recorded
+ *                  no failure and no error. Nothing about the oracle was
+ *                  established, so nothing about it may be claimed
+ *
+ * Exit status alone cannot tell `red` from `broken`: a runner exits non-zero
+ * for both. That is why the counts are read, and why the axis travels with the
+ * answer.
+ */
+export const ORACLE_VERDICTS = ["green", "red", "broken", "indeterminate"] as const;
+export type OracleVerdict = (typeof ORACLE_VERDICTS)[number];
+
+/** What reached the verdict, so a weaker claim is legible as one. */
+export const MEASURE_AXES = ["exit-status", "no-summary", "counts"] as const;
+export type MeasureAxis = (typeof MEASURE_AXES)[number];
+
+/**
+ * One oracle, measured.
+ *
+ * It rides on `EffectResult` as an optional field rather than as a fifth
+ * outcome, because the outcome union is what every other graph's edge tables
+ * are total over and a fifth member would give each of them a dead edge. A
+ * pure branch reads `verdict` off this and gets all four answers from one
+ * field; `outcome` stays the coarse "did the world accept this" every other
+ * effect answers.
+ */
+export type OracleMeasurement = {
+  verdict: OracleVerdict;
+  axis: MeasureAxis;
+  /** Verbatim runner output, both channels. What a person and a retry read. */
+  output: string;
+  /** The process's exit status. Absent when it never produced one. */
+  exitCode?: number;
+  /** The runner's own summary, when it printed one. */
+  counts?: { passed: number; failed: number; errored: number };
+  /** The command that ran, so a reader can run it by hand. */
+  argv: readonly string[];
+};
 
 /**
  * `by` names the gate that refused the write. Five members, covering the three
@@ -72,10 +140,22 @@ export type RejectedBy = "typecheck" | "tests" | "schema" | "contract" | "struct
 export type RejectionDetail = { failed?: readonly string[] };
 
 export type EffectResult =
-  | { effect: Effect; outcome: "committed"; version: number }
+  | { effect: Effect; outcome: "committed"; version: number; measured?: OracleMeasurement }
   | { effect: Effect; outcome: "conflict"; currentVersion: number }
-  | { effect: Effect; outcome: "rejected"; by: RejectedBy; detail?: RejectionDetail }
-  | { effect: Effect; outcome: "infra-failed" };
+  | { effect: Effect; outcome: "rejected"; by: RejectedBy; detail?: RejectionDetail; measured?: OracleMeasurement }
+  | { effect: Effect; outcome: "infra-failed"; measured?: OracleMeasurement };
+
+/**
+ * The measurement on a result, if there is one.
+ *
+ * `conflict` is the one outcome that carries none, because a measurement
+ * claims no version and therefore has no optimistic check to lose. Reading the
+ * field across the union needs that narrowing once rather than at every call
+ * site, so it lives here — and a branch that routes an oracle verdict is then
+ * a pure function of one field.
+ */
+export const measurementOf = (result: EffectResult | undefined): OracleMeasurement | undefined =>
+  result === undefined || result.outcome === "conflict" ? undefined : result.measured;
 
 export type Artifact = { version: number; row: unknown };
 
@@ -106,8 +186,8 @@ export type MemoryEffectsOptions = {
 /**
  * In-memory effect executor. `upsert-artifact` goes to a real artifact store
  * under the optimistic version check the effect declares; the trail is an
- * array. `replace-symbol`, `write-file` and `run-tests` come back
- * `infra-failed` because there is no VCS and no test runner behind this
+ * array. `replace-symbol`, `write-file`, `run-tests` and `measure-oracle` come
+ * back `infra-failed` because there is no VCS and no test runner behind this
  * executor — that is the honest outcome, not `rejected`.
  */
 export const memoryEffects = (options: MemoryEffectsOptions = {}) => {
@@ -137,6 +217,7 @@ export const memoryEffects = (options: MemoryEffectsOptions = {}) => {
         case "replace-symbol":
         case "write-file":
         case "run-tests":
+        case "measure-oracle":
           return { effect, outcome: "infra-failed" };
       }
     });

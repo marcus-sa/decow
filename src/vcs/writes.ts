@@ -52,8 +52,10 @@ import type { Registry, RegisteredSymbol } from "./registry.ts";
 import { identityKey, type Parser } from "./structural/parser.ts";
 import {
   categoryOf,
+  oracleArgv,
   structuralStage,
   wholeFileStage,
+  type OracleMeasurement,
   type RejectedBy,
   type StageOutcome,
   type TestTarget,
@@ -159,7 +161,33 @@ export type WritePath = {
     wrote?: readonly string[];
     intent: Intent;
   }): Promise<WriteResult>;
+
+  /**
+   * Execute one oracle and record what it did.
+   *
+   * Not a write and not a gate: it takes no lease, it changes nothing, and its
+   * interesting answer is a failure. What it produces is an observation, and
+   * the observation is the whole point — the roles that hold an oracle cannot
+   * run it, so whether it fails on its assertion or on its scaffolding is a
+   * property this module measures rather than one a model reports.
+   *
+   * `infra-failed` is the answer when the runner never started. It is NOT a
+   * verdict about the oracle, and a caller that charged it to the oracle's
+   * author would be sending a correction turn on no evidence.
+   */
+  measureOracle(spec: {
+    /** `path::selector`, or a bare path for the whole file. */
+    oracle: string;
+    /** Overrides the command the locator derives. */
+    argv?: readonly string[];
+    intent: Intent;
+  }): Promise<MeasureResult>;
 };
+
+/** What one `measureOracle` produced. */
+export type MeasureResult =
+  | { outcome: "measured"; measurement: OracleMeasurement; seq: number }
+  | { outcome: "infra-failed"; detail: string };
 
 /** What the operation declares about identity, for the structural stage. */
 type Declaration = {
@@ -622,6 +650,44 @@ export const openWritePath = (spec: {
         detail: "file-written",
       });
       return { outcome: "committed", version: seq, seq, verification: status };
+    },
+
+    async measureOracle(s) {
+      const argv = s.argv ?? oracleArgv(s.oracle);
+      const measurement = await verifier.measure({ root, argv });
+      if (measurement === undefined) {
+        log.append({
+          kind: "oracle-measured",
+          taskId: s.intent.taskId,
+          ...(s.intent.parentTaskId === undefined ? {} : { parentTaskId: s.intent.parentTaskId }),
+          description: s.intent.description,
+          category: "infrastructure",
+          detail: JSON.stringify({ oracle: s.oracle, argv, status: "runner-did-not-start" }),
+        });
+        return { outcome: "infra-failed", detail: `the runner for ${s.oracle} did not start` };
+      }
+
+      // EVERY measurement is recorded, not only the refusing ones. `red` is
+      // the ADMITTED answer and it is exactly the one a later reader needs to
+      // see, because it is what says the oracle was red before one production
+      // byte existed.
+      const seq = log.append({
+        kind: "oracle-measured",
+        taskId: s.intent.taskId,
+        ...(s.intent.parentTaskId === undefined ? {} : { parentTaskId: s.intent.parentTaskId }),
+        description: s.intent.description,
+        verification: measurement.verdict === "green" ? "passed" : "failed",
+        ...(measurement.verdict === "broken" ? { category: "contract" as const } : {}),
+        detail: JSON.stringify({
+          oracle: s.oracle,
+          argv,
+          verdict: measurement.verdict,
+          axis: measurement.axis,
+          exit: measurement.exitCode,
+          counts: measurement.counts,
+        }),
+      });
+      return { outcome: "measured", measurement, seq };
     },
 
     async runTests(s) {

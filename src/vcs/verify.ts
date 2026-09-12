@@ -10,6 +10,12 @@
  *   tests        the impact-scoped subset of the suite. Shells out by default.
  *   policy       repository-specific rules. A stub that passes.
  *
+ * Plus one thing that is NOT a stage and sits here anyway: `measure`, which
+ * executes one oracle and reads a verdict off it. No write gates on it, and
+ * its interesting answer is a failure. It lives on the verifier because this
+ * is the module's one place that knows how to run a runner and read what it
+ * printed.
+ *
  * Every stage is injectable. The default implementations spawn `bunx tsc` and
  * `bun test`, which is real and slow; a test supplies its own and the whole
  * write path runs in milliseconds. That seam is the reason a failing typecheck
@@ -96,10 +102,74 @@ export type TestStageContext = {
   targets: readonly TestTarget[];
 };
 
+/* ------------------------------------------------------- oracle measurement */
+
+/**
+ * What executing ONE oracle established. The same four words `EffectResult`
+ * carries, deliberately, so the executor's mapping is the identity function on
+ * `verdict` exactly as it already is on `outcome` and on `by`.
+ */
+export const ORACLE_VERDICTS = ["green", "red", "broken", "indeterminate"] as const;
+export type OracleVerdict = (typeof ORACLE_VERDICTS)[number];
+
+/** What reached the verdict. A `red` on `no-summary` would be a weaker claim. */
+export const MEASURE_AXES = ["exit-status", "no-summary", "counts"] as const;
+export type MeasureAxis = (typeof MEASURE_AXES)[number];
+
+/** The runner's own summary of one run. */
+export type RunCounts = { passed: number; failed: number; errored: number };
+
+export type OracleMeasurement = {
+  verdict: OracleVerdict;
+  axis: MeasureAxis;
+  /** Verbatim stdout and stderr, in that order. */
+  output: string;
+  exitCode?: number;
+  counts?: RunCounts;
+  argv: readonly string[];
+};
+
+export type MeasureContext = {
+  root: string;
+  /** The command to run. Derived from the locator, or supplied by the caller. */
+  argv: readonly string[];
+};
+
 export type Verifier = {
   typecheck: (ctx: StageContext) => Promise<StageOutcome>;
   tests: (ctx: TestStageContext) => Promise<StageOutcome>;
   policy: (ctx: StageContext) => Promise<StageOutcome>;
+  /**
+   * Execute one oracle and read a verdict off it. Not a stage: nothing gates
+   * on it, it blocks no write, and its interesting answer is a FAILURE. It
+   * sits on the verifier because this is the one place in the module that
+   * knows how to run a test runner and read what it printed.
+   *
+   * `undefined` is the honest answer for a runner that could not be started at
+   * all. That is an infrastructure failure rather than a verdict about the
+   * oracle, and the caller must not charge it to the oracle's author.
+   */
+  measure: (ctx: MeasureContext) => Promise<OracleMeasurement | undefined>;
+};
+
+/** The separator a `path::selector` oracle locator uses. */
+export const LOCATOR_SEPARATOR = "::";
+
+/**
+ * The command one oracle locator names.
+ *
+ * `path::selector` runs that one test by name; a bare path runs the file. The
+ * selector is a regex to `bun test -t`, so a test name carrying regex
+ * metacharacters would need an explicit `argv` — stated rather than escaped,
+ * because escaping it here would silently disagree with what an operator gets
+ * when they run the printed command by hand.
+ */
+export const oracleArgv = (locator: string): string[] => {
+  const at = locator.indexOf(LOCATOR_SEPARATOR);
+  if (at < 0) return ["bun", "test", locator.trim()];
+  const path = locator.slice(0, at).trim();
+  const selector = locator.slice(at + LOCATOR_SEPARATOR.length).trim();
+  return selector.length === 0 ? ["bun", "test", path] : ["bun", "test", path, "-t", selector];
 };
 
 /**
@@ -247,6 +317,80 @@ export const bunTests: Verifier["tests"] = async (ctx) => {
 };
 
 /**
+ * `bun test`'s own summary lines, or `undefined` when it printed none.
+ *
+ * MEASURED against bun 1.3.12 rather than assumed, because the whole verdict
+ * rests on it:
+ *
+ *   a pass                    exit 0,  ` 1 pass`, ` 0 fail`
+ *   an assertion failure      exit 1,  ` 0 pass`, ` 1 fail`
+ *   a test body that throws   exit 1,  ` 0 pass`, ` 1 fail`
+ *   an import that is missing exit 1,  ` 0 pass`, ` 1 fail`, ` 1 error`
+ *   a file that does not parse exit 1, ` 0 pass`, ` 1 fail`, ` 1 error`
+ *   `-t` matching no test     exit 1,  no summary at all
+ *
+ * So the `error` line is a real signal for `broken` — bun reports an unhandled
+ * error between tests separately from the failure it also counts — and an
+ * ABSENT summary means the runner did not get as far as running anything.
+ */
+export const bunCounts = (output: string): RunCounts | undefined => {
+  const read = (label: string): number | undefined => {
+    const match = new RegExp(`^\\s*(\\d+) ${label}$`, "m").exec(output);
+    return match === null ? undefined : Number(match[1]);
+  };
+  const passed = read("pass");
+  const failed = read("fail");
+  if (passed === undefined || failed === undefined) return undefined;
+  return { passed, failed, errored: read("error") ?? 0 };
+};
+
+/** Exit statuses that mean the runner completed rather than crashed. */
+const COMPLETED_EXITS = new Set([0, 1]);
+
+/**
+ * The verdict, and the axis that reached it — never the verdict alone.
+ *
+ * Exit status alone admits exactly the artefact this exists to refuse: an
+ * oracle that errored in its own scaffolding exits 1, the identical status a
+ * genuine assertion failure returns. So the counts are read, and a run that
+ * printed no counts is `broken` rather than `red`: bun always summarises a
+ * suite it ran, so an absent summary is itself evidence it ran nothing.
+ *
+ * `indeterminate` is not decoration. A run that failed while its own summary
+ * records neither a failure nor an error is a world this cannot describe, and
+ * answering `red` there would be a silent-wrong pass into a paid craft turn.
+ */
+export const oracleVerdict = (
+  exitCode: number | undefined,
+  counts: RunCounts | undefined,
+): { verdict: OracleVerdict; axis: MeasureAxis } => {
+  if (exitCode === undefined || !COMPLETED_EXITS.has(exitCode)) {
+    return { verdict: "broken", axis: "exit-status" };
+  }
+  if (counts === undefined) return { verdict: "broken", axis: "no-summary" };
+  if (exitCode === 0) return { verdict: "green", axis: "counts" };
+  if (counts.errored > 0) return { verdict: "broken", axis: "counts" };
+  if (counts.failed > 0) return { verdict: "red", axis: "counts" };
+  return { verdict: "indeterminate", axis: "counts" };
+};
+
+/** Execute one oracle with `bun test` and read bun's own summary. */
+export const bunOracle: Verifier["measure"] = async (ctx) => {
+  const [command, ...rest] = ctx.argv;
+  if (command === undefined) return undefined;
+  try {
+    const { code, output } = await spawn([command, ...rest], ctx.root);
+    const counts = bunCounts(output);
+    return { ...oracleVerdict(code, counts), output: excerpt(output), exitCode: code, ...(counts === undefined ? {} : { counts }), argv: ctx.argv };
+  } catch {
+    // The runner never started. Nothing about the oracle was observed, so
+    // nothing about it is claimed — and in particular the defect is NOT
+    // charged to its author.
+    return undefined;
+  }
+};
+
+/**
  * The policy stage, as a stub that passes. The document's policy layer is
  * ast-grep patterns plus external scripts (§ 6.1, § 9.3); neither is built, so
  * this says so by passing rather than by pretending to check something.
@@ -261,4 +405,5 @@ export const defaultVerifier = (): Verifier => ({
   typecheck: bunxTypecheck,
   tests: bunTests,
   policy: policyPasses,
+  measure: bunOracle,
 });

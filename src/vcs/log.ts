@@ -48,6 +48,13 @@ export const EVENT_KINDS = [
   "lease-expired",
   "release-failed",
   "tests-run",
+  /**
+   * One oracle, executed, with the verdict it earned. Distinct from
+   * `tests-run` because the question is different: that one asks whether a
+   * change broke anything, this one asks what one test does on its own, and
+   * its desired answer is a failure.
+   */
+  "oracle-measured",
   "trail",
   "desync-detected",
   "external-imported",

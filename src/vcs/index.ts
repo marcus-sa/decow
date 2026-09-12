@@ -41,7 +41,7 @@ import {
 } from "./registry.ts";
 import { treeSitterTypeScript } from "./structural/typescript.ts";
 import type { Parser } from "./structural/parser.ts";
-import { openWritePath, type WritePath, type WriteResult } from "./writes.ts";
+import { openWritePath, type MeasureResult, type WritePath, type WriteResult } from "./writes.ts";
 import { defaultVerifier, type Verifier } from "./verify.ts";
 import { randomIds, systemClock } from "./defaults.ts";
 
@@ -91,6 +91,7 @@ export type Vcs = {
   deleteSymbol: WritePath["deleteSymbol"];
   writeFile: WritePath["writeFile"];
   runTests: WritePath["runTests"];
+  measureOracle: WritePath["measureOracle"];
 
   /**
    * Record one line of provenance under a task. This is where an
@@ -180,6 +181,7 @@ export const openVcs = (options: VcsOptions): Vcs => {
     deleteSymbol: writes.deleteSymbol,
     writeFile: writes.writeFile,
     runTests: writes.runTests,
+    measureOracle: writes.measureOracle,
 
     appendTrail: (line, intent) =>
       log.append({
@@ -194,4 +196,4 @@ export const openVcs = (options: VcsOptions): Vcs => {
   };
 };
 
-export type { WriteResult };
+export type { MeasureResult, WriteResult };

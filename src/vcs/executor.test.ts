@@ -17,13 +17,13 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { memoryEffects, type EffectResult } from "../core/effects.ts";
+import { measurementOf, memoryEffects, type EffectResult } from "../core/effects.ts";
 import { stepOutput, type StepDef } from "../core/step.ts";
 import { branch, leaf, run, type Node, type Workflow } from "../core/workflow.ts";
 import { ok, stubJournal } from "../harness/stub-journal.ts";
 import { vcsExecutor } from "./executor.ts";
 import { openVcs, type Vcs } from "./index.ts";
-import { counterIds, failingStage, manualClock, passingVerifier, tempProject } from "./testing.ts";
+import { counterIds, failingStage, manualClock, measuresAs, passingVerifier, tempProject } from "./testing.ts";
 import type { Verifier } from "./verify.ts";
 
 const SOURCE = `export function alpha(): number {
@@ -585,6 +585,87 @@ describe("the executor: whole files, and protected paths", () => {
   test("memoryEffects cannot land a write-file, and says so rather than pretending", async () => {
     const { execute: memory } = memoryEffects();
     const results = await memory([{ type: "write-file", path: "test/a.test.ts", body: ORACLE }]);
+    expect(results[0]?.outcome).toBe("infra-failed");
+  });
+});
+
+/**
+ * `measure-oracle` through the executor: the one effect whose desired answer
+ * is a failure.
+ */
+describe("the executor: measuring an oracle", () => {
+  const ORACLE = 'import { expect, test } from "bun:test";\n\ntest("alpha returns 42", () => {\n  expect(1).toBe(42);\n});\n';
+
+  const openWith = (verdict: "green" | "red" | "broken" | "indeterminate") => {
+    const root = tempProject({ "a.ts": SOURCE, "test/a.test.ts": ORACLE });
+    const vcs = openVcs({
+      root,
+      verifier: passingVerifier({ measure: measuresAs(verdict) }),
+      clock: manualClock(1_000),
+      ids: counterIds(),
+    });
+    vcs.track("a.ts");
+    vcs.track("test/a.test.ts");
+    return vcs;
+  };
+
+  const measure = async (vcs: Vcs) =>
+    (
+      await vcsExecutor({ vcs, session: "session-author", intent: TASK })([
+        { type: "measure-oracle", oracle: "test/a.test.ts::alpha returns 42" },
+      ])
+    )[0];
+
+  test("red is a rejection carrying the verdict, which is the answer the author wants", async () => {
+    const vcs = openWith("red");
+    const result = await measure(vcs);
+    expect(result).toMatchObject({ outcome: "rejected", by: "tests" });
+    expect(measurementOf(result)?.verdict).toBe("red");
+    expect(measurementOf(result)?.output).toBe("measured red");
+    vcs.close();
+  });
+
+  test("green is committed, because it is the one verdict the world accepted", async () => {
+    const vcs = openWith("green");
+    const result = await measure(vcs);
+    expect(result?.outcome).toBe("committed");
+    expect(measurementOf(result)?.verdict).toBe("green");
+    vcs.close();
+  });
+
+  test("broken and indeterminate are distinguishable from red on one field", async () => {
+    // All four verdicts off `measured.verdict`, which is what lets a pure
+    // branch route them without reading `outcome` twice.
+    for (const verdict of ["broken", "indeterminate"] as const) {
+      const vcs = openWith(verdict);
+      const result = await measure(vcs);
+      expect(result?.outcome).toBe("rejected");
+      expect(measurementOf(result)?.verdict).toBe(verdict);
+      vcs.close();
+    }
+  });
+
+  test("a runner that never started is infra-failed and carries no verdict", async () => {
+    // `passingVerifier`'s default `measure` is exactly this: the neutral answer
+    // for a fixture that measures nothing is "the runner did not start", not
+    // "it passed".
+    const root = tempProject({ "a.ts": SOURCE });
+    const vcs = openVcs({
+      root,
+      verifier: passingVerifier(),
+      clock: manualClock(1_000),
+      ids: counterIds(),
+    });
+    vcs.track("a.ts");
+    const result = await measure(vcs);
+    expect(result?.outcome).toBe("infra-failed");
+    expect(measurementOf(result)).toBeUndefined();
+    vcs.close();
+  });
+
+  test("memoryEffects cannot measure an oracle, and says so", async () => {
+    const { execute: memory } = memoryEffects();
+    const results = await memory([{ type: "measure-oracle", oracle: "test/a.test.ts" }]);
     expect(results[0]?.outcome).toBe("infra-failed");
   });
 });

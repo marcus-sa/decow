@@ -11,12 +11,17 @@
  * The dependency runs one way, which is what lets either half be read without
  * the other.
  *
- * The batch is the unit. A step's `Effect[]` may name several symbols, and §
- * 5.3 says an acquire names the complete set it will need, so the executor
- * takes ONE write lease covering every `replace-symbol` target in the batch,
- * applies the writes, and releases. That is the design document's "fanout over
- * writes needs leases per symbol, not per step", and it is also why holding a
- * lease and asking for more is refused: the executor never needs to.
+ * The batch is the unit. A step's `Effect[]` may name several symbols and
+ * several paths, and § 5.3 says an acquire names the complete set it will
+ * need, so the executor takes ONE write lease covering every `replace-symbol`
+ * target AND every `write-file` path in the batch, applies the writes, and
+ * releases. That is the design document's "fanout over writes needs leases per
+ * symbol, not per step", and it is also why holding a lease and asking for
+ * more is refused: the executor never needs to.
+ *
+ * Ahead of all of it sits the PROTECTED scope. A write landing under one is
+ * refused before a lease is asked for, because the oracle is not the crafter's
+ * and RED to GREEN is bought by production.
  *
  * The session and the task intent are fixed per executor instance, because
  * `EffectExecutor` is `(effects) => Promise<EffectResult[]>` and extending
@@ -42,6 +47,15 @@
  *   acquire desync              -> infra-failed, because a file changed by a
  *                                  channel outside the system is not the
  *                                  agent's error and must not burn its budget
+ *
+ * `measure-oracle` is the one effect whose desired answer is a FAILURE, so its
+ * mapping is not the identity: `green` is `committed`, because it is the only
+ * verdict where the world accepted what it was handed, and the other three are
+ * rejections carrying the verdict that names which. The measurement itself
+ * rides on `measured`, which is what a pure branch reads to get all four
+ * answers off one field. A runner that never started is `infra-failed` and
+ * carries no measurement at all — nothing about the oracle was observed, so
+ * nothing about it is claimed, and in particular its author is not blamed.
  *
  * `upsert-artifact` is the one effect this executor does not answer out of the
  * VCS. Artifact rows are the other half of the design's state layer and they
@@ -249,6 +263,31 @@ export const vcsExecutor = (
             intent: intentFor({ modified: [] }),
           });
           out.push(asEffectResult(effect, result));
+          break;
+        }
+        case "measure-oracle": {
+          // The one effect whose DESIRED answer is a failure. `green` is the
+          // only verdict that maps onto `committed`, because it is the only
+          // one where the world accepted what it was handed; the other three
+          // are rejections carrying the verdict that names which. The
+          // measurement itself rides on `measured`, so a pure branch reads all
+          // four answers off one field.
+          const measured = await vcs.measureOracle({
+            oracle: effect.oracle,
+            ...(effect.argv === undefined ? {} : { argv: effect.argv }),
+            intent: intentFor({}),
+          });
+          if (measured.outcome === "infra-failed") {
+            // The runner never started. Not a verdict about the oracle, and
+            // the graph must not charge it to the oracle's author.
+            out.push({ effect, outcome: "infra-failed" });
+            break;
+          }
+          out.push(
+            measured.measurement.verdict === "green"
+              ? { effect, outcome: "committed", version: measured.seq, measured: measured.measurement }
+              : { effect, outcome: "rejected", by: "tests", measured: measured.measurement },
+          );
           break;
         }
         case "append-trail":
