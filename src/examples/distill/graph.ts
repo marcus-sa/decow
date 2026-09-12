@@ -15,8 +15,8 @@
 
 import { z } from "zod";
 import type { Journal } from "../../core/journal.ts";
-import { runStep, type StepDef } from "../../core/step.ts";
-import { branch, suspend, type Node, type Workflow } from "../../core/workflow.ts";
+import type { StepDef } from "../../core/step.ts";
+import { branch, leaf, suspend, type Node, type Workflow } from "../../core/workflow.ts";
 import { KINDS, Lane, type Classification, type Kind, type Scenario } from "./classify.ts";
 
 /**
@@ -58,27 +58,26 @@ export const seed = (scenario: Scenario): State => ({
   dst: {},
 });
 
+/**
+ * One classifier. The `leaf` constructor owns the exhaustion trail, so all
+ * this has to say is where the input comes from and where the verdict goes.
+ */
 const classifyNode = (
   kind: Kind,
   def: StepDef<Scenario, Classification>,
   journal: Journal,
-): Node<State> => ({
-  type: "step",
-  run: async (s) => {
-    const r = await runStep(def, s.scenario, journal);
-    return r.decision === "ok"
-      ? {
-          state: { ...s, [kind]: { lane: r.output.decision, anchor: r.output.payload.anchor } },
-          effects: [],
-        }
-      : {
-          state: { ...s, [kind]: { lane: "cannot-tell" as Lane, exhausted: true } },
-          effects: [{ type: "append-trail", line: JSON.stringify({ kind, trail: r.trail }) }],
-        };
-  },
-  absorb: (s) => s,
-  next: "merge",
-});
+): Node<State> =>
+  leaf<State, Scenario, Classification>({
+    id: kind,
+    def,
+    journal,
+    input: (s) => s.scenario,
+    absorb: (s, r) =>
+      r.decision === "ok"
+        ? { ...s, [kind]: { lane: r.output.decision, anchor: r.output.payload.anchor } }
+        : { ...s, [kind]: { lane: "cannot-tell" as Lane, exhausted: true } },
+    next: "merge",
+  });
 
 export type MergeVerdict =
   | "complete"

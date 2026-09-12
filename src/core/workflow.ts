@@ -25,6 +25,8 @@
 import type { z } from "zod";
 import { compileWorkflow, readTrace, SuspensionPayload } from "./compile.ts";
 import type { Effect, EffectResult } from "./effects.ts";
+import type { Journal } from "./journal.ts";
+import { runStep, type StepDef, type StepResult } from "./step.ts";
 
 export type NodeId = string;
 
@@ -148,6 +150,69 @@ export const loop = <S>(spec: {
   absorb: (s: S, exit: LoopExit) => S;
   next: NodeId;
 }): Node<S> => ({ type: "loop", ...spec });
+
+/**
+ * The leaf constructor: one `runStep` call, folded into state.
+ *
+ * Every graph that calls a model does the same four things around it — project
+ * the step's input out of state, run the step, fold the decision (or the
+ * exhaustion) back in, and record the trail when the validator was never
+ * satisfied. Writing that by hand at every call site is how the fourth one
+ * gets forgotten, so the constructor owns it: when `runStep` comes back
+ * `validator-exhausted`, an `append-trail` effect carrying the whole trail is
+ * emitted, in addition to whatever `effects` returns, and a graph author
+ * cannot opt out of it.
+ *
+ * The journal is a field rather than a closure variable: a leaf's four
+ * dependencies — the step, the journal, the projection out of state, and the
+ * fold back in — all read from one object, and nothing depends on module-level
+ * state that a second graph in the same process could disagree about.
+ *
+ * This produces a `step` node. The compiler has no reason to tell a leaf from
+ * any other step: it runs, it asks for effects, it absorbs their results. A
+ * sixth node type would buy nothing and cost an arm in every switch.
+ *
+ * Two folds, because a leaf has two results to fold and they arrive at
+ * different times. `absorb` takes the `StepResult` the model produced.
+ * `absorbEffects` takes the `EffectResult[]` the runner got back from the
+ * executor, which do not exist yet when `absorb` runs. A leaf that asks for no
+ * effects needs only the first.
+ */
+export const leaf = <S, I, O>(spec: {
+  /** Names the leaf in the exhaustion trail. Defaults to `def.id`. */
+  id?: string;
+  def: StepDef<I, O>;
+  journal: Journal;
+  /** Project the step's input out of state. */
+  input: (s: S) => I;
+  /** Fold the decision, or the exhaustion, into state. */
+  absorb: (s: S, r: StepResult<O>) => S;
+  /** What the leaf asks the runner to execute once the step has answered. */
+  effects?: (s: S, r: StepResult<O>) => Effect[];
+  /** Fold the typed effect results back into state. */
+  absorbEffects?: (s: S, results: EffectResult[]) => S;
+  next: NodeId;
+}): Node<S> => ({
+  type: "step",
+  run: async (s) => {
+    const result = await runStep(spec.def, spec.input(s), spec.journal);
+    const trail: Effect[] =
+      result.decision === "validator-exhausted"
+        ? [
+            {
+              type: "append-trail",
+              line: JSON.stringify({ leaf: spec.id ?? spec.def.id, trail: result.trail }),
+            },
+          ]
+        : [];
+    return {
+      state: spec.absorb(s, result),
+      effects: [...(spec.effects?.(s, result) ?? []), ...trail],
+    };
+  },
+  absorb: spec.absorbEffects ?? ((s) => s),
+  next: spec.next,
+});
 
 /** Executes the effects a step returned and feeds typed results back. */
 export type EffectExecutor = (effects: Effect[]) => Promise<EffectResult[]>;

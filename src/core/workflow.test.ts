@@ -9,9 +9,11 @@ import { describe, expect, test } from "bun:test";
 import { createWorkflowStateReader } from "@mastra/core/workflows";
 import { z } from "zod";
 import { visitCount } from "../harness/matchers.ts";
+import { exhausted, ok, stubJournal } from "../harness/stub-journal.ts";
 import { compileWorkflow, workflowRuntime } from "./compile.ts";
 import type { Effect, EffectResult } from "./effects.ts";
-import { branch, loop, resume, run, suspend, type Node, type Workflow } from "./workflow.ts";
+import { stepOutput, type ModelBinding, type StepDef, type StepResult } from "./step.ts";
+import { branch, leaf, loop, resume, run, suspend, type Node, type Workflow } from "./workflow.ts";
 
 type S = { n: number; note?: string; answer?: "left" | "right" };
 
@@ -488,5 +490,169 @@ describe("malformed loops throw before anything runs", () => {
         },
       }),
     ).toThrow(/loop body entered from outside: gate -> body is inside the body of spin/);
+  });
+});
+
+/**
+ * The `leaf` constructor. Two things are worth pinning: the exhaustion trail is
+ * the constructor's, not the graph author's, so it cannot be forgotten; and
+ * `absorb` sees the `StepResult` verbatim rather than some projection of it.
+ */
+describe("leaf", () => {
+  type LeafState = { text: string; decision?: string; trail?: number; landed?: string };
+
+  const Text = z.object({ text: z.string() });
+  const Answer = stepOutput(["yes", "no"] as const, { anchor: z.string() });
+  type Answer = z.infer<typeof Answer>;
+
+  /** A binding that fails the test if anything reaches a model. */
+  const forbidden: ModelBinding = {
+    id: "forbidden",
+    generate: async <T,>(): Promise<T> => {
+      throw new Error("a leaf test must spend zero model calls");
+    },
+  };
+
+  const def: StepDef<{ text: string }, Answer> = {
+    id: "leaf.answer",
+    version: 1,
+    input: Text,
+    output: Answer,
+    requirements: [],
+    worker: { model: forbidden, system: "answer", prompt: (i) => i.text },
+    validator: { model: forbidden },
+    maxAttempts: 1,
+  };
+
+  const ANSWER: Answer = { decision: "yes", payload: { anchor: "quoted" } };
+  const TRAIL = [{ model: "fake", violations: [{ requirementId: "r", evidence: "e" }] }];
+
+  /** Run one leaf node in isolation and report what it produced. */
+  const fire = async (node: Node<LeafState>, state: LeafState) => {
+    if (node.type !== "step") throw new Error("leaf must produce a step node");
+    const out = await node.run(state);
+    return { ...out, absorb: node.absorb, next: node.next };
+  };
+
+  const journalWith = (result: StepResult<Answer>) =>
+    stubJournal({ "leaf.answer": result as StepResult<unknown> });
+
+  test("exhaustion emits the trail line even when the leaf declares no effects", async () => {
+    const node = leaf<LeafState, { text: string }, Answer>({
+      def,
+      journal: journalWith(exhausted(TRAIL)),
+      input: (s) => ({ text: s.text }),
+      absorb: (s) => s,
+      // no `effects` hook at all: the constructor still owes the trail
+      next: "after",
+    });
+
+    const { effects } = await fire(node, { text: "t" });
+    expect(effects).toEqual([
+      { type: "append-trail", line: JSON.stringify({ leaf: "leaf.answer", trail: TRAIL }) },
+    ]);
+  });
+
+  test("exhaustion adds the trail line to whatever the leaf's own effects returned", async () => {
+    const node = leaf<LeafState, { text: string }, Answer>({
+      id: "short",
+      def,
+      journal: journalWith(exhausted(TRAIL)),
+      input: (s) => ({ text: s.text }),
+      absorb: (s) => s,
+      effects: () => [{ type: "append-trail", line: "mine" }],
+      next: "after",
+    });
+
+    const { effects } = await fire(node, { text: "t" });
+    expect(effects.map((e) => (e.type === "append-trail" ? e.line : e.type))).toEqual([
+      "mine",
+      JSON.stringify({ leaf: "short", trail: TRAIL }),
+    ]);
+  });
+
+  test("a decided leaf emits only the effects it asked for", async () => {
+    const node = leaf<LeafState, { text: string }, Answer>({
+      def,
+      journal: journalWith(ok(ANSWER)),
+      input: (s) => ({ text: s.text }),
+      absorb: (s) => s,
+      effects: () => [{ type: "append-trail", line: "mine" }],
+      next: "after",
+    });
+
+    const { effects } = await fire(node, { text: "t" });
+    expect(effects).toEqual([{ type: "append-trail", line: "mine" }]);
+  });
+
+  test("absorb receives the exact StepResult, both ways round", async () => {
+    const seen: StepResult<Answer>[] = [];
+    const build = (result: StepResult<Answer>) =>
+      leaf<LeafState, { text: string }, Answer>({
+        def,
+        journal: journalWith(result),
+        input: (s) => ({ text: s.text }),
+        absorb: (s, r) => {
+          seen.push(r);
+          return r.decision === "ok"
+            ? { ...s, decision: r.output.decision }
+            : { ...s, trail: r.trail.length };
+        },
+        next: "after",
+      });
+
+    const decided = await fire(build(ok(ANSWER)), { text: "t" });
+    const refused = await fire(build(exhausted(TRAIL)), { text: "t" });
+
+    expect(seen).toEqual([
+      { decision: "ok", output: ANSWER },
+      { decision: "validator-exhausted", trail: TRAIL },
+    ]);
+    expect(decided.state.decision).toBe("yes");
+    expect(refused.state.trail).toBe(1);
+  });
+
+  test("absorbEffects folds the executor's results, and defaults to identity", async () => {
+    const spec = {
+      def,
+      journal: journalWith(ok(ANSWER)),
+      input: (s: LeafState) => ({ text: s.text }),
+      absorb: (s: LeafState) => s,
+      effects: () => [{ type: "append-trail" as const, line: "mine" }],
+      next: "after",
+    };
+    const results: EffectResult[] = [
+      { effect: { type: "append-trail", line: "mine" }, outcome: "committed", version: 1 },
+    ];
+
+    const folding = await fire(
+      leaf<LeafState, { text: string }, Answer>({
+        ...spec,
+        absorbEffects: (s, r) => ({ ...s, landed: r[0]?.outcome }),
+      }),
+      { text: "t" },
+    );
+    expect(folding.absorb(folding.state, results).landed).toBe("committed");
+
+    const plain = await fire(leaf<LeafState, { text: string }, Answer>(spec), { text: "t" });
+    expect(plain.absorb(plain.state, results)).toEqual(plain.state);
+  });
+
+  test("the leaf is a step node, and the input projection is what the step saw", async () => {
+    const journal = journalWith(ok(ANSWER));
+    const node = leaf<LeafState, { text: string }, Answer>({
+      def,
+      journal,
+      input: (s) => ({ text: s.text.toUpperCase() }),
+      absorb: (s) => s,
+      next: "after",
+    });
+
+    expect(node.type).toBe("step");
+    expect(node.type === "step" && node.next).toBe("after");
+    await fire(node, { text: "quiet" });
+    // The journal key is derived from the projected input, so a hit proves the
+    // projection ran: the stub throws on a miss.
+    expect(journal.reads).toEqual(["leaf.answer"]);
   });
 });

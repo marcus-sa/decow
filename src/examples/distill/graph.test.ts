@@ -321,6 +321,6 @@ describe("distill graph, resumed by a person", () => {
     const parked = await run<State>(wf, seed(scenario(false)), collect as never);
     expect(parked.kind).toBe("suspended");
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('"kind":"benchmark"');
+    expect(lines[0]).toContain('"leaf":"benchmark"');
   });
 });
