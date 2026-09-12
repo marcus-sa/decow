@@ -31,6 +31,7 @@ import { vcsExecutor } from "../../../vcs/executor.ts";
 import type { Vcs } from "../../../vcs/index.ts";
 import { identityKey } from "../../../vcs/structural/parser.ts";
 import { parseOracleLocator } from "../../../vcs/verify.ts";
+import { oracleIsRed } from "../distill/runs.ts";
 import { deliverGraph, seed, type State } from "./graph.ts";
 import type { DeliverDefs, StepUnderDelivery } from "./steps.ts";
 
@@ -237,12 +238,43 @@ export const openPipeline = (options: PipelineOptions) => {
     return row;
   };
 
+  /**
+   * The crafter's executor, with the row's ORACLE walled off.
+   *
+   * `_crafter_owns` as an executor rule: every path this task declares is the
+   * crafter's except the oracle, because RED to GREEN must be bought by
+   * production and never by editing the test that measures it. The supports
+   * are NOT walled — they are the oracle's dependencies and a crafter may need
+   * to extend one — which is the same line `des oracle`'s own ownership check
+   * draws.
+   */
+  /**
+   * The tests every OTHER undelivered value's oracle names.
+   *
+   * Every one of them is red by construction: a value is only ready to be
+   * delivered once its oracle has been measured red, so a value that has not
+   * been delivered has a live failing test in every module it shares with its
+   * siblings. Refusing this row's correct write for one of them would make a
+   * module with two undelivered values undeliverable, and it would be
+   * answering the wrong question: the gate asks whether the change broke
+   * something ELSE.
+   *
+   * An ACCEPTED sibling's oracle is not in here, deliberately. That one is
+   * green, and breaking it is a real regression the gate exists to catch.
+   */
+  const knownRedFor = (row: RoadmapRow): string[] =>
+    rows
+      .filter((other) => other.id !== row.id && statusOf(artifacts, other.id) !== "accepted")
+      .flatMap((other) => oracleTests(vcs, other.oracle));
+
   const executorFor = (row: RoadmapRow) =>
     vcsExecutor({
       vcs,
       session: row.id,
       intent: { taskId: row.id, parentTaskId: options.roadmapId, description: row.observation },
       artifacts,
+      knownRed: knownRedFor(row),
+      ...(row.oracle === undefined ? {} : { protected: [parseOracleLocator(row.oracle).path] }),
     });
 
   const stateFor = (row: RoadmapRow): State => {
@@ -284,6 +316,17 @@ export const openPipeline = (options: PipelineOptions) => {
     },
 
     statusOf: async (id) => statusOf(artifacts, id),
+
+    /**
+     * A row is ready only when its OWN oracle has been measured red.
+     *
+     * This is where "no edge bypasses RED" lives now that the step cycle has
+     * no RED node. It mirrors `canonical_next`'s own precondition: with no
+     * recorded oracle the next step for a value is `des oracle`, never
+     * `des craft`. An unmeasured oracle proves nothing and a green one proves
+     * the wrong thing, so `red` and only `red` opens the gate.
+     */
+    eligible: async (id) => oracleIsRed(artifacts, id),
 
     record: async (id, outcome) => {
       options.onRun?.(id, outcome);
@@ -346,7 +389,10 @@ export const openPipeline = (options: PipelineOptions) => {
     return { outcome, statuses: await scheduler.run() };
   };
 
-  return { scheduler, rows, resumeParked };
+  /** Rows whose oracle has not been measured red, so nothing may deliver them. */
+  const unoracled = (): string[] => rows.filter((row) => !oracleIsRed(artifacts, row.id)).map((r) => r.id);
+
+  return { scheduler, rows, resumeParked, unoracled };
 };
 
 /** A run outcome, in the scheduler's vocabulary. */

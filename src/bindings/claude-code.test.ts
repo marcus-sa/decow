@@ -8,7 +8,11 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { z } from "zod";
+import type { Effect } from "../core/effects.ts";
 import { memoryJournal } from "../core/journal.ts";
 import { runStep, stepOutput, type StepDef } from "../core/step.ts";
 import {
@@ -202,5 +206,191 @@ describe("claudeCode inside runStep", () => {
     ]);
     expect(result.trail.every((a) => a.error?.includes("no schema-conforming output"))).toBe(true);
     expect(result.trail.every((a) => a.output === undefined)).toBe(true);
+  });
+});
+
+/**
+ * The PROPOSAL shape: the agent edits a scratch copy, and what it changed
+ * becomes effects the runner can lease, verify and roll back.
+ *
+ * The fake `query` here writes files into the scratch directory it is handed,
+ * which is exactly what an agent with `Edit` does. That is the whole seam: the
+ * binding never trusts what the turn SAYS it wrote, it reads what is there.
+ */
+describe("claudeCode, the proposal shape", () => {
+  const Authored = stepOutput(["authored", "cannot-express"] as const, {
+    reason: z.string(),
+    proposal: z.array(z.custom<Effect>(() => true)).optional(),
+  });
+  const AUTHOR_REQ = { system: "Write the oracle.", prompt: "value 01-01", schema: Authored };
+
+  /** A source tree with one production file and one existing test. */
+  const source = () => {
+    const root = mkdtempSync(join(tmpdir(), "dw-source-"));
+    mkdirSync(join(root, "test"), { recursive: true });
+    writeFileSync(join(root, "src.ts"), "export const alpha = () => 1;\n", "utf8");
+    writeFileSync(join(root, "test", "existing.test.ts"), "// before\n", "utf8");
+    return root;
+  };
+
+  /** A `query` that edits the scratch copy it was given, then answers. */
+  const writing = (edits: Record<string, string>, answer: unknown = { decision: "authored", payload: { reason: "done" } }) => {
+    const calls: (AgentSdkOptions | undefined)[] = [];
+    const query: AgentSdkQuery = (params) => {
+      calls.push(params.options);
+      const cwd = params.options?.cwd;
+      if (cwd !== undefined) {
+        for (const [path, body] of Object.entries(edits)) {
+          mkdirSync(dirname(join(cwd, path)), { recursive: true });
+          writeFileSync(join(cwd, path), body, "utf8");
+        }
+      }
+      return {
+        async *[Symbol.asyncIterator]() {
+          yield success(answer);
+        },
+      };
+    };
+    return { calls, query };
+  };
+
+  test("a file the turn created becomes a write-file effect on the payload", async () => {
+    const root = source();
+    const { calls, query } = writing({ "test/oracle.test.ts": "// authored\n" });
+    const answer = await claudeCode({
+      agent: "nw-acceptance-designer",
+      cwd: root,
+      query,
+      proposal: { source: root, allowed: ["test"] },
+    }).generate(AUTHOR_REQ);
+
+    expect(answer.decision).toBe("authored");
+    expect(answer.payload.proposal).toEqual([
+      { type: "write-file", path: "test/oracle.test.ts", body: "// authored\n" },
+    ]);
+    // The turn ran in the SCRATCH copy, not in the source tree, and the source
+    // is untouched.
+    expect(calls[0]?.cwd).not.toBe(root);
+    expect(existsSync(join(root, "test/oracle.test.ts"))).toBe(false);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("an existing file becomes a replace-symbol when the caller can name the symbol", async () => {
+    // A symbol id is the VCS's to assign, so the binding asks rather than
+    // guessing: with no port it proposes the whole file instead.
+    const root = source();
+    const { query } = writing({ "test/existing.test.ts": "// after\n" });
+    const withPort = await claudeCode({
+      agent: "nw-acceptance-designer",
+      cwd: root,
+      query,
+      proposal: {
+        source: root,
+        allowed: ["test"],
+        symbolFor: (change) => (change.path === "test/existing.test.ts" ? { id: "sym-7", version: 3 } : undefined),
+      },
+    }).generate(AUTHOR_REQ);
+    expect(withPort.payload.proposal).toEqual([
+      { type: "replace-symbol", symbolId: "sym-7", expectedVersion: 3, body: "// after\n" },
+    ]);
+
+    const { query: second } = writing({ "test/existing.test.ts": "// after\n" });
+    const withoutPort = await claudeCode({
+      agent: "nw-acceptance-designer",
+      cwd: root,
+      query: second,
+      proposal: { source: root, allowed: ["test"] },
+    }).generate(AUTHOR_REQ);
+    expect(withoutPort.payload.proposal).toEqual([
+      { type: "write-file", path: "test/existing.test.ts", body: "// after\n" },
+    ]);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a byte outside the allowed paths refuses the whole turn, before any effect", async () => {
+    // Not "most of what it did". A turn that wrote where it may not proposes
+    // nothing, and the refusal is what the next attempt is told.
+    const root = source();
+    const { query } = writing({ "test/ok.test.ts": "// fine\n", "src.ts": "export const alpha = () => 42;\n" });
+    await expect(
+      claudeCode({
+        agent: "nw-acceptance-designer",
+        cwd: root,
+        attempts: 1,
+        query,
+        proposal: { source: root, allowed: ["test"] },
+      }).generate(AUTHOR_REQ),
+    ).rejects.toThrow(/src\.ts, which is outside test/);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("a turn that changed nothing proposes nothing, and that is not an error", async () => {
+    // The `cannot-express` shape: a rejecting author owns no byte.
+    const root = source();
+    const { query } = writing({}, { decision: "cannot-express", payload: { reason: "the port names no way to observe it" } });
+    const answer = await claudeCode({
+      agent: "nw-acceptance-designer",
+      cwd: root,
+      query,
+      proposal: { source: root, allowed: ["test"] },
+    }).generate(AUTHOR_REQ);
+
+    expect(answer.decision).toBe("cannot-express");
+    expect(answer.payload.proposal).toEqual([]);
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  test("the opaque shape is unchanged: no scratch copy, and no proposal", async () => {
+    const root = source();
+    const { calls, query } = writing({ "test/oracle.test.ts": "// authored\n" });
+    const answer = await claudeCode({ agent: "a", cwd: root, query }).generate(AUTHOR_REQ);
+
+    expect(calls[0]?.cwd).toBe(root);
+    expect(answer.payload.proposal).toBeUndefined();
+    // And the write went straight into the workspace, outside the effect
+    // boundary — which is what "opaque" means and why a conflict cannot be
+    // represented there.
+    expect(existsSync(join(root, "test/oracle.test.ts"))).toBe(true);
+    rmSync(root, { recursive: true, force: true });
+  });
+});
+
+describe("the proposal diff, as the pure function it is", () => {
+  test("a removal is refused rather than dropped: no effect expresses it", async () => {
+    // `Effect` has no way to remove a file. A turn that deleted an oracle
+    // proposed something the framework cannot commit, and saying so beats
+    // committing the rest.
+    const root = mkdtempSync(join(tmpdir(), "dw-source-"));
+    mkdirSync(join(root, "test"), { recursive: true });
+    writeFileSync(join(root, "test/gone.test.ts"), "// here\n", "utf8");
+    const { query } = (() => {
+      const q: AgentSdkQuery = (params) => {
+        rmSync(join(params.options?.cwd ?? "", "test/gone.test.ts"), { force: true });
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield success({ decision: "authored", payload: { reason: "removed it" } });
+          },
+        };
+      };
+      return { query: q };
+    })();
+
+    await expect(
+      claudeCode({
+        agent: "a",
+        cwd: root,
+        attempts: 1,
+        query,
+        proposal: { source: root, allowed: ["test"] },
+      }).generate({
+        system: "s",
+        prompt: "p",
+        schema: stepOutput(["authored"] as const, {
+          reason: z.string(),
+          proposal: z.array(z.custom<Effect>(() => true)).optional(),
+        }),
+      }),
+    ).rejects.toThrow(/was emptied or removed/);
+    rmSync(root, { recursive: true, force: true });
   });
 });

@@ -82,6 +82,18 @@ export type WritePath = {
     expectedVersion: number;
     body: string;
     intent: Intent;
+    /**
+     * Tests the caller knows were ALREADY failing, for a reason this write did
+     * not cause. Excluded from the impact-scoped set, on the same rule the
+     * batch's own tests are: the stage asks whether the change broke something
+     * else, and a test that was red before it ran is not an answer to that.
+     *
+     * The caller has to say so because only the caller can know it. A red test
+     * is red; nothing in the bytes distinguishes "you broke this" from "this
+     * was broken" without running the suite twice, and running it twice per
+     * write is exactly the cost the impact graph exists to avoid.
+     */
+    knownRed?: readonly string[];
   }): Promise<WriteResult>;
 
   /**
@@ -159,6 +171,18 @@ export type WritePath = {
      * written, so there is no floor and nothing could have been subtracted.
      */
     wrote?: readonly string[];
+    /**
+     * Tests already failing for a reason this run did not cause. Excluded from
+     * BOTH the run and the floor the union is checked against — excluding one
+     * without the other would make the caller refuse itself for omitting a
+     * test it was told to leave out.
+     *
+     * This is not the caller narrowing the floor, which is the one thing the
+     * union rule forbids. The floor is about what this change could have
+     * affected; a test that was red before it ran is a fact about the world
+     * the caller was handed, not a selection it made.
+     */
+    knownRed?: readonly string[];
     intent: Intent;
   }): Promise<WriteResult>;
 
@@ -259,6 +283,8 @@ export const openWritePath = (spec: {
     splice: (source: string, symbol: RegisteredSymbol) => string;
     declare: (symbol: RegisteredSymbol, descendants: RegisteredSymbol[]) => Declaration;
     detail?: (symbol: RegisteredSymbol) => string;
+    /** Tests already failing for a reason this write did not cause. */
+    knownRed?: readonly string[];
   }): Promise<WriteResult> => {
     const lease = leases.lease(args.leaseId);
     if (lease === undefined) return rejected("contract", `lease ${args.leaseId} is not live`);
@@ -387,13 +413,21 @@ export const openWritePath = (spec: {
        *
        * A production symbol's write is unaffected: its id is not a test id,
        * so nothing is filtered and the tests that cover it all run.
+       *
+       * KNOWN-RED targets are excluded for the same reason one step wider. A
+       * value whose own oracle has been measured red and whose production code
+       * has not been written yet has a live, failing test in every module its
+       * siblings share — and refusing a sibling's correct write for it would
+       * make a module with two undelivered values undeliverable. What the
+       * stage asks is whether the change broke something ELSE, and a test that
+       * was red before it ran is not an answer to that.
        */
       () => {
-        const written = new Set([...lease.symbolIds, ...ctx.symbolIds]);
+        const excluded = new Set([...lease.symbolIds, ...ctx.symbolIds, ...(args.knownRed ?? [])]);
         return verifier.tests({
           root,
           symbolIds: ctx.symbolIds,
-          targets: impact.impactedTests(ctx.symbolIds).filter((t) => !written.has(t.id)),
+          targets: impact.impactedTests(ctx.symbolIds).filter((t) => !excluded.has(t.id)),
         });
       },
       () => verifier.policy(ctx),
@@ -691,16 +725,24 @@ export const openWritePath = (spec: {
     },
 
     async runTests(s) {
-      const selected = dedupe([...impact.impactedTests(s.symbolIds), ...impact.testsById(s.extra ?? [])]);
+      const knownRed = new Set(s.knownRed ?? []);
+      const selected = dedupe([
+        ...impact.impactedTests(s.symbolIds),
+        ...impact.testsById(s.extra ?? []),
+      ]).filter((t) => !knownRed.has(t.id));
 
       // The floor, recomputed here rather than trusted from the caller. A
       // selection that covers it may be wider; one that is narrower is a
       // contract violation, and the omitted ids ARE the finding, so they are
       // named in the event and in the rejection.
+      //
+      // The known-red set comes off BOTH sides: excluding it from the run and
+      // not from the floor would make the caller refuse itself for omitting a
+      // test it was told to leave out.
       const chosen = new Set(selected.map((t) => t.id));
       const omitted = impact
         .impactedTests(s.wrote ?? [])
-        .filter((t) => !chosen.has(t.id))
+        .filter((t) => !chosen.has(t.id) && !knownRed.has(t.id))
         .map((t) => t.id)
         .sort();
 

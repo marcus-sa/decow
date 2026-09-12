@@ -39,19 +39,31 @@ error type.
 implemented")`. The symbols exist with the signatures above; only the bodies are
 missing.
 
-## Acceptance tests
+## The driving port
 
-Pre-authored in `test/todo.test.ts`. The two implemented behaviours are active;
-the two stubs are pending behind `test.skip(`, which DELIVER's oracle locates
-and activates. A pending test's locator is `test/todo.test.ts::<test name>`.
+Everything above is reached through one object and nothing else:
 
-| State | Locator |
-|---|---|
-| active | `test/todo.test.ts::add returns a todo with the given title, not done` |
-| active | `test/todo.test.ts::add assigns a distinct id to every todo` |
-| active | `test/todo.test.ts::list returns every todo in insertion order` |
-| active | `test/todo.test.ts::list narrowed to active returns the todos that are not done` |
-| pending | `test/todo.test.ts::complete marks the todo done and list narrowed to done returns it` |
-| pending | `test/todo.test.ts::complete throws UnknownTodoError for an id the store does not hold` |
-| pending | `test/todo.test.ts::remove drops the todo so list no longer returns it` |
-| pending | `test/todo.test.ts::remove throws UnknownTodoError for an id the store does not hold` |
+```ts
+const store = new TodoStore();
+```
+
+`add`, `complete`, `remove` and `list` are the whole driving surface. There is
+no constructor argument, no module-level state, no factory, and no way to seed
+the store except by calling `add`. An oracle that needed one of those would be
+naming a port this design does not declare, and that is a design gap rather
+than something to invent.
+
+`UnknownTodoError` is the only failure this surface can produce. It is thrown,
+never returned, and it carries the id it was given.
+
+## Test substrate
+
+- Test path scope: `test/`
+
+Nothing is pre-written there. The oracle for each value is authored by
+`des oracle` — one executable file per value, plus any whole-file support it
+declares — and software measures it red before any production byte is written.
+A locator is `test/<file>.test.ts::<test name>`.
+
+The oracle runner is `bun test`, which is the default the framework derives
+from a locator: `bun test <file> -t <test name>`.

@@ -104,6 +104,13 @@ export type VcsExecutorOptions = {
    * including one a model proposed that the graph merely passed along.
    */
   protected?: readonly string[];
+  /**
+   * Tests already failing for a reason this task did not cause: the oracles of
+   * every value that is not delivered yet. Excluded from the write gate's
+   * impact-scoped set, because "did you break something else" is not a
+   * question a test that was red before you started can answer.
+   */
+  knownRed?: readonly string[];
 };
 
 type ReplaceSymbol = Extract<Effect, { type: "replace-symbol" }>;
@@ -221,6 +228,7 @@ export const vcsExecutor = (
             expectedVersion: write.expectedVersion,
             body: write.body,
             intent: intentFor({ modified: [write.symbolId] }),
+            ...(options.knownRed === undefined ? {} : { knownRed: options.knownRed }),
           });
           results.set(write, asEffectResult(write, result));
         }
@@ -260,6 +268,7 @@ export const vcsExecutor = (
             symbolIds: effect.impacted,
             ...(effect.extra === undefined ? {} : { extra: effect.extra }),
             wrote,
+            ...(options.knownRed === undefined ? {} : { knownRed: options.knownRed }),
             intent: intentFor({ modified: [] }),
           });
           out.push(asEffectResult(effect, result));

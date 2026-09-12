@@ -61,7 +61,7 @@ const main = async (): Promise<void> => {
   console.log(`evidence: the project's own suite, exit ${evidence.exitCode}, ${evidence.output.length} chars`);
 
   const outcomes = new Map<string, RunOutcome<State>>();
-  const { scheduler, rows } = openPipeline({
+  const { scheduler, rows, unoracled } = openPipeline({
     artifacts: dir.artifacts,
     vcs: dir.vcs,
     journal: dir.journal,
@@ -76,6 +76,20 @@ const main = async (): Promise<void> => {
   });
 
   console.log(`rows:     ${rows.map((r) => r.id).join(", ")}`);
+
+  // A row with no oracle measured RED is not deliverable, and it is refused by
+  // NAME rather than quietly skipped. This is where "no edge bypasses RED"
+  // lives now that the step cycle has no RED node.
+  const missing = unoracled();
+  if (missing.length > 0) {
+    console.error(
+      `\ntodo:deliver: ${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} no oracle ` +
+        "measured red, so nothing may deliver them.\n" +
+        `Run: bun run todo:distill ${name}`,
+    );
+    dir.close();
+    process.exit(1);
+  }
 
   const statuses = await scheduler.run();
 

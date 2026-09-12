@@ -493,3 +493,68 @@ describe("termination", () => {
     expect(ran).toEqual([]);
   });
 });
+
+describe("eligibility, beyond the frontier", () => {
+  test("an ineligible row never runs, and blocks its dependents exactly like a rejected one", async () => {
+    // The frontier rule answers "is everything this row waits on done". It
+    // does not answer "may this row start at all", and a consumer with a
+    // precondition of its own — DELIVER's "the oracle was measured red" —
+    // has nowhere else to put it.
+    const ran: string[] = [];
+    const statuses = new Map<string, RowStatus>([
+      ["a", "pending"],
+      ["b", "pending"],
+      ["c", "pending"],
+    ]);
+    const scheduler = openScheduler<null>({
+      rows: [
+        { id: "a", dependencies: [] },
+        { id: "b", dependencies: ["a"] },
+        { id: "c", dependencies: [] },
+      ],
+      concurrency: 2,
+      eligible: async (id) => id !== "a",
+      runOne: async (row) => {
+        ran.push(row.id);
+        return { kind: "terminal", terminal: { kind: "accepted", state: null }, trace: [], runId: row.id };
+      },
+      resumeOne: async () => {
+        throw new Error("not resumed here");
+      },
+      statusOf: async (id) => statuses.get(id) ?? "pending",
+      record: async (id) => {
+        statuses.set(id, "accepted");
+      },
+    });
+
+    const final = await scheduler.run();
+
+    // `a` never ran, so `b` never became ready; `c` is downstream of nothing.
+    expect(ran).toEqual(["c"]);
+    expect(final.get("a")).toBe("pending");
+    expect(final.get("b")).toBe("pending");
+    expect(final.get("c")).toBe("accepted");
+  });
+
+  test("with no predicate every row is eligible, which is the behaviour before it existed", async () => {
+    const ran: string[] = [];
+    const statuses = new Map<string, RowStatus>([["a", "pending"]]);
+    const scheduler = openScheduler<null>({
+      rows: [{ id: "a", dependencies: [] }],
+      concurrency: 1,
+      runOne: async (row) => {
+        ran.push(row.id);
+        return { kind: "terminal", terminal: { kind: "accepted", state: null }, trace: [], runId: row.id };
+      },
+      resumeOne: async () => {
+        throw new Error("not resumed here");
+      },
+      statusOf: async (id) => statuses.get(id) ?? "pending",
+      record: async (id) => {
+        statuses.set(id, "accepted");
+      },
+    });
+    await scheduler.run();
+    expect(ran).toEqual(["a"]);
+  });
+});

@@ -590,3 +590,111 @@ test("alpha returns 42", () => {
     vcs.close();
   });
 });
+
+/**
+ * Known-red targets: the generalisation of the batch filter.
+ *
+ * The tests stage asks whether the change broke something ELSE. A test that
+ * was red before the write ran is not an answer to that — and in a module with
+ * two undelivered values it is the normal case, because a value is only ready
+ * to be delivered once its own oracle has been measured red.
+ */
+describe("the write path, known-red targets", () => {
+  const LIB = "export const alpha = (): number => 1;\nexport const bravo = (): number => 1;\n";
+  const ALPHA_TEST = `import { expect, test } from "bun:test";
+import { alpha } from "./lib.ts";
+
+test("alpha returns 42", () => {
+  expect(alpha()).toBe(42);
+});
+`;
+  const BRAVO_TEST = `import { expect, test } from "bun:test";
+import { bravo } from "./lib.ts";
+
+test("bravo returns 7", () => {
+  expect(bravo()).toBe(7);
+});
+`;
+
+  const openPair = () => {
+    const root = tempProject({ "lib.ts": LIB, "alpha.test.ts": ALPHA_TEST, "bravo.test.ts": BRAVO_TEST });
+    const ran: string[] = [];
+    const vcs = openVcs({
+      root,
+      verifier: passingVerifier({
+        tests: async (ctx) => {
+          ran.push(...ctx.targets.map((t) => t.name));
+          // Every oracle in this fixture is red against the stubs, so a stage
+          // that ran one would refuse.
+          return ctx.targets.length === 0
+            ? { status: "passed" }
+            : { status: "failed", by: "tests", detail: "red", failed: ctx.targets.map((t) => t.id) };
+        },
+      }),
+      clock: manualClock(1_000),
+      ids: counterIds(),
+    });
+    const lib = vcs.track("lib.ts");
+    vcs.track("alpha.test.ts");
+    vcs.track("bravo.test.ts");
+    const testId = (path: string) => vcs.registry.symbolsOf(vcs.registry.file(path)?.id ?? "")[0]?.id ?? "";
+    const symbolId = (name: string) =>
+      vcs.registry.symbolsOf(lib.id).find((s) => s.name === name)?.id ?? "";
+    return { root, vcs, ran, testId, symbolId };
+  };
+
+  test("a sibling's red oracle does not refuse this write, and this one's still does", async () => {
+    const { vcs, ran, testId, symbolId } = openPair();
+    const alpha = symbolId("alpha");
+    const leaseId = lease(vcs, [alpha]);
+
+    const result = await vcs.replaceSymbolBody({
+      leaseId,
+      symbolId: alpha,
+      expectedVersion: 1,
+      body: "export const alpha = (): number => 42;",
+      intent: intent({ modified: [alpha] }),
+      knownRed: [testId("bravo.test.ts")],
+    });
+    vcs.release(leaseId);
+
+    // `bravo`'s oracle was left out; `alpha`'s own was run, and it is what
+    // refused — which is the behaviour that catches a wrong implementation.
+    expect(ran).toEqual(["alpha returns 42"]);
+    expect(result).toMatchObject({ outcome: "rejected", by: "tests" });
+    vcs.close();
+  });
+
+  test("runTests leaves a known-red target out of the run AND out of the floor", async () => {
+    // Both sides, or the caller refuses itself for omitting a test it was told
+    // to leave out.
+    const { vcs, ran, testId, symbolId } = openPair();
+    const alpha = symbolId("alpha");
+
+    const result = await vcs.runTests({
+      symbolIds: [alpha],
+      wrote: [alpha],
+      knownRed: [testId("alpha.test.ts"), testId("bravo.test.ts")],
+      intent: intent({ modified: [] }),
+    });
+
+    // Nothing ran, and nothing was reported omitted: an empty run passes.
+    expect(ran).toEqual([]);
+    expect(result.outcome).toBe("committed");
+    vcs.close();
+  });
+
+  test("without it, the floor still refuses a union that drops an impacted test", async () => {
+    // The union rule is unchanged. `knownRed` is a fact about the world the
+    // caller was handed, not a selection it made.
+    const { vcs, symbolId } = openPair();
+    const alpha = symbolId("alpha");
+    const result = await vcs.runTests({
+      symbolIds: [],
+      wrote: [alpha],
+      intent: intent({ modified: [] }),
+    });
+    expect(result).toMatchObject({ outcome: "rejected", by: "contract" });
+    vcs.close();
+  });
+});

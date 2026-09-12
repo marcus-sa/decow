@@ -34,6 +34,7 @@ import { bunTests } from "../../../vcs/verify.ts";
 import { roadmapGraph, seed as seedRoadmap, type State as RoadmapState } from "../roadmap/graph.ts";
 import type { Roadmap } from "../roadmap/schema.ts";
 import { roadmapDefs } from "../roadmap/steps.ts";
+import { oracleIsRed, ORACLE_RUNS_TABLE, type OracleRun } from "../distill/runs.ts";
 import { LeafInput, deliverDefs, leafStepId, type LeafId } from "./steps.ts";
 import {
   openPipeline,
@@ -183,6 +184,27 @@ const persistRoadmap = async (roadmap: Roadmap, effects: ReturnType<typeof memor
   return approved;
 };
 
+/**
+ * The `oracle_runs` row DISTILL leaves behind for a value whose oracle it
+ * measured RED. Without one the row is not ready and nothing delivers it,
+ * which is exactly the precondition this seeds past.
+ */
+const recordRedOracleAt = (
+  artifacts: ReturnType<typeof openArtifacts>,
+  stepId: string,
+  seq: number,
+): void => {
+  artifacts.upsert({
+    table: ORACLE_RUNS_TABLE,
+    id: `${stepId}#${seq}`,
+    expectedVersion: 0,
+    row: { stepId, runId: `oracle-${stepId}`, verdict: "red", seq } satisfies OracleRun,
+  });
+};
+
+const recordRedOracle = (artifacts: ReturnType<typeof openArtifacts>, stepId: string): void =>
+  recordRedOracleAt(artifacts, stepId, 0);
+
 /* -------------------------------------------------------------- the leaves */
 
 /**
@@ -273,7 +295,11 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
       seedRow(seeded, defs, row.id, step, impacted, target, bodies[row.id] as string);
     }
 
-    // 3. Two rows, one scheduler, one VCS, one journal.
+    // 3. DISTILL measured both oracles red, which is what makes the rows
+    //    deliverable at all.
+    for (const row of rows) recordRedOracle(artifacts, row.id);
+
+    // 4. Two rows, one scheduler, one VCS, one journal.
     const { scheduler } = openPipeline({
       artifacts,
       vcs: project.vcs,
@@ -297,14 +323,14 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     expect(runs.map((r) => `${r.stepId}#${r.seq}`).sort()).toEqual(["01-01#0", "01-02#0"]);
     expect(runs.every((r) => r.outcome === "accepted")).toBe(true);
 
-    // 4. The production bodies were written for real, and the oracles were
+    // 5. The production bodies were written for real, and the oracles were
     //    not touched: RED to GREEN is bought by production.
     expect(project.read("src/alpha.test.ts")).toBe(oracleFor("alpha", 42));
     expect(project.read("src/bravo.test.ts")).toBe(oracleFor("bravo", 7));
     expect(project.read("src/alpha.ts")).toContain("return 42;");
     expect(project.read("src/bravo.ts")).toContain("return 7;");
 
-    // 5. The event log shows both, under each row's own session and task id.
+    // 6. The event log shows both, under each row's own session and task id.
     for (const row of ["01-01", "01-02"]) {
       const events = project.vcs.log.byTask(row);
       expect(events.map((e) => e.kind)).toContain("lease-acquired");
@@ -317,7 +343,7 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
       expect(JSON.parse(String(acquired?.detail)).session).toBe(row);
     }
 
-    // 6. And the whole suite passes, which is what "the two ATs pass at the
+    // 7. And the whole suite passes, which is what "the two ATs pass at the
     //    end" means: run it, do not infer it.
     const suite = Bun.spawnSync(["bun", "test", "src"], { cwd: project.root });
     expect(suite.exitCode).toBe(0);
@@ -348,6 +374,7 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
       source("alpha", 5).trimEnd(),
     );
 
+    recordRedOracle(artifacts, "01-01");
     const { scheduler } = openPipeline({
       artifacts,
       vcs: project.vcs,
@@ -429,6 +456,110 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     ]);
     artifacts.close();
   });
+
+  test("a row with no red oracle never becomes ready, and it blocks its dependents", async () => {
+    // This is where "no edge bypasses RED" lives now that the step cycle has
+    // no RED node. `canonical_next`'s own precondition, as a readiness rule:
+    // with no recorded oracle the next step for a value is `des oracle`.
+    const project = openProject();
+    const artifacts = openArtifacts();
+    await persistRoadmap(roadmapFor(project.symbolId), memoryEffects({ store: artifacts }));
+
+    const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
+    const { scheduler, unoracled } = openPipeline({
+      artifacts,
+      vcs: project.vcs,
+      journal: memoryJournal({}),
+      defs,
+      roadmapId: REQUEST,
+      design: DESIGN,
+      concurrency: 1,
+    });
+
+    expect(unoracled()).toEqual(["01-01", "01-02"]);
+    // Nothing ran, so nothing was recorded and nothing was written. The model
+    // bindings throw, so reaching a leaf at all would fail this test.
+    const statuses = await scheduler.run();
+    expect([...statuses.values()]).toEqual(["pending", "pending"]);
+    expect(artifacts.list(STEP_RUNS_TABLE)).toEqual([]);
+    expect(project.read("src/alpha.ts")).toContain("return 1;");
+
+    artifacts.close();
+    project.vcs.close();
+  }, 30_000);
+
+  test("a green oracle is not a red one: only red opens the gate", async () => {
+    // An unmeasured oracle proves nothing and a green one proves the wrong
+    // thing, so the projection reads the verdict rather than the presence.
+    const artifacts = openArtifacts();
+    for (const [seq, verdict] of [
+      [0, "green"],
+      [1, "broken"],
+      [2, "blocked"],
+    ] as const) {
+      artifacts.upsert({
+        table: ORACLE_RUNS_TABLE,
+        id: `01-01#${seq}`,
+        expectedVersion: 0,
+        row: { stepId: "01-01", runId: `run-${seq}`, verdict, seq } satisfies OracleRun,
+      });
+      expect(oracleIsRed(artifacts, "01-01")).toBe(false);
+    }
+    recordRedOracleAt(artifacts, "01-01", 3);
+    expect(oracleIsRed(artifacts, "01-01")).toBe(true);
+    artifacts.close();
+  });
+
+  test("the crafter's executor is built with the row's oracle protected", async () => {
+    // `_crafter_owns`: every path the task declares is the crafter's EXCEPT
+    // the oracle. The supports are not walled, because a support is the
+    // oracle's dependency rather than the thing that measures the value.
+    const project = openProject();
+    const artifacts = openArtifacts();
+    await persistRoadmap(roadmapFor(project.symbolId), memoryEffects({ store: artifacts }));
+    recordRedOracle(artifacts, "01-01");
+
+    const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
+    const [row] = readRoadmap(artifacts, REQUEST);
+    if (row === undefined) throw new Error("the fixture has two rows");
+    const target = row.predictedTouches[0] as string;
+    const oracleSymbol = project.vcs.registry
+      .symbolsOf(project.vcs.registry.file("src/alpha.test.ts")?.id ?? "")
+      .find((s) => s.kind === "test");
+    // The crafter's own effect shape, pointed at the oracle.
+    const seeded: Record<string, StepResult<unknown>> = {};
+    seedRow(
+      seeded,
+      defs,
+      row.id,
+      stepUnderDelivery(row, DESIGN),
+      project.vcs.impact.impactedTests([target]).map((t) => t.id),
+      oracleSymbol?.id ?? "",
+      'test("alpha returns 42", () => {\n  expect(1).toBe(1);\n});',
+    );
+
+    const { scheduler } = openPipeline({
+      artifacts,
+      vcs: project.vcs,
+      journal: memoryJournal(seeded),
+      defs,
+      roadmapId: REQUEST,
+      design: DESIGN,
+      concurrency: 1,
+    });
+    await scheduler.run();
+
+    // The write never landed, and the oracle is byte-identical.
+    expect(project.read("src/alpha.test.ts")).toBe(oracleFor("alpha", 42));
+    const trail = project.vcs.log.byTask("01-01").filter((e) => e.kind === "trail");
+    expect(JSON.parse(String(trail[0]?.detail))).toMatchObject({
+      refused: "src/alpha.test.ts",
+      why: "the oracle is not the crafter's",
+    });
+
+    artifacts.close();
+    project.vcs.close();
+  }, 30_000);
 
   test("a roadmap the store does not hold is refused by name", () => {
     const artifacts = openArtifacts();

@@ -20,14 +20,22 @@
 
 import type { ArtifactStore } from "../../../artifacts/store.ts";
 import type { WorkflowRuntime } from "../../../core/compile.ts";
-import { measurementOf, type OracleVerdict } from "../../../core/effects.ts";
+import { measurementOf } from "../../../core/effects.ts";
 import type { Journal } from "../../../core/journal.ts";
-import { openScheduler, type RowStatus, type SchedulerRow } from "../../../core/scheduler.ts";
+import { openScheduler, type SchedulerRow } from "../../../core/scheduler.ts";
 import type { StepObserver } from "../../../core/step.ts";
 import { resume, run, type RunOutcome } from "../../../core/workflow.ts";
 import { vcsExecutor } from "../../../vcs/executor.ts";
 import type { Vcs } from "../../../vcs/index.ts";
 import { readRoadmap, ROADMAP_STEPS_TABLE, type RoadmapRow } from "../deliver/pipeline.ts";
+import {
+  oracleRunsOf,
+  oracleStatusOf,
+  ORACLE_RUNS_TABLE,
+  recordedVerdict,
+  type OracleRun,
+  type RecordedVerdict,
+} from "./runs.ts";
 import type { Roadmap } from "../roadmap/schema.ts";
 import {
   obligationsGraph,
@@ -72,66 +80,6 @@ export const testPathScope = (design: string): string[] => {
     .map((path) => path.trim().replace(/^`|`$/g, "").replace(/\/$/, ""))
     .filter((path) => path.length > 0);
 };
-
-/* ------------------------------------------------------------------ the rows */
-
-/** Where a finished oracle run is recorded. Append-only, one row per run. */
-export const ORACLE_RUNS_TABLE = "oracle_runs";
-
-/**
- * What a finished oracle run is persisted as.
- *
- * `verdict` is the measured one, widened by exactly one word: `blocked` is a
- * run that produced no measurement at all, because the author could not
- * express the value, the write was refused, or the validator was never
- * satisfied. Recording it as an absence rather than as a verdict is what keeps
- * "the oracle was measured green" and "the oracle was never measured" two
- * different facts.
- */
-export type RecordedVerdict = OracleVerdict | "blocked";
-
-export type OracleRun = {
-  stepId: string;
-  runId: string;
-  verdict: RecordedVerdict;
-  /** How many runs of this value came before it. The projection reads the last. */
-  seq: number;
-};
-
-/** Every recorded oracle run of one value, oldest first. */
-export const oracleRunsOf = (artifacts: ArtifactStore, stepId: string): OracleRun[] =>
-  artifacts
-    .list(ORACLE_RUNS_TABLE)
-    .map((r) => r.row as OracleRun)
-    .filter((r) => r.stepId === stepId)
-    .sort((a, b) => a.seq - b.seq);
-
-/**
- * Has this value's oracle been measured RED?
- *
- * The precondition DELIVER reads. `red` and only `red`: an unmeasured oracle
- * proves nothing, and a green one proves the wrong thing.
- */
-export const oracleIsRed = (artifacts: ArtifactStore, stepId: string): boolean =>
-  oracleRunsOf(artifacts, stepId).at(-1)?.verdict === "red";
-
-/**
- * A value's status, derived from its latest oracle run.
- *
- * Every way of not reaching red is `suspended` rather than `rejected`, and
- * that is exact rather than convenient: every block in the oracle graph IS a
- * suspension, and the only route to its `reject` terminal is a person
- * answering `abandon`, which nothing in this composition does.
- */
-export const oracleStatusOf = (artifacts: ArtifactStore, stepId: string): RowStatus => {
-  const last = oracleRunsOf(artifacts, stepId).at(-1);
-  if (last === undefined) return "pending";
-  return last.verdict === "red" ? "accepted" : "suspended";
-};
-
-/** The verdict a finished run produced, or the absence of one. */
-export const recordedVerdict = <S>(outcome: RunOutcome<S>, measured: RecordedVerdict): RecordedVerdict =>
-  outcome.kind === "terminal" && outcome.terminal.kind === "accepted" ? measured : "blocked";
 
 /* ------------------------------------------------ DISTILL, first half */
 
@@ -324,3 +272,13 @@ export const openOracles = (options: OraclesOptions) => {
 
   return { scheduler, rows };
 };
+
+/** Re-exported so a consumer composing this reads one module. */
+export {
+  oracleIsRed,
+  oracleRunsOf,
+  oracleStatusOf,
+  ORACLE_RUNS_TABLE,
+  type OracleRun,
+  type RecordedVerdict,
+} from "./runs.ts";

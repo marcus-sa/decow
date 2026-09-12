@@ -10,6 +10,10 @@
  *                         highest-judgement thing in the pipeline and the
  *                         framework validates its SHAPE and nothing about
  *                         whether it is good
+ *   author-oracle sonnet  writing an executable oracle that falsifies every
+ *                         obligation through a declared port is code
+ *                         generation too, and it is validated the same way:
+ *                         narrowly, plus a measurement software owns
  *   implement    sonnet   "make this acceptance test pass with the minimal
  *                         change" is code generation, not a closed-enum
  *                         decision. The document is explicit that this leaf
@@ -35,10 +39,20 @@
 import { mastraAgent } from "../../../bindings/mastra.ts";
 import type { ModelBinding } from "../../../core/step.ts";
 import { deliverDefs, LEAF_IDS, type DeliverDefs, type LeafId } from "../deliver/steps.ts";
+import { obligationsDefs, type ObligationsDefs } from "../distill/obligations/steps.ts";
+import { oracleDefs, type OracleDefs } from "../distill/oracle/steps.ts";
 import { roadmapDefs, type RoadmapDefs } from "../roadmap/steps.ts";
 
 /** Mastra model-router ids: `provider/model`. No provider package needed. */
 export const DECOMPOSE_MODEL = "anthropic/claude-opus-5";
+/**
+ * `author-oracle` runs on the same class as `implement`, and the reason is the
+ * same one: the output is genuinely open. Writing an executable oracle that
+ * falsifies every obligation through a declared port is code generation, not a
+ * closed-enum decision, and the framework validates it narrowly instead — a
+ * mechanical path check, a total-relation rule, and a real measurement.
+ */
+export const ORACLE_MODEL = "anthropic/claude-sonnet-5";
 export const IMPLEMENT_MODEL = "anthropic/claude-sonnet-5";
 export const WORKER_MODEL = "anthropic/claude-haiku-4-5";
 export const VALIDATOR_MODEL = "anthropic/claude-haiku-4-5";
@@ -62,6 +76,20 @@ export const todoRoadmapDefs = (options: ModelsOptions = {}): RoadmapDefs =>
     decomposeWith: agent(DECOMPOSE_MODEL, options),
   });
 
+/** DISTILL's first half: one small model proposing, a pure function judging. */
+export const todoObligationsDefs = (options: ModelsOptions = {}): ObligationsDefs =>
+  obligationsDefs({
+    worker: agent(WORKER_MODEL, options),
+    validator: agent(VALIDATOR_MODEL, options),
+  });
+
+/** DISTILL's second half: the acceptance designer, on the open-output class. */
+export const todoOracleDefs = (options: ModelsOptions = {}): OracleDefs =>
+  oracleDefs({
+    worker: agent(ORACLE_MODEL, options),
+    validator: agent(VALIDATOR_MODEL, options),
+  });
+
 /** The DELIVER step cycle: Sonnet writes code, Haiku does everything else. */
 export const todoDeliverDefs = (options: ModelsOptions = {}): DeliverDefs =>
   deliverDefs({
@@ -73,9 +101,10 @@ export const todoDeliverDefs = (options: ModelsOptions = {}): DeliverDefs =>
 /** What the commands print, so a reader knows what a report's numbers are of. */
 export const describeModels = (): string =>
   [
-    `decompose:  ${DECOMPOSE_MODEL}`,
-    `implement:  ${IMPLEMENT_MODEL}`,
+    `decompose:     ${DECOMPOSE_MODEL}`,
+    `author-oracle: ${ORACLE_MODEL}`,
+    `implement:     ${IMPLEMENT_MODEL}`,
     `every other leaf: ${WORKER_MODEL}`,
-    `validators: ${VALIDATOR_MODEL}`,
-    `escalation: none`,
+    `validators:    ${VALIDATOR_MODEL}`,
+    `escalation:    none`,
   ].join("\n");

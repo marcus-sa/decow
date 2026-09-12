@@ -112,6 +112,20 @@ export type SchedulerSpec<S> = {
   statusOf: (rowId: string) => Promise<RowStatus>;
   /** Record a finished run, so `statusOf` will report it. */
   record: (rowId: string, outcome: RunOutcome<S>) => Promise<void>;
+  /**
+   * May this row run AT ALL, beyond its dependencies being accepted?
+   *
+   * The frontier rule answers "is everything this row waits on done". It does
+   * not answer "is this row itself allowed to start", and a consumer with a
+   * precondition of its own has nowhere else to put it: `statusOf` is about
+   * what a row already IS, and a row that has not run is `pending` whether or
+   * not it may.
+   *
+   * Read once per refresh, beside `statusOf`, so `ready` stays synchronous and
+   * a consumer's answer is a projection like every other fact here. Absent:
+   * every row is eligible, which is the behaviour before this existed.
+   */
+  eligible?: (rowId: string) => Promise<boolean>;
   /** How many rows may be in flight at once. At least 1. */
   concurrency: number;
   /** Named resources the row's run needs exclusively. */
@@ -139,18 +153,31 @@ export const openScheduler = <S>(spec: SchedulerSpec<S>): Scheduler => {
   const byId = new Map(spec.rows.map((row) => [row.id, row] as const));
   /** The last known status per row. Re-read from the projection, never cached across a run. */
   const statuses = new Map<string, RowStatus>();
+  /** Whether each row may run at all. Re-read beside its status. */
+  const eligible = new Map<string, boolean>();
   /** The run id each parked row is waiting under. In memory: one scheduler, one process. */
   const waiting = new Map<string, string>();
 
   const refresh = async (): Promise<void> => {
-    for (const row of spec.rows) statuses.set(row.id, await spec.statusOf(row.id));
+    for (const row of spec.rows) {
+      statuses.set(row.id, await spec.statusOf(row.id));
+      eligible.set(row.id, spec.eligible === undefined ? true : await spec.eligible(row.id));
+    }
   };
 
-  /** Rows whose every dependency is accepted and which are not already going. */
+  /**
+   * Rows that are eligible, whose every dependency is accepted, and which are
+   * not already going.
+   *
+   * An INELIGIBLE row blocks its dependents exactly the way a rejected one
+   * does, and for the same reason: nothing downstream of a row that may not
+   * run becomes ready, and everything not downstream of it keeps running.
+   */
   const ready = (running: ReadonlySet<string>): SchedulerRow[] =>
     spec.rows.filter(
       (row) =>
         statuses.get(row.id) === "pending" &&
+        eligible.get(row.id) !== false &&
         !running.has(row.id) &&
         row.dependencies.every((id) => statuses.get(id) === "accepted"),
     );
