@@ -34,6 +34,13 @@ const EXEMPT = new Set([join(SRC, "vcs/defaults.ts")]);
  * defines a decision function or a mechanical check a branch can observe, and
  * the whole of the VCS module, whose determinism rests on the same rule one
  * layer down.
+ *
+ * The roadmap example puts two decision functions in their own files, because
+ * `validate-shape` and `measure-disjointness` are pure functions rather than
+ * leaves. A clock read in either would make the shape of a roadmap depend on
+ * when it was authored, so they are scanned like any branch's `on`. Its
+ * schemas and its hand-written fixtures are scanned too: a fixture that read a
+ * clock would make the oracle a different roadmap on every run.
  */
 const scanned = async (): Promise<string[]> => {
   const files = new Set<string>([join(SRC, "core/workflow.ts"), join(SRC, "core/compile.ts")]);
@@ -41,6 +48,10 @@ const scanned = async (): Promise<string[]> => {
     "examples/**/graph.ts",
     "examples/**/classify.ts",
     "examples/**/steps.ts",
+    "examples/**/shape.ts",
+    "examples/**/disjointness.ts",
+    "examples/**/schema.ts",
+    "examples/**/fixture.ts",
     "vcs/**/*.ts",
   ]) {
     for await (const match of new Glob(pattern).scan({ cwd: SRC, absolute: true })) {
@@ -62,13 +73,16 @@ describe("no nondeterminism inside the graph", () => {
     expect(files).toContain("core/compile.ts");
     expect(files).toContain("examples/distill/graph.ts");
     expect(files).toContain("examples/deliver/graph.ts");
+    expect(files).toContain("examples/roadmap/graph.ts");
+    expect(files).toContain("examples/roadmap/shape.ts");
+    expect(files).toContain("examples/roadmap/disjointness.ts");
     expect(files).toContain("vcs/registry.ts");
     expect(files).toContain("vcs/leases.ts");
     expect(files).toContain("vcs/writes.ts");
     expect(files).toContain("vcs/executor.ts");
     expect(files).toContain("vcs/structural/typescript.ts");
     expect(files).not.toContain("vcs/defaults.ts");
-    expect(files.length).toBeGreaterThanOrEqual(16);
+    expect(files.length).toBeGreaterThanOrEqual(22);
   });
 
   test("no scanned file reads a clock or an RNG", async () => {
