@@ -614,6 +614,7 @@ What works:
 - **Verification at boundaries is the strongest mechanical check.** Typecheck plus impact-scoped tests run synchronously before commit. That is a `Requirement.check` with no model in it. The validator chain for a code-writing step becomes: schema, then VCS gate, then a small model refuting against requirements. The expensive stochastic check runs last and only on outputs that already compile.
 - **Provenance links two logs instead of merging them.** The journal answers what each step decided. The VCS event log answers what changed and why. Every effect carries the journal key and step id as intent. Blame on a symbol resolves to which workflow, which step, which requirement, which model, which validator passed it.
 - **Stable symbol identity makes API-surface conformance mechanical.** "Implement to the design, never invent public API" is a prose rule reviewers apply by reading. With a symbol inventory it is a set difference: exported symbols after the change, minus the symbols the design declares, must be empty. No model. Overdrive's `TerminalErrorKind::Retryable` and `ctx.run_retryable` incidents, both caught only in adversarial review, are the shape this catches at the gate.
+- **Test selection above the impact floor is the workflow's; the floor is the VCS's.** A `run-tests` effect names the symbols it is scoped to and the tests a leaf chose to add; the executor runs their union and recomputes the floor from the symbols the batch actually wrote, so a selection that misses one of those tests is a contract violation rather than a smaller run. The LLM may add a test the static import graph cannot see, and has no way to remove one.
 - **The "do agents prefer structured tools" question is moot here.** Inside a workflow the agent does not pick tools; the graph does. The VCS does not need to win a preference contest because the runner is its only caller.
 
 What needs changing:
@@ -638,6 +639,8 @@ nWave's DELIVER wave generates a roadmap, then runs each step through a RED→GR
 | Reviewer dispatched after the step | The step-level validator, same primitive at coarser grain |
 | "No effort budget cuts" | Terminal is `accepted` only when every bound AC is `green`. Partial suspends for a person; no edge leads from partial to `accepted` |
 | "Deferrals need a GH issue and user approval" | No `create-issue` effect exists. The only deferral is a `needs-human` suspension with a typed reason |
+
+The roadmap half of that is rows, and the distinction matters more than the table makes it look. An agent does not generate a workflow per feature. It generates rows, and the scheduler instantiates the one fixed step cycle per row. Nothing about a feature changes the graph; a feature is a set of rows the same graph runs against, once each. The authoring workflow that produces those rows is itself fixed and hand-written, which is why it is an example rather than a generator. The schema mirrors nWave's own `handover.json`: a `StoredHandover` is a request plus an ordered tuple of `values`, each carrying an `observation` (what will be observably true), the `dependencies` that must come first, an `authority` locating the design source it implements, and its `acceptance` obligations. One field is added, the symbols each step expects to write, because the disjointness check needs it. That check mirrors nWave's `parallel_safety.py`, whose stance it keeps: a pair the roadmap declares independent whose scopes overlap is a disagreement, and the overlapping entries are the finding rather than something the tool adjudicates. The built shape is `src/examples/roadmap/`.
 
 ### The step cycle as a graph
 
@@ -772,7 +775,7 @@ The one way the graph can be fooled: an AC that depends on a step it does not de
 | A library of mechanical checks: verbatim-substring, enum-membership, id-in-set, symbol-set-difference | Model bindings: which small models, which validator family |
 | Journal interface plus a file or SQLite implementation | Effect executors: what `replace-symbol` and `run-tests` mean in this repo |
 | Test harness: stub journal, path enumeration, trace matchers | The known-good hand-written graph used to validate the authoring workflow |
-| The authoring workflow: requirement rows to graph rows plus enumeration test | Rendered views for humans |
+| The authoring workflow: requirement rows to graph rows plus enumeration test. The roadmap-authoring shape of it is built, at `src/examples/roadmap/` | Rendered views for humans |
 
 Two properties fall out of the split. Generated graphs are source, committed and reviewed, not runtime artifacts; regenerating at run time would put the frontier model back inside the loop. And the framework is self-hosting: the authoring workflow is itself a graph on the runtime, with the same step contract, and its validator is the compiler plus path enumeration, so the one output that needs frontier judgment is checked without a model.
 

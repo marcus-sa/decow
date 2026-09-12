@@ -2,17 +2,17 @@
 
 A prototype of the framework described in [`DETERMINISTIC-WORKFLOWS.md`](./DETERMINISTIC-WORKFLOWS.md): a finite graph owns control flow, small models own one decision each, and the whole path space is enumerable before anything runs.
 
-The property the rest of the design rests on is testable in this repo right now, on two graphs: **162 paths through the DISTILL classification graph and 2215 through the DELIVER step cycle, zero model calls, no API key, no network.** The whole suite — 204 tests, including those 2377 runs through the real Mastra engine — takes **about 43 s**, essentially all of it the DELIVER walk.
+The property the rest of the design rests on is testable in this repo right now, on three graphs: **162 paths through the DISTILL classification graph, 447 through the DELIVER step cycle, and 169 through the roadmap authoring workflow, zero model calls, no API key, no network.** The whole suite — 247 tests, including all 778 of those walked paths through the real Mastra engine — takes **about 5 s**.
 
-The DELIVER graph is the one with cycles in it. Its path space is four figures rather than infinite because every repetition in it is a `loop` node with a required bound.
+DELIVER and the roadmap workflow are the two with cycles in them. Their path spaces are three figures rather than infinite because every repetition in them is a `loop` node with a required bound.
 
-The second half of the repo is the [VCS module](#vcs-module): `replace-symbol` and `run-tests` now execute for real, under a lease, through a verification gate, into an append-only event log.
+The second half of the repo is the [VCS module](#vcs-module): `replace-symbol` and `run-tests` now execute for real, under a lease, through a verification gate, into an append-only event log. `run-tests` is a **union**: the VCS owns the impact floor and the workflow owns selection above it, so a leaf may add a test and can never subtract one.
 
 ## Install, test, run
 
 ```bash
 bun install
-bun test          # 204 tests, no network, no key, no model, ~43 s
+bun test          # 247 tests, no network, no key, no model, ~5 s
 bun run typecheck # tsc --noEmit
 bun run check     # both
 ```
@@ -48,6 +48,7 @@ ANTHROPIC_API_KEY=... DW_WORKSPACE=/path/to/repo bun run smoke:deliver
 | `src/harness/` | § Framework versus consumer → "test harness": `stub-journal.ts`, `enumerate-paths.ts` (the graph inspector plus the reachable-path walker), `matchers.ts`. |
 | `src/examples/distill/` | § Worked example: DISTILL test-lane classification. Bootstrap steps 2 and 3 — the known-good hand-written graph and its requirement rows. |
 | `src/examples/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops. |
+| `src/examples/roadmap/` | § DELIVER is two graphs → the roadmap half, and § Framework versus consumer → the authoring workflow. Bootstrap step 7's first half — the roadmap as rows, with two pure decision functions and no generator. |
 | `src/vcs/` | § The agent-native VCS is the effect executor and mechanical verifier, and the whole of [`ai-vcs.md`](./ai-vcs.md) phases 2 to 4. See [`src/vcs/README.md`](./src/vcs/README.md). |
 
 The model bindings live under `src/bindings/` and nothing in `core/` imports them: the design's framework/consumer table puts "which small models, which validator family" on the consumer side, and the smoke scripts are where a consumer picks.
@@ -228,7 +229,7 @@ A `ModelBinding` is where a model plugs in. An `EffectExecutor` is where the *wo
 | Executor | Behind it | `replace-symbol` / `run-tests` |
 |---|---|---|
 | `memoryEffects()` | a `Map` with a version column, and an array for the trail | `infra-failed`, because there is nothing behind it and that is the honest answer |
-| `vcsExecutor({ vcs, session, intent })` | the [VCS module](#vcs-module): one lease per batch, the verification gate, the event log | executed for real, and the outcome is what the branch routes |
+| `vcsExecutor({ vcs, session, intent })` | the [VCS module](#vcs-module): one lease per batch, the verification gate, the event log | executed for real, and the outcome is what the branch routes. `run-tests` runs the union and enforces the floor — see [The `run-tests` union](#the-run-tests-union) |
 
 `vcsExecutor` takes ONE write lease covering every `replace-symbol` target in the batch, applies the writes, releases, and maps each outcome onto an `EffectResult`. The session and the task intent are fixed per executor instance, so the `EffectExecutor` signature does not change: one executor per task is the answer, rather than threading provenance through the runner.
 
@@ -251,20 +252,45 @@ A `ModelBinding` is where a model plugs in. An `EffectExecutor` is where the *wo
 
 The design document's own test for whether the seam works is one path: "the runner executes an `Effect[]` through the VCS with lease, verify, and log, and gets back a typed result a branch can route on." That path is `src/vcs/executor.test.ts`, driven through the real Mastra runner on a temp TypeScript project: a `leaf` emits a `replace-symbol`, the branch after it routes `committed`, and a second run with a stale `expectedVersion` routes `conflict` to a rebase node instead.
 
-**87 tests, 1.9 s.** Full detail, the storage schema, the write path step by step, the deviations and what is still missing: [`src/vcs/README.md`](./src/vcs/README.md).
+**95 tests, 1.7 s.** Full detail, the storage schema, the write path step by step, the deviations and what is still missing: [`src/vcs/README.md`](./src/vcs/README.md).
 
-## The two worked examples
+## The three worked examples
 
-| | DISTILL | DELIVER |
+| | DISTILL | DELIVER | ROADMAP |
+|---|---|---|---|
+| Shape | one fanout of four classifiers, then two merge branches | three nested bounded loops, thirteen leaves, fourteen branches | one bounded loop, two leaves, three non-model steps, eight branches, two suspend nodes |
+| Cycles | none; the second merge is re-convergence, not a back edge | `cycle` ⊃ `test-loop`, `gates-loop` | `author`, bounded at 2 |
+| Decision space | a tuple: four classifiers answer once each | a sequence: a loop asks the same leaf again next iteration | a sequence, and a choice of *data*: two branches read pure functions of the roadmap |
+| Enumerated by | `cartesian(LANES, 4)` × two boundary flags | `enumeratePaths`, a walk of the reachable decision tree | `enumeratePaths`, resuming every suspension it reaches |
+| Paths | **162** | **447** | **169** |
+| Wall clock | ~0.2 s | ~2 s | ~0.6 s |
+
+### The `run-tests` union
+
+`run-tests` used to carry `impacted: string[]` and the executor ran whatever it named. That made the size of a test run the workflow's to decide in *both* directions, which is the wrong split: the workflow knows things the static import graph does not, and the import graph knows the one thing the workflow must not be allowed to forget.
+
+So the effect gained `extra?: string[]` and the two halves got separate owners.
+
+| | Owner | How |
 |---|---|---|
-| Shape | one fanout of four classifiers, then two merge branches | three nested bounded loops, twelve leaves, eleven branches |
-| Cycles | none; the second merge is re-convergence, not a back edge | `cycle` ⊃ `test-loop`, `gates-loop`, each bounded at 2 |
-| Decision space | a tuple: four classifiers answer once each | a sequence: a loop asks the same leaf again next iteration |
-| Enumerated by | `cartesian(LANES, 4)` × two boundary flags | `enumeratePaths`, a walk of the reachable decision tree |
-| Paths | **162** | **2215** |
-| Wall clock | ~0.2 s | ~34 s |
+| The **floor** | the VCS | `writes.runTests` recomputes `impactedTests(wrote)` from the symbols the batch actually wrote, rather than reading it off the effect |
+| The **selection** above it | the workflow | a leaf returns test ids in `extra`, and `impactedTests(impacted) ∪ testsById(extra)` is what runs |
 
-### DELIVER, and why 2215
+A selection that misses a test the floor holds comes back:
+
+```ts
+{ effect, outcome: "rejected", by: "contract" }
+```
+
+with the omitted ids named in the rejection detail and in the `tests-run` event's `detail` as `{ omitted, selected, wrote, status: "omitted-impacted-tests" }`, at `verification: "failed"` and `category: "contract"`. It is refused before anything runs, because a narrower run is not a cheaper run. The union is what is checked rather than the declaration, so an effect whose `impacted` names the wrong symbols but whose `extra` covers the floor is fine.
+
+`memoryEffects` is unchanged and still answers `infra-failed`, deliberately: enforcing a floor needs an impact graph, that executor has none, and an executor that cannot tell an omission from a selection must not pretend to.
+
+`ImpactGraph.testsById` is what makes `extra` runnable at all. A test is a symbol of kind `test`, so its id is already stable. An id naming no live test is **dropped rather than refused** — `extra` may only add, so an id that names nothing adds nothing and cannot shrink a run, and the event records what actually ran so the drop is visible in provenance.
+
+In DELIVER the selection is a leaf, `select-tests`, between `implement` and `run-tests`. Its decision space is `no-extra | extra` and the ids are payload: a set of test ids is not a closed enum, so it cannot drive an edge, and keeping it out of the decision is also what stops the path space scaling with the size of the suite. There is no `fewer`, and that is the rule rather than an omission. `no-extra` does not carry the ids even when the payload holds some — the mechanical check `deliver.selection-matches-its-decision` refuses that contradiction at the model boundary, and reading the decision in the `carry` hook makes it structural for a journal replay that never ran the check.
+
+### DELIVER, and why 447
 
 The DELIVER step cycle is the design's fixed graph: activate the acceptance test, observe RED, implement until green, refactor, gate, commit. Every leaf is a `runStep` with an injected model binding, exactly like DISTILL. Four of them classify and carry the enums the design names:
 
@@ -273,13 +299,22 @@ The DELIVER step cycle is the design's fixed graph: activate the acceptance test
 - `diagnose` → `impl-wrong | at-wrong | design-missing | harness-failed`
 - `gates` → `clean | clippy-in-scope | mutation-below-gate | out-of-scope-structural`
 
-The other eight (`activate-at`, `implement`, `fix-acceptance-test`, `surface-design-gap`, `refactor`, `fix-lint`, `add-test`, `commit`) are generative. "Make this AT pass with the minimal change" is code generation, not a closed-enum decision, so their decision space is a singleton and the routable outcome downstream is something else: for `implement`, the **effect result**. It returns a `replace-symbol` effect and the branch after it routes `committed | conflict | rejected | infra-failed`, plus `exhausted` for "the validator was never satisfied". A conflict rebases onto the version the world moved to and retries inside the bound; `infra-failed` is distinct from `rejected` so a flaky harness does not burn the implement budget on a change that was fine.
+`select-tests` carries a fifth, `no-extra | extra`, which is the union rule above. The other eight (`activate-at`, `implement`, `fix-acceptance-test`, `surface-design-gap`, `refactor`, `fix-lint`, `add-test`, `commit`) are generative. "Make this AT pass with the minimal change" is code generation, not a closed-enum decision, so their decision space is a singleton and the routable outcome downstream is something else: for `implement`, the **effect result**. It returns a `replace-symbol` effect and the branch after it routes `committed | conflict | rejected | infra-failed`, plus `exhausted` for "the validator was never satisfied". A conflict rebases onto the version the world moved to and retries inside the bound; `infra-failed` is distinct from `rejected` so a flaky harness does not burn the implement budget on a change that was fine.
 
-Nothing in the DELIVER example runs a test or writes a symbol. The leaves classify evidence the state carries, and `memoryEffects()` returns `infra-failed` for `replace-symbol` because there is nothing behind that executor. That outcome is **routed, not hidden**: a test drives `memoryEffects()` through the real graph and asserts the run parks under `write-infra-failed`. Swapping in `vcsExecutor` is what makes the same graph write code; the [VCS module](#vcs-module) covers that path with its own graph, deliberately smaller, so the 2215-path walk stays a control-flow test rather than a filesystem one.
+Nothing in the DELIVER example runs a test or writes a symbol. The leaves classify evidence the state carries, and `memoryEffects()` returns `infra-failed` for `replace-symbol` because there is nothing behind that executor. That outcome is **routed, not hidden**: a test drives `memoryEffects()` through the real graph and asserts the run parks under `write-infra-failed`. Swapping in `vcsExecutor` is what makes the same graph write code; the [VCS module](#vcs-module) covers that path with its own graph, deliberately smaller, so the walk stays a control-flow test rather than a filesystem one.
 
-**2215 paths** is every leaf decision, every effect result, and every loop count up to its bound, with unreachable combinations never run. The bounds are all 2, which is the smallest value that still exercises every edge: one iteration to reach a retry, a second to reach the bound. Raising them multiplies the walk without adding an edge. Coverage is asserted, not assumed: the walk visits every node the graph declares except `human.route` (reachable only by answering a suspension, which the resume tests cover), produces all nine declared `HUMAN_REASONS`, and produces both terminal kinds.
+**447 paths** is every leaf decision, every effect result, and every loop count up to its bound, with unreachable combinations never run. Coverage is asserted, not assumed: the walk visits every node the graph declares except `human.route` (reachable only by answering a suspension, which the resume tests cover), produces all nine declared `HUMAN_REASONS`, and produces both terminal kinds.
 
-It was 1270 paths at 7.5 ms each before the diagnosis branch; it is 2215 at ~15 ms each after it, because two more branches inside a loop body make the compiler build a larger tree per run. 34 s, measured. That is the number the bounds were checked against, and no bound was reduced, because the walk is inside the budget. If it stops being, the cheapest bound to cut is `MAX_GATE_ATTEMPTS`: 901 paths, ~7 s, every node, reason and terminal still covered — at the cost of the only place the gates loop is observed repeating.
+**Why `MAX_CYCLES` is 1 while the other two bounds are 2.** It was 1270 paths at 7.5 ms each before the diagnosis branch, 2215 at ~15 ms each after it, and adding `select-tests` took it past 7000 paths and 544 s. `select-tests` sits inside `test-loop`, which sits inside `cycle`, so its multiplier compounds once per (cycle × test) iteration, and the branch after it converging two edges on `run-tests` makes the compiler build the rest of the loop body twice per compile on top of that. The documented fallback was applied first and measured: `MAX_GATE_ATTEMPTS: 2 → 1` gives **5615 paths in 254 s**, because the gates loop is not one of the two loops the new leaf is inside. So the bound that gave way is the one the new leaf is actually inside, and the three single-bound cuts were measured rather than guessed:
+
+| Bounds | Paths | Wall clock |
+|---|---|---|
+| 2 / 2 / 2 | > 7000 | > 544 s |
+| `MAX_GATE_ATTEMPTS` → 1 (the documented fallback) | 5615 | 254 s |
+| `MAX_TEST_ATTEMPTS` → 1 | 285 | ~2 s |
+| **`MAX_CYCLES` → 1** | **447** | **~2 s** |
+
+`MAX_TEST_ATTEMPTS` is the most expensive to cut in signal: five tests depend on the test loop running twice — the implement retry, the conflict rebase, the rejected-write retry, `broke-other`, and the whole `at-wrong` re-run-without-re-implementing claim. So the cycle gives way, and the one observation that costs is bought back rather than dropped: the test that needs two cycles (`a surviving mutant re-enters the test loop on the next cycle`) rebuilds the `cycle` node at `max: 2` for itself, using nothing but `loop` and the node map. The walk pays for one cycle; the one test that needs two builds two.
 
 ### The diagnosis branch
 
@@ -299,6 +334,90 @@ A `still-red` suite used to loop straight back to `implement`, which assumes the
 The walker itself is `enumeratePaths(runOnce)`: run with every choice at its first option, re-run forcing the last choice point to its next option, repeat until none is left. It requires the decision order to be a function of the decisions already made, so it covers sequential graphs and refuses a `fanout` by name rather than miscounting. DISTILL keeps its `cartesian` product.
 
 **One `human` node, outside all three loops.** A loop body leaves only through the loop's own id, so an outcome that needs a person does not jump out of the cycle. It sets a block in state, every enclosing `until` goes true, the run unwinds, and `cycle.verdict` routes it. Reaching a bound arrives the same way with its own reason (`test-loop-exhausted`, `gates-loop-exhausted`, `cycle-exhausted`), so a person is told which budget was spent and how many times it ran. Because DELIVER's person sits outside the loops, the "a suspension inside a loop body resumes into the same iteration" guarantee is tested in `src/core/workflow.test.ts` against a hand-built graph, where the assertion can be exact: the trace reads `spin, ask, apply, spin, ask` rather than `spin, ask, spin, ask`.
+
+### ROADMAP: the roadmap is data, and this is the graph that writes it
+
+The third example is the authoring workflow, and the thing it is there to say is that **a roadmap is rows**. An agent does not generate a workflow per feature. It generates rows, and a scheduler instantiates the one fixed step cycle per row. Nothing about a feature changes the graph.
+
+So this graph is fixed and hand-written like the other two, and what it produces is `roadmaps` and `roadmap_steps` artifact rows through the effect executor.
+
+#### The rows
+
+Modelled on nWave's own `handover.json`, with our naming. A `StoredHandover` there is a request plus an ordered tuple of `HandoverValue`s; these are the same facts, as zod schemas, in `src/examples/roadmap/schema.ts`:
+
+```ts
+RoadmapStep = {
+  id: string;                          // stable, unique within the roadmap
+  observation: string;                 // what will be observably true when it is done
+  dependencies: string[];              // step ids that must be accepted first
+  authority: string;                   // a locator into the design source it implements
+  acceptance: AcceptanceObligation[];  // ≥ 1
+  predictedTouches: string[];          // symbol ids or paths it expects to write
+}
+AcceptanceObligation = { id: string; text: string; oracleLocator?: string }
+Roadmap = { request: string; steps: RoadmapStep[] }
+```
+
+`predictedTouches` is the one field beyond the handover's own, and it is there because the disjointness check needs an axis to measure. `steps` is deliberately allowed to be empty by the schema: that is what `decompose` returns when it answers `cannot-decompose`, and an empty roadmap is refused by `validate-shape` as a *named defect* rather than by the parser, so the refusal reaches the graph as data.
+
+Declaration order is significant. It is the total order the disjointness resolution uses to decide which way a new dependency edge points, and nWave's handover relies on the same order for the same reason.
+
+#### Two of the nodes are pure functions, not models
+
+That is the point of the example. A graph's branches do not have to read a model's answer; they have to read a closed enum, and a pure function over the data produces one just as well.
+
+**`validate-shape`** returns the six named defects nWave's own `read_handover` refuses a persisted handover for:
+
+| Defect | What it names |
+|---|---|
+| `no-steps` | the roadmap has no rows at all |
+| `duplicate-id` | two rows claim one identity |
+| `dangling-dependency` | a dependency names no step in the roadmap |
+| `cycle` | the dependency graph is not a DAG, named by the path that closes it |
+| `no-acceptance` | a step declares nothing it must satisfy |
+| `empty-authority` | a step implements no named design source |
+
+They are **named rather than boolean** because they are the feedback `decompose` reads on the next iteration: "invalid" tells a model nothing it can act on. And `decompose`'s own requirement rows consume the same predicates through `firstDefectOfKind`, so the step's mechanical guardrail (which runs before a validator model is spent) and the graph's gate (which runs on whatever got past it) cannot drift apart.
+
+**`measure-disjointness`** mirrors `parallel_safety.py`. A pair the roadmap declares independent whose `predictedTouches` overlap is DRIFT, and the overlapping entries are the finding. The resolution on top of that is deterministic: order the pair by declaration order, lower ordinal first, and record the edge. If adding one would close a cycle, the verdict is `drift-unresolvable` and the pair is named.
+
+The measurement is taken **once**, against the roadmap as the author declared it, and only then are the edges applied. That ordering is load-bearing twice over, and the first draft of this got it wrong in a way the fixture caught:
+
+- It is the only way `drift-unresolvable` is reachable. A lower-to-higher edge for a pair with no path either way cannot close a cycle on its own, because a cycle through the new edge needs a path back, which is exactly what "independent" rules out. So a cycle can only come from an *earlier* repair having ordered things since. Re-measuring after each edge made the verdict dead code.
+- It keeps the findings honest. Re-measuring would let the tool's own edge silence the next disagreement the author made, which is the adjudication `parallel_safety.py` refuses to do.
+
+The resolved roadmap is what gets persisted, not the proposal. The added edges are what the author's own declaration implied once the overlap was measured, so `persist` writes them, the terminal state carries them, and a test asserts the `roadmap_steps` row for the affected step. In production `predictedTouches` would come from the VCS symbol inventory rather than a model's guess, and whatever this misses the DELIVER lease catches at write time as a `conflict`. This is the cheap check before anything is dispatched, not the guarantee.
+
+#### The fanout-sizing decision: one leaf, not eight
+
+`validate-slices` judges every step of the roadmap. The design allows either a fanout of one leaf per step or a single leaf returning per-step decisions. **It is a single leaf**, and the reason is not taste:
+
+- A fanout's shape is fixed at compile time and a roadmap's step count is not, so a fanout would need sizing to a declared maximum (say 8). That puts 4^8 = 65 536 combinations at one point in the walk.
+- Worse, the walker that fits this graph is `enumeratePaths`, because a bounded loop makes the path space *sequences* rather than tuples — and `enumeratePaths` **refuses a fanout by name** rather than miscounting it. A fanout would have made the graph unenumerable by the only walker that fits it.
+
+One leaf keeps the per-step verdicts (each with a verbatim anchor into *that* step's own observation, checked by the framework's `verbatim`), keeps the aggregate as the one closed enum the graph reads, and costs one choice point. `slicesVerdict` maps the leaf's step-level word onto the graph's roadmap-level one: `is-slice → all-ok`, `not-slice → some-not-slice`, `cannot-tell → cannot-tell`, absent → `exhausted`.
+
+#### One loop, two people, and what `revise` costs
+
+Everything that repeats goes through the one `author` loop, bounded at 2, and the body-boundary rule shapes the rest. The design's sketch draws `human-review --approve--> persist` and `slices-verdict --cannot-tell--> human`; neither can be an edge, because a body leaves only through the loop's own id. So each records its fact, `until` goes true, the run unwinds, and `author.verdict` — the one branch after the loop — routes it.
+
+`human-review` is **inside** the loop and `human` is **outside** it, and that is exactly what `revise` costs. A person answering from inside an iteration re-drives the decomposition with their notes; a person handed a block is outside every loop, so nothing they could answer would re-drive anything. Which is why `human` has **one** answer:
+
+```ts
+export const HUMAN_DECISIONS = ["abandon"] as const;
+```
+
+That is a position rather than an omission. Every route into `human` is a block no closed enum could clear: a shape nobody can fix from there needs a re-decomposition (which is `revise`, inside the loop), an unorderable overlap needs the author to change the roadmap, a persist conflict needs the world re-read. Offering a second answer would mean inventing a route the design does not name — a forced persist, or a jump back into a loop the run has already left. Rule 3's point is that a person is an input the graph reads, not that every parking has two exits.
+
+#### The walk resumes, and it chooses data
+
+169 paths, ~0.6 s, and two things make it unlike DELIVER's.
+
+**It resumes.** DELIVER's person sits outside all three loops, so its walk stops at the suspension and leaves `human.route` to the resume tests. Here the review is in the middle, and `persist`, `accept`, `review.route` and `human.route` are only reachable through an answer. So the walk answers: while a run is parked it chooses from that node's own closed enum and resumes. The walker allows it because the choice point's id is `resume:${reason}`, and the reason is a function of the choices already made, which is the walker's one requirement. The coverage assertion is therefore stronger than DELIVER's: **every node the graph declares is visited, with nothing excused.**
+
+**It chooses data, not just decisions.** Two branches read pure functions of the roadmap, so to reach `shape.route`'s `invalid` edge or `disjointness.route`'s `consistent` and `drift-unresolvable` edges the walk has to vary the *roadmap*. The choice point at `decompose` is therefore a choice of **proposal**, drawn from the hand-written roadmaps in `src/examples/roadmap/fixture.ts`: `KNOWN_GOOD` (three steps, one declared dependency, one deliberate overlap → `edges-added`), `DISJOINT` (→ `consistent`), `UNRESOLVABLE` (→ `drift-unresolvable`), `MALFORMED` (every shape defect at once), plus `cannot-decompose` and the exhausted validator. Enumerating a graph whose decisions are functions of its data means enumerating enough data to reach every edge.
+
+`KNOWN_GOOD` is also the oracle in the framework/consumer sense: the harness proves a roadmap is well-formed, and a hand-written one is the only thing that says a well-formed one is *right*. `KNOWN_GOOD_RESOLVED` beside it is the expected output rows, which is what makes "the resolution is not advice" a testable claim rather than a comment.
 
 ## Deviations from the design
 
@@ -330,7 +449,7 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 13. **The graph is recompiled per `run` and per `resume`.** Compilation is a pure function of the graph and costs about 0.2 ms, so `run` builds the Mastra workflow each time rather than caching it. That is what lets `resume` take a `Workflow<S>` rather than a live handle: it rebuilds the identical workflow and reattaches by `runId`.
 
-14. **Tests beyond the two in the document.** The document shows two tests. This repo ships 116, including the compiler's graph-bug rejections, six malformed-loop rejections, the snapshot assertions behind suspend/resume, a `Run.restart()` exercise, the `runStep` unit tests, the `leaf` constructor's ownership of the exhaustion trail, the Claude Code binding against a scripted `query`, the three mechanical checks, the effect executor's optimistic concurrency, the path walker's own arithmetic, and a source scanner that fails the build if `Date.now`, `Math.random`, or `new Date(` appears in the contract, the compiler, or any decision-function file. That scanner was verified by planting a violation in `compile.ts` and watching it fail.
+14. **Tests beyond the two in the document.** The document shows two tests. This repo ships 152 outside the VCS module (95 more inside it), including the compiler's graph-bug rejections, six malformed-loop rejections, the snapshot assertions behind suspend/resume, a `Run.restart()` exercise, the `runStep` unit tests, the `leaf` constructor's ownership of the exhaustion trail, the Claude Code binding against a scripted `query`, the three mechanical checks, the effect executor's optimistic concurrency, the path walker's own arithmetic, and a source scanner that fails the build if `Date.now`, `Math.random`, or `new Date(` appears in the contract, the compiler, or any decision-function file. That scanner was verified by planting a violation in `compile.ts` and watching it fail.
 
 15. **Nested workflow ids carry the path that reached them.** The previous cut named a branch tail `${branchId}=${key}`, which collides once a node is reachable by two different paths and has a branch of its own. DELIVER has exactly that shape: `commit` is reached from `cycle.verdict` and from `human.route`. Ids are now `${parentSegmentId}>${branchId}=${key}`, unique by construction. The top-level id is unchanged (`wf:${wf.start}`), so `resume` still reattaches.
 
@@ -352,19 +471,37 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 24. **The no-nondeterminism scanner covers `src/vcs/**` and gained `randomUUID`.** The VCS takes its clock and its id generator as constructor arguments so that a lease TTL is a function call rather than a wait; `src/vcs/defaults.ts` is the one file allowed to supply the real ones, and it is the one file excluded. A fourth test asserts that the exemption has something behind it, because a defaults file that read no clock would mean the injection seam is decorative.
 
-Source is ~10,150 lines: ~6,020 of implementation and ~4,130 of tests. The VCS module is ~4,350 of that, split ~2,580 implementation and ~1,780 tests.
+25. **`Effect`'s `run-tests` gained `extra`, and the floor moved into the VCS.** The design's union has one field, `impacted`, which makes test selection the workflow's in both directions. `extra?: string[]` splits it: the VCS recomputes the floor from the symbols the batch wrote and refuses a union that misses one of its tests. The shape that forced is a signature the design does not name — `WritePath.runTests` takes `extra` and `wrote` beside `symbolIds`, and `ImpactGraph` gained `testsById` so a test id is runnable at all. Three named sets rather than one, because "the floor is computed by the VCS, not trusted from the effect" needs the written symbols to reach the place that computes it, and the design specifies the rule without specifying the call. See [The `run-tests` union](#the-run-tests-union).
+
+26. **DELIVER's `select-tests` carries the selection in state; nothing emits the `run-tests` effect yet.** The leaf, its decision space and its edges are as specified, and `extra` lands in `State.extra`. What does not exist is a DELIVER `run-tests` *effect*: the graph's `run-tests` leaf classifies evidence the caller seeded, as it always has, and giving the effect a routable result would need the graph to reconcile two sources of truth for "did the suite pass" — the leaf's classification and the effect's outcome. The design does not say which wins, so nothing was invented. The rule is enforced and tested where the design put it, at the executor. This is the same boundary as the existing "DELIVER driven through the VCS" item below.
+
+27. **`MAX_CYCLES` is 1, and the documented fallback was not enough.** The README's own advice was that `MAX_GATE_ATTEMPTS` is the cheapest bound to cut. It was applied first and measured at 5615 paths in 254 s, because `select-tests` sits inside `test-loop` inside `cycle` and the gates loop is neither. All three single-bound cuts were measured and the cycle is the one that gives way; the table and the reasoning are in [DELIVER, and why 447](#deliver-and-why-447). The one observation it costs is rebuilt locally by the one test that needs it.
+
+28. **The roadmap's `human` suspend node has a one-member decision enum.** The design names the three answers at `human-review` and routes four things to `human` without naming an answer space for it. One answer is the honest closure: every block reaching it needs work outside a closed enum, and a second answer would be a route the design does not have. Reasoned in full under [One loop, two people](#one-loop-two-people-and-what-revise-costs).
+
+29. **The roadmap's suspend payload is `{ reason, trail }`, not four named fields.** The design's sketch gives `human-review` a `suspendSchema { reason, roadmap, addedEdges, defects }`. The framework's `suspend` node has `reason: (s) => string` and `trail: (s) => unknown[]`, and `compile.ts` parses exactly that. So the other three ride as the trail's first three rows, in that order, plus two more the block path needs. Changing core's suspend contract to carry a caller-shaped payload was not in scope and would have been a larger change than the example warranted.
+
+30. **`validate-slices` is one leaf, not a fanout, and `shapeDefects` gained a sixth defect kind.** The first is a choice the design explicitly delegates, with the reasoning under [The fanout-sizing decision](#the-fanout-sizing-decision-one-leaf-not-eight). The second is `no-steps`: the design lists five checks for `validate-shape`, and the schema deliberately admits an empty `steps` array because that is what `cannot-decompose` returns. An empty roadmap passes all five of the others *vacuously* and would reach `human-review` as a proposal worth approving. nWave's own validator refuses it in the same breath as a missing request.
+
+31. **The roadmap's disjointness measures the declaration once, rather than re-measuring after each repair.** The design says "for every pair with no dependency path between them, intersect; add an edge; if adding edges would create a cycle, `drift-unresolvable`". Read as a re-measuring loop, `drift-unresolvable` is unreachable — the first implementation here was, and the fixture proved it dead. Measuring the declaration once and applying the edges in order makes it reachable and keeps the finding the author's rather than the tool's.
+
+32. **`RoadmapModels` carries a `decomposeWith` slot beside `worker`.** The design says `decompose`'s worker is "a frontier-class binding (injected)". `DeliverModels` solves the same problem with `workers?: Partial<Record<LeafId, ModelBinding>>` because DELIVER routes three leaves to three different agents; the roadmap workflow has one such leaf, so it has one named slot falling back to `worker` rather than a per-leaf map with one live key.
+
+Source is ~13,050 lines: ~7,990 of implementation and ~5,050 of tests. The VCS module is ~4,650 of that, split ~2,690 implementation and ~1,960 tests; the roadmap example is ~2,280, split ~1,650 and ~630.
 
 ## Not built yet
 
 - **Emitting a Mastra dynamic-workflow JSON definition from a `Workflow<S>`.** Mastra's dynamic workflows (beta) are the design's "graph topology as data" already built: a JSON graph over registered agents, tools, and nested workflows, validated and persisted by `addDynamicWorkflow()`. The compiler currently emits live `createStep` closures; emitting the JSON definition instead is what would let the authoring workflow write a graph without writing source.
 - **Durable snapshots.** Suspend and resume run against `InMemoryStore`, so a parked run survives a fresh compile but not a process restart. Pointing the runtime at a durable adapter is a storage swap, and it is not wired.
-- **Artifact rows in a real database.** `upsert-artifact` writes to a `Map` with a version column under `memoryEffects`, and comes back `infra-failed` under `vcsExecutor`, because the VCS is the data plane for code rather than for artifact rows. The design's "artifacts are typed rows, not documents" — a schema you derive zod types from, so the row type and the step output type are one definition — is not here. The append-only event log *is*, for code: `src/vcs/log.ts`.
-- **The proposal-shape binding.** `claudeCode` is the opaque shape: the agent edits the workspace through its own tools and the framework never sees the writes, so it cannot lease them, verify them, or roll them back — and a `conflict` is unrepresentable, because nothing crossed the effect boundary. The proposal shape returns the agent's writes as `replace-symbol` effects, which `vcsExecutor` now knows how to commit. The executor exists; the binding that would produce a proposal does not. This is the next cut.
+- **Artifact rows in a real database.** `upsert-artifact` writes to a `Map` with a version column under `memoryEffects`, and comes back `infra-failed` under `vcsExecutor`, because the VCS is the data plane for code rather than for artifact rows. The roadmap example is the first thing to *use* the artifact path — `roadmaps` and `roadmap_steps` rows, one schema serving as both the step output type and the row type, which is the design's "artifacts are typed rows, not documents" — but the store behind it is still a `Map`. Nothing persists a roadmap across a process. The append-only event log *is* real, for code: `src/vcs/log.ts`.
+- **The DELIVER scheduler over roadmap rows, with the `oracle` leaf. This is the next cut.** The roadmap is now rows and the step cycle is fixed, so what is missing between them is the scheduler: read the `roadmap_steps` rows, derive `step_edges` from the declared `predictedTouches` overlap the disjointness check already measures, take the frontier of steps whose in-edges are all `accepted`, and instantiate one DELIVER run per row. The `oracle` leaf is the step-level half of it — a roadmap row carries `acceptance` obligations with an optional `oracleLocator`, and nothing yet turns an obligation into the acceptance test DELIVER's `activate-at` activates. `fanout` runs one node's sub-steps concurrently; that is not a scheduler, and resource leases for shared test infrastructure are not built either.
+
+- **The proposal-shape binding.** `claudeCode` is the opaque shape: the agent edits the workspace through its own tools and the framework never sees the writes, so it cannot lease them, verify them, or roll them back — and a `conflict` is unrepresentable, because nothing crossed the effect boundary. The proposal shape returns the agent's writes as `replace-symbol` effects, which `vcsExecutor` now knows how to commit. The executor exists; the binding that would produce a proposal does not.
 - **`src/vcs`'s own remaining items**, in full in [`src/vcs/README.md`](./src/vcs/README.md#not-built-yet). The ones that matter to the framework: the **ast-grep pattern layer** and the **policy stage** it would carry (the stage is a stub that passes); the **LSP layer**, so there is no cross-file reference resolution and the typecheck stage shells out to `tsc` over the whole project; **coverage-refined impact**, so the test-impact graph is the static import graph alone; the **asynchronous verification tier**, so a slow test blocks a write rather than committing it `pending`; **wait-die** and **queued acquires**, so an acquire is fail-fast and hold-and-request has no fallback; **lease-level rollback**, so a lease whose second write fails leaves the first committed; **git export**; **cross-repository coordination**; and **authorization**, because a session is a string and any session may lease anything.
-- **DELIVER driven through the VCS.** The step cycle's `implement` leaf emits `replace-symbol` and the executor that commits it exists, but the 2215-path walk still runs `memoryEffects()`, deliberately: the walk is a control-flow test and giving it a filesystem would make it something else. Nothing yet runs the DELIVER graph against a real checkout with `vcsExecutor`, and DELIVER's `run-tests` leaves still classify evidence the caller seeded rather than output they produced.
+- **DELIVER driven through the VCS.** The step cycle's `implement` leaf emits `replace-symbol` and the executor that commits it exists, but the 447-path walk still runs `memoryEffects()`, deliberately: the walk is a control-flow test and giving it a filesystem would make it something else. Nothing yet runs the DELIVER graph against a real checkout with `vcsExecutor`. DELIVER's `run-tests` leaves still classify evidence the caller seeded rather than output they produced, and `select-tests` is the same boundary one field over: its `extra` lands in state and no DELIVER node emits the `run-tests` effect that would carry it, because giving that effect a routable result needs a rule for which of the leaf's classification and the effect's outcome decides "did the suite pass". The union rule itself is enforced and tested at the executor, which is where the design put it.
 - **The symbol-set-difference check.** `deliver.implement-to-the-design` carries no mechanical check, only a model refuting against the rule text. The symbol inventory that would make it a set difference over exported symbols now exists in `src/vcs/structural`; the check that consumes it does not.
 - **The parallel scheduler.** Roadmap steps as a DAG in rows, `step_edges` derived from declared symbol overlap, a frontier of steps whose in-edges are all `accepted`, and resource leases for shared test infrastructure. `fanout` runs one node's sub-steps concurrently; that is not a scheduler.
-- **The authoring workflow.** Bootstrap step 4: requirement rows in, graph rows out, diffed against the hand-written graph. Nothing generates a graph; both DISTILL and DELIVER are hand-written, which is what makes them the oracle.
+- **The authoring workflow that writes GRAPH rows.** Bootstrap step 4: requirement rows in, graph rows out, diffed against the hand-written graph. Nothing generates a graph; DISTILL, DELIVER and the roadmap workflow are all hand-written, which is what makes them the oracle. The roadmap-authoring workflow is a different thing that the design's table lists on the same line: it writes *roadmap* rows, not graph rows, and it is built.
 - **Graph topology as data.** Nodes and edges are TypeScript, not rows. Exhaustiveness is the compiler's red squiggle, not a constraint query. The design takes the middle path; this prototype takes the typed end of it.
 - **`symbol-diff.ts`.** The fourth mechanical check in the design's `checks/` listing. Its input, the symbol inventory, is now built; the check is not. See the symbol-set-difference item above.
 - **Escalation cost accounting.** `escalateTo` fires once after the attempt budget, as specified, but nothing measures cost per completed task — the open question the design says should be answered before the legibility argument is used to justify the approach.
