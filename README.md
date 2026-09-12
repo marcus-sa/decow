@@ -2,15 +2,17 @@
 
 A prototype of the framework described in [`DETERMINISTIC-WORKFLOWS.md`](./DETERMINISTIC-WORKFLOWS.md): a finite graph owns control flow, small models own one decision each, and the whole path space is enumerable before anything runs.
 
-The property the rest of the design rests on is testable in this repo right now, on two graphs: **162 paths through the DISTILL classification graph and 2215 through the DELIVER step cycle, zero model calls, no API key, no network.** The whole suite — 116 tests, including those 2377 runs through the real Mastra engine — takes **about 37 s**, essentially all of it the DELIVER walk.
+The property the rest of the design rests on is testable in this repo right now, on two graphs: **162 paths through the DISTILL classification graph and 2215 through the DELIVER step cycle, zero model calls, no API key, no network.** The whole suite — 204 tests, including those 2377 runs through the real Mastra engine — takes **about 43 s**, essentially all of it the DELIVER walk.
 
 The DELIVER graph is the one with cycles in it. Its path space is four figures rather than infinite because every repetition in it is a `loop` node with a required bound.
+
+The second half of the repo is the [VCS module](#vcs-module): `replace-symbol` and `run-tests` now execute for real, under a lease, through a verification gate, into an append-only event log.
 
 ## Install, test, run
 
 ```bash
 bun install
-bun test          # 116 tests, no network, no key, ~37 s
+bun test          # 204 tests, no network, no key, no model, ~43 s
 bun run typecheck # tsc --noEmit
 bun run check     # both
 ```
@@ -46,6 +48,7 @@ ANTHROPIC_API_KEY=... DW_WORKSPACE=/path/to/repo bun run smoke:deliver
 | `src/harness/` | § Framework versus consumer → "test harness": `stub-journal.ts`, `enumerate-paths.ts` (the graph inspector plus the reachable-path walker), `matchers.ts`. |
 | `src/examples/distill/` | § Worked example: DISTILL test-lane classification. Bootstrap steps 2 and 3 — the known-good hand-written graph and its requirement rows. |
 | `src/examples/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops. |
+| `src/vcs/` | § The agent-native VCS is the effect executor and mechanical verifier, and the whole of [`ai-vcs.md`](./ai-vcs.md) phases 2 to 4. See [`src/vcs/README.md`](./src/vcs/README.md). |
 
 The model bindings live under `src/bindings/` and nothing in `core/` imports them: the design's framework/consumer table puts "which small models, which validator family" on the consumer side, and the smoke scripts are where a consumer picks.
 
@@ -196,6 +199,7 @@ Re-running a workflow against a warm journal is byte-identical and spends nothin
 
 - **`zod`** is Mastra's only peer dependency and the schema language for step outputs, requirement decision spaces, and resume payloads.
 - **`@anthropic-ai/claude-agent-sdk`** is what `src/bindings/claude-code.ts` dispatches a subagent through. It is a runtime dependency because the binding ships in `src/`, but it is imported lazily — `bun test` never loads it, and nothing outside that one file references it.
+- **`tree-sitter`** and **`tree-sitter-typescript`** are the structural layer of the VCS module. The native Node bindings, not `web-tree-sitter` plus wasm grammars, which do not load under bun; see [`src/vcs/README.md`](./src/vcs/README.md#the-parser-native-tree-sitter-not-wasm). Prebuilt binaries ship for every supported platform, so nothing compiles at install time, and the whole surface sits behind a three-method `Parser` interface.
 - **`@mastra/core`** supplies the workflow engine, the `Agent` used by the smoke scripts, and — the reason no storage package was needed — `InMemoryStore` from `@mastra/core/storage`. Snapshots go there, which is what makes suspend/resume work in the test suite with no file, no socket, and no `@mastra/libsql`. See [Not built yet](#not-built-yet) for what that store does *not* give you.
 
 Mastra's model router takes a `provider/model` string (`anthropic/claude-haiku-4-5`), resolves `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from the environment itself, and needs no provider package — so `ai`, `@ai-sdk/anthropic`, and `@ai-sdk/openai` are not here. The `@ai-sdk/provider*` packages still under `node_modules` are Mastra's own transitive dependencies, not ours.
@@ -215,7 +219,18 @@ Two shapes, and only the first is built.
 
 **Opaque.** The agent edits the workspace itself, through its own tools, and the binding returns only what the schema asks for. The writes have already happened by the time `generate` resolves; the framework never sees them, so it cannot lease them, verify them, or roll them back. `claudeCode` is this shape. The consequence is not stylistic: under it a `conflict` is *unrepresentable*, because the write never crossed the effect boundary where a version check could have happened.
 
-**Proposal.** The agent returns its writes as data — `replace-symbol` effects — and the runner commits them through the agent-native VCS, under a lease, with the typecheck-and-impacted-tests gate at the write boundary and the journal key recorded as the intent. A conflict comes back as a decision value a branch routes. That is the design's "the VCS is the effect executor and mechanical verifier", and it is in [Not built yet](#not-built-yet).
+**Proposal.** The agent returns its writes as data — `replace-symbol` effects — and the runner commits them through the agent-native VCS, under a lease, with the typecheck-and-impacted-tests gate at the write boundary and the task id recorded as the intent. A conflict comes back as a decision value a branch routes. **The half of this that was missing is now built**: the VCS is in [`src/vcs/`](./src/vcs/README.md) and its executor is `vcsExecutor`, below. What is still missing is the binding: `claudeCode` returns an object, not effects, so nothing yet produces a proposal for the executor to commit. That is the next cut.
+
+### Executors
+
+A `ModelBinding` is where a model plugs in. An `EffectExecutor` is where the *world* plugs in: `(effects) => Promise<EffectResult[]>`, injected into `run` and `resume`.
+
+| Executor | Behind it | `replace-symbol` / `run-tests` |
+|---|---|---|
+| `memoryEffects()` | a `Map` with a version column, and an array for the trail | `infra-failed`, because there is nothing behind it and that is the honest answer |
+| `vcsExecutor({ vcs, session, intent })` | the [VCS module](#vcs-module): one lease per batch, the verification gate, the event log | executed for real, and the outcome is what the branch routes |
+
+`vcsExecutor` takes ONE write lease covering every `replace-symbol` target in the batch, applies the writes, releases, and maps each outcome onto an `EffectResult`. The session and the task intent are fixed per executor instance, so the `EffectExecutor` signature does not change: one executor per task is the answer, rather than threading provenance through the runner.
 
 ### What `claudeCode` does with the SDK
 
@@ -227,6 +242,16 @@ Two shapes, and only the first is built.
 ### The injected `query`
 
 `claudeCode` takes the SDK's `query` as an option, defaulting to the real one. The default is a lazy `await import`, so the SDK's 1.5 MB module is not loaded unless a call is actually made — and `bun test` never makes one: every test in `claude-code.test.ts` supplies a fake that yields scripted messages. A binding that could only be tested by spawning an agent would not be a seam.
+
+## VCS module
+
+[`src/vcs/`](./src/vcs/README.md) implements [`ai-vcs.md`](./ai-vcs.md) as a library on `bun:sqlite`: a tree-sitter symbol inventory, an identity registry with opaque ids that survive declared renames, an append-only event log, a lease manager with atomic multi-acquire and hierarchical modes, and a verification pipeline that runs inside the write path and rolls the file back byte for byte when a stage refuses.
+
+**The dependency runs one way.** `src/core` imports nothing from `src/vcs`. `src/vcs/executor.ts` imports the `Effect` and `EffectResult` types from `src/core/effects.ts` and nothing else from the framework, and every other file under `src/vcs/` does not know the framework exists. The framework is the control plane; the VCS is the data plane for code.
+
+The design document's own test for whether the seam works is one path: "the runner executes an `Effect[]` through the VCS with lease, verify, and log, and gets back a typed result a branch can route on." That path is `src/vcs/executor.test.ts`, driven through the real Mastra runner on a temp TypeScript project: a `leaf` emits a `replace-symbol`, the branch after it routes `committed`, and a second run with a stale `expectedVersion` routes `conflict` to a rebase node instead.
+
+**87 tests, 1.9 s.** Full detail, the storage schema, the write path step by step, the deviations and what is still missing: [`src/vcs/README.md`](./src/vcs/README.md).
 
 ## The two worked examples
 
@@ -250,7 +275,7 @@ The DELIVER step cycle is the design's fixed graph: activate the acceptance test
 
 The other eight (`activate-at`, `implement`, `fix-acceptance-test`, `surface-design-gap`, `refactor`, `fix-lint`, `add-test`, `commit`) are generative. "Make this AT pass with the minimal change" is code generation, not a closed-enum decision, so their decision space is a singleton and the routable outcome downstream is something else: for `implement`, the **effect result**. It returns a `replace-symbol` effect and the branch after it routes `committed | conflict | rejected | infra-failed`, plus `exhausted` for "the validator was never satisfied". A conflict rebases onto the version the world moved to and retries inside the bound; `infra-failed` is distinct from `rejected` so a flaky harness does not burn the implement budget on a change that was fine.
 
-Nothing runs a test or writes a symbol. The leaves classify evidence the state carries, and the in-memory executor returns `infra-failed` for `replace-symbol` because there is no VCS behind it. That outcome is **routed, not hidden**: a test drives `memoryEffects()` through the real graph and asserts the run parks under `write-infra-failed`.
+Nothing in the DELIVER example runs a test or writes a symbol. The leaves classify evidence the state carries, and `memoryEffects()` returns `infra-failed` for `replace-symbol` because there is nothing behind that executor. That outcome is **routed, not hidden**: a test drives `memoryEffects()` through the real graph and asserts the run parks under `write-infra-failed`. Swapping in `vcsExecutor` is what makes the same graph write code; the [VCS module](#vcs-module) covers that path with its own graph, deliberately smaller, so the 2215-path walk stays a control-flow test rather than a filesystem one.
 
 **2215 paths** is every leaf decision, every effect result, and every loop count up to its bound, with unreachable combinations never run. The bounds are all 2, which is the smallest value that still exercises every edge: one iteration to reach a retry, a second to reach the bound. Raising them multiplies the walk without adding an edge. Coverage is asserted, not assumed: the walk visits every node the graph declares except `human.route` (reachable only by answering a suspension, which the resume tests cover), produces all nine declared `HUMAN_REASONS`, and produces both terminal kinds.
 
@@ -323,18 +348,23 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 22. **The DISTILL exhaustion trail line changed shape.** It was `{"kind":"benchmark",…}`, written by hand; it is `{"leaf":"benchmark",…}`, written by the constructor, because one line format for both graphs is the point of moving it there. That is the one existing assertion this cut changed.
 
-Source is ~5,750 lines: ~3,430 of implementation and ~2,320 of tests.
+23. **`EffectResult`'s `rejected.by` gained `contract` and `structural`.** It was `typecheck | tests | schema`, which cannot express the contract-violation category the VCS distinguishes from a verification failure — "you declared one thing and did another" is not the same answer as "your change broke a test", and § 5.4 of `ai-vcs.md` is explicit that the responses differ. It is now `typecheck | tests | schema | contract | structural`, and `structural` is the narrower case of "the edit does not parse". This is the only change to `src/core` this cut made. `memoryEffects` needed no edit, because it never produced a `rejected` outcome. The `Effect` union did **not** need extending: `replace-symbol` already carries `symbolId`, `expectedVersion` and `body`, and the lease and the intent belong to the executor rather than to the graph.
+
+24. **The no-nondeterminism scanner covers `src/vcs/**` and gained `randomUUID`.** The VCS takes its clock and its id generator as constructor arguments so that a lease TTL is a function call rather than a wait; `src/vcs/defaults.ts` is the one file allowed to supply the real ones, and it is the one file excluded. A fourth test asserts that the exemption has something behind it, because a defaults file that read no clock would mean the injection seam is decorative.
+
+Source is ~10,150 lines: ~6,020 of implementation and ~4,130 of tests. The VCS module is ~4,350 of that, split ~2,580 implementation and ~1,780 tests.
 
 ## Not built yet
 
 - **Emitting a Mastra dynamic-workflow JSON definition from a `Workflow<S>`.** Mastra's dynamic workflows (beta) are the design's "graph topology as data" already built: a JSON graph over registered agents, tools, and nested workflows, validated and persisted by `addDynamicWorkflow()`. The compiler currently emits live `createStep` closures; emitting the JSON definition instead is what would let the authoring workflow write a graph without writing source.
 - **Durable snapshots.** Suspend and resume run against `InMemoryStore`, so a parked run survives a fresh compile but not a process restart. Pointing the runtime at a durable adapter is a storage swap, and it is not wired.
-- **Artifact rows in a real database.** `upsert-artifact` writes to a `Map` with a version column. The design's "artifacts are typed rows, not documents" — a schema you derive zod types from, so the row type and the step output type are one definition — is not here. Neither is the append-only event log.
-- **The proposal-shape binding, over a VCS lease.** `claudeCode` is the opaque shape: the agent edits the workspace through its own tools and the framework never sees the writes, so it cannot lease them, verify them, or roll them back — and a `conflict` is unrepresentable, because nothing crossed the effect boundary. The proposal shape returns the agent's writes as `replace-symbol` effects for the runner to commit through the VCS, under a lease, with the write-boundary gate and the journal key as intent. It needs the VCS below.
-- **Agent-native VCS integration.** `replace-symbol` and `run-tests` return `infra-failed` because no executor is wired. There is no lease, no typecheck gate, no test-impact graph, no symbol-set-difference check. `infra-failed` rather than `rejected` is the honest answer and is asserted as such: the DELIVER example routes it to a person under `write-infra-failed` rather than swallowing it. The consequence for DELIVER is that its `deliver.implement-to-the-design` requirement carries no mechanical check, only a model refuting against the rule text; the symbol-set difference that would make it mechanical needs the symbol inventory.
-- **Real test execution.** DELIVER's `run-tests` leaves classify evidence the state carries, not output they produced. Nothing shells out, and the `evidence` field is seeded by the caller. Wiring it is a `run-tests` effect executor plus the test-impact graph above.
+- **Artifact rows in a real database.** `upsert-artifact` writes to a `Map` with a version column under `memoryEffects`, and comes back `infra-failed` under `vcsExecutor`, because the VCS is the data plane for code rather than for artifact rows. The design's "artifacts are typed rows, not documents" — a schema you derive zod types from, so the row type and the step output type are one definition — is not here. The append-only event log *is*, for code: `src/vcs/log.ts`.
+- **The proposal-shape binding.** `claudeCode` is the opaque shape: the agent edits the workspace through its own tools and the framework never sees the writes, so it cannot lease them, verify them, or roll them back — and a `conflict` is unrepresentable, because nothing crossed the effect boundary. The proposal shape returns the agent's writes as `replace-symbol` effects, which `vcsExecutor` now knows how to commit. The executor exists; the binding that would produce a proposal does not. This is the next cut.
+- **`src/vcs`'s own remaining items**, in full in [`src/vcs/README.md`](./src/vcs/README.md#not-built-yet). The ones that matter to the framework: the **ast-grep pattern layer** and the **policy stage** it would carry (the stage is a stub that passes); the **LSP layer**, so there is no cross-file reference resolution and the typecheck stage shells out to `tsc` over the whole project; **coverage-refined impact**, so the test-impact graph is the static import graph alone; the **asynchronous verification tier**, so a slow test blocks a write rather than committing it `pending`; **wait-die** and **queued acquires**, so an acquire is fail-fast and hold-and-request has no fallback; **lease-level rollback**, so a lease whose second write fails leaves the first committed; **git export**; **cross-repository coordination**; and **authorization**, because a session is a string and any session may lease anything.
+- **DELIVER driven through the VCS.** The step cycle's `implement` leaf emits `replace-symbol` and the executor that commits it exists, but the 2215-path walk still runs `memoryEffects()`, deliberately: the walk is a control-flow test and giving it a filesystem would make it something else. Nothing yet runs the DELIVER graph against a real checkout with `vcsExecutor`, and DELIVER's `run-tests` leaves still classify evidence the caller seeded rather than output they produced.
+- **The symbol-set-difference check.** `deliver.implement-to-the-design` carries no mechanical check, only a model refuting against the rule text. The symbol inventory that would make it a set difference over exported symbols now exists in `src/vcs/structural`; the check that consumes it does not.
 - **The parallel scheduler.** Roadmap steps as a DAG in rows, `step_edges` derived from declared symbol overlap, a frontier of steps whose in-edges are all `accepted`, and resource leases for shared test infrastructure. `fanout` runs one node's sub-steps concurrently; that is not a scheduler.
 - **The authoring workflow.** Bootstrap step 4: requirement rows in, graph rows out, diffed against the hand-written graph. Nothing generates a graph; both DISTILL and DELIVER are hand-written, which is what makes them the oracle.
 - **Graph topology as data.** Nodes and edges are TypeScript, not rows. Exhaustiveness is the compiler's red squiggle, not a constraint query. The design takes the middle path; this prototype takes the typed end of it.
-- **`symbol-diff.ts`.** The fourth mechanical check in the design's `checks/` listing needs a symbol inventory, which needs the VCS.
+- **`symbol-diff.ts`.** The fourth mechanical check in the design's `checks/` listing. Its input, the symbol inventory, is now built; the check is not. See the symbol-set-difference item above.
 - **Escalation cost accounting.** `escalateTo` fires once after the attempt budget, as specified, but nothing measures cost per completed task — the open question the design says should be answered before the legibility argument is used to justify the approach.
