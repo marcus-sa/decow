@@ -17,6 +17,14 @@
  * payload: a set of test ids is not a closed enum, and letting one drive an
  * edge would make the path space the size of the suite.
  *
+ * `run-tests` is NOT a leaf. It emits a `run-tests` effect and `test.route`
+ * routes the typed result, because whether the suite passed is what running it
+ * answers. The split the branch reads is the failing ids against this step's
+ * own acceptance tests: all of them its own is `still-red`, anything else is
+ * `broke-other`, a refused selection is a contract violation that unwinds to a
+ * person, and a conflict is impossible enough that treating it as a harness
+ * failure is the honest arm.
+ *
  * A still-red suite is classified before it is retried. `diagnose` answers
  * with the cause, and each cause goes to whoever owns it: `impl-wrong` is the
  * implement loop as it always was, `at-wrong` corrects the acceptance test and
@@ -67,7 +75,6 @@ import {
   type RedOutcome,
   type SelectTestsOutcome,
   type StepUnderDelivery,
-  type TestOutcome,
 } from "./steps.ts";
 
 /* ------------------------------------------------------------------- bounds */
@@ -112,7 +119,6 @@ export type Leaves = {
   "run-tests.red"?: RedOutcome;
   implement?: LeafOutputFor<"implement">["decision"];
   "select-tests"?: SelectTestsOutcome;
-  "run-tests"?: TestOutcome;
   diagnose?: DiagnoseOutcome;
   "fix-acceptance-test"?: LeafOutputFor<"fix-acceptance-test">["decision"];
   "surface-design-gap"?: LeafOutputFor<"surface-design-gap">["decision"];
@@ -136,6 +142,7 @@ export const HUMAN_REASONS = [
   "design-gap",
   "validator-exhausted",
   "write-infra-failed",
+  "test-selection-refused",
   "out-of-scope-structural",
   "test-loop-exhausted",
   "gates-loop-exhausted",
@@ -164,8 +171,21 @@ export type State = {
   symbolVersion: number;
 
   leaf: Leaves;
+  /**
+   * The test ids this step's own acceptance tests resolved to. Written by the
+   * `oracle` once it has located them; the set membership `test.route` reads
+   * to tell "my own acceptance test is still red" from "I broke something
+   * else".
+   */
+  acceptanceTests: string[];
   /** How `implement`'s write landed. Cleared when `implement` did not write. */
   write?: WriteOutcome;
+  /**
+   * What came back from running the suite. The whole `EffectResult`, because
+   * the routable facts are spread across it: the outcome, the gate that
+   * refused, and the ids that failed. Cleared when a new run is asked for.
+   */
+  testRun?: EffectResult;
   /** The symbol `implement` last rewrote. Payload; never branched on. */
   wrote?: string;
   /**
@@ -198,6 +218,7 @@ export const seed = (
   impacted: [...impacted],
   symbolVersion: 0,
   leaf: {},
+  acceptanceTests: [],
   extra: [],
   iterations: {},
 });
@@ -216,10 +237,14 @@ export const blockedReason = (s: State): HumanReason | undefined => {
   if (s.leaf["run-tests.red"] === "already-green") return "already-green";
   if (
     s.leaf["run-tests.red"] === "harness-failed" ||
-    s.leaf["run-tests"] === "harness-failed" ||
+    testVerdict(s) === "harness-failed" ||
     s.leaf.diagnose === "harness-failed"
   )
     return "harness-failed";
+  // A selection that reached below the impact floor is the selecting leaf's
+  // own contract violation, and there is nothing in the cycle that could
+  // repair it: the floor is the VCS's and the leaf may only add to it.
+  if (testVerdict(s) === "selection-refused") return "test-selection-refused";
   // Ahead of `exhausted` deliberately: once a design gap is the finding, it
   // stays the reason a person is handed, even when the leaf that was supposed
   // to describe it could not satisfy its own validator.
@@ -240,7 +265,27 @@ export type ActivateVerdict = (typeof ACTIVATE_OUTCOMES)[number] | "exhausted";
 export type RedVerdict = RedOutcome | "exhausted";
 export type WriteVerdict = WriteOutcome | "exhausted";
 export type SelectVerdict = SelectTestsOutcome | "exhausted";
-export type TestVerdict = TestOutcome | "exhausted";
+
+/**
+ * What one run of the suite said, as a function of the effect's own typed
+ * result. No leaf answers this: running the suite is what decides whether it
+ * passed, and a model asked the same question is a second source of truth for
+ * a fact the runner already produced.
+ *
+ * `not-run` is the honest answer for an iteration where the suite never ran —
+ * a write that conflicted goes round again without a run — and it is not a
+ * block, so the loop iterates.
+ */
+export const TEST_VERDICTS = [
+  "green",
+  "still-red",
+  "broke-other",
+  "harness-failed",
+  "selection-refused",
+  "not-run",
+] as const;
+export type TestVerdict = (typeof TEST_VERDICTS)[number];
+
 export type DiagnoseVerdict = DiagnoseOutcome | "exhausted";
 export type RefactorVerdict = (typeof REFACTOR_OUTCOMES)[number] | "exhausted";
 export type GateVerdict = GateOutcome | "exhausted";
@@ -259,7 +304,51 @@ export const activateVerdict = (s: State): ActivateVerdict => s.leaf["activate-a
 export const redVerdict = (s: State): RedVerdict => s.leaf["run-tests.red"] ?? "exhausted";
 export const writeVerdict = (s: State): WriteVerdict => s.write ?? "exhausted";
 export const selectVerdict = (s: State): SelectVerdict => s.leaf["select-tests"] ?? "exhausted";
-export const testVerdict = (s: State): TestVerdict => s.leaf["run-tests"] ?? "exhausted";
+
+/**
+ * The suite's outcome, from the effect result and the step's own acceptance
+ * tests. Pure, total, and the only thing that decides whether the suite
+ * passed.
+ *
+ * The `rejected: tests` split is the one that earns its keep. A failure whose
+ * failing tests are all the step's own is `still-red` — the implementation has
+ * not satisfied the criterion yet, which is what `diagnose` then classifies.
+ * A failure that names anything else is `broke-other`: a different owner, and
+ * not something the diagnosis leaf has evidence about.
+ *
+ * A `rejected: tests` that names NO failing test is `broke-other` too, and
+ * deliberately. "The suite failed and nobody can say which test" is not the
+ * same claim as "this step's own acceptance test is still failing", and
+ * treating it as the second would spend the diagnosis leaf on evidence that
+ * does not exist.
+ */
+export const testVerdict = (s: State): TestVerdict => {
+  const result = s.testRun;
+  if (result === undefined) return "not-run";
+  switch (result.outcome) {
+    case "committed":
+      return "green";
+    case "infra-failed":
+      return "harness-failed";
+    // A test run cannot conflict: nothing about running a suite claims a
+    // version, so there is no optimistic check for it to lose. One arriving
+    // means the executor is wrong, which is the harness failing rather than
+    // the change being bad — and that distinction is exactly why the two
+    // outcomes are separate members.
+    case "conflict":
+      return "harness-failed";
+    case "rejected": {
+      if (result.by === "contract") return "selection-refused";
+      // Any other gate answering a test run is answering out of its own
+      // vocabulary, which is the harness, not the change.
+      if (result.by !== "tests") return "harness-failed";
+      const failed = result.detail?.failed ?? [];
+      const own = new Set(s.acceptanceTests);
+      return failed.length > 0 && failed.every((id) => own.has(id)) ? "still-red" : "broke-other";
+    }
+  }
+};
+
 export const diagnoseVerdict = (s: State): DiagnoseVerdict => s.leaf.diagnose ?? "exhausted";
 export const testPhase = (s: State): TestPhase =>
   s.leaf["fix-acceptance-test"] === undefined ? "implement" : "run-tests";
@@ -268,15 +357,13 @@ export const gateVerdict = (s: State): GateVerdict => s.leaf.gates ?? "exhausted
 export const commitVerdict = (s: State): CommitVerdict => s.leaf.commit ?? "exhausted";
 
 /**
- * The test loop repeats while the suite is still red or the change broke
- * something else. The `undefined` guard is the write-retry case: a conflict or
- * a rejected write goes round again without the suite having run at all.
+ * The test loop leaves when the suite is green, or when something is
+ * blocking. Everything else is an iteration: still-red and broke-other are
+ * retries, and `not-run` is the write-retry case — a conflicting or rejected
+ * write goes round again without the suite having run at all.
  */
 export const testDone = (s: State): boolean =>
-  blockedReason(s) !== undefined ||
-  (s.leaf["run-tests"] !== undefined &&
-    s.leaf["run-tests"] !== "still-red" &&
-    s.leaf["run-tests"] !== "broke-other");
+  blockedReason(s) !== undefined || testVerdict(s) === "green";
 
 /** The gates loop repeats while clippy has findings inside the step's scope. */
 export const gatesDone = (s: State): boolean =>
@@ -316,6 +403,7 @@ export const humanTrail = (s: State): unknown[] => [
   { exhausted: s.exhausted, loopExhausted: s.loopExhausted, iterations: s.iterations },
   { designGap: s.designGap },
   { impacted: s.impacted, extra: s.extra },
+  { tests: testVerdict(s), acceptanceTests: s.acceptanceTests, testRun: s.testRun },
 ];
 
 /**
@@ -517,25 +605,56 @@ export const deliverGraph = (journal: Journal, defs: DeliverDefs): Workflow<Stat
       exhausted: "test-loop",
     }),
 
-    // A run of the suite invalidates both the previous diagnosis and the
-    // acceptance-test correction that produced this run: the head routes to
-    // `implement` again from here on unless a new diagnosis says otherwise.
-    "run-tests": leafNode("run-tests", defs, journal, {
-      next: "test.route",
-      reset: (s) => ({
-        ...s,
-        leaf: { ...s.leaf, diagnose: undefined, "fix-acceptance-test": undefined },
+    /**
+     * Run the suite. Not a leaf: whether the suite passed is what running it
+     * answers, and the effect's typed result is the answer. The union the
+     * executor runs is the impact floor for the symbols this batch wrote plus
+     * whatever `select-tests` added; the floor is recomputed by the VCS, so a
+     * selection that reached below it comes back `rejected: contract` rather
+     * than as a smaller run.
+     *
+     * A run invalidates both the previous diagnosis and the acceptance-test
+     * correction that produced it: the head routes to `implement` again from
+     * here on unless a new diagnosis says otherwise.
+     */
+    "run-tests": {
+      type: "step",
+      run: async (s) => ({
+        state: {
+          ...s,
+          testRun: undefined,
+          leaf: { ...s.leaf, diagnose: undefined, "fix-acceptance-test": undefined },
+        },
+        effects: [
+          {
+            type: "run-tests",
+            // The symbols the run is scoped to: what `implement` wrote. The
+            // floor the executor enforces is computed from the same write, so
+            // this scope cannot narrow it.
+            impacted: s.wrote === undefined ? [] : [s.wrote],
+            extra: s.extra,
+          },
+        ],
       }),
-    }),
+      absorb: (s, results) => {
+        const ran = results.find((r) => r.effect.type === "run-tests");
+        return ran === undefined ? s : { ...s, testRun: ran };
+      },
+      next: "test.route",
+    },
 
-    // The one new edge inside the loop: a still-red suite is classified before
-    // it is retried, rather than looping straight back to `implement`.
+    // A still-red suite is classified before it is retried, rather than
+    // looping straight back to `implement`. `selection-refused` is a block
+    // that unwinds through the loop boundary, like `design-missing`: there is
+    // nothing inside the cycle that could repair a selection which reached
+    // below the floor.
     "test.route": branch<State, TestVerdict>(testVerdict, {
       green: "test-loop",
       "still-red": "diagnose",
       "broke-other": "test-loop",
       "harness-failed": "test-loop",
-      exhausted: "test-loop",
+      "selection-refused": "test-loop",
+      "not-run": "test-loop",
     }),
 
     diagnose: leafNode("diagnose", defs, journal, { next: "diagnose.route" }),
@@ -555,14 +674,15 @@ export const deliverGraph = (journal: Journal, defs: DeliverDefs): Workflow<Stat
 
     "fix-acceptance-test": leafNode("fix-acceptance-test", defs, journal, { next: "test-loop" }),
 
-    // still-red and broke-other are reachable here only at the bound: below
-    // it, `testDone` is false and the loop went round again.
+    // still-red, broke-other and not-run are reachable here only at the
+    // bound: below it, `testDone` is false and the loop went round again.
     "test.verdict": branch<State, TestVerdict>(testVerdict, {
       green: "refactor",
       "still-red": "cycle",
       "broke-other": "cycle",
       "harness-failed": "cycle",
-      exhausted: "cycle",
+      "selection-refused": "cycle",
+      "not-run": "cycle",
     }),
 
     refactor: leafNode("refactor", defs, journal, { next: "refactor.verdict" }),
@@ -612,12 +732,10 @@ export const deliverGraph = (journal: Journal, defs: DeliverDefs): Workflow<Stat
       next: "cycle",
       reset: (s) => ({
         ...s,
-        leaf: {
-          ...s.leaf,
-          "run-tests": undefined,
-          diagnose: undefined,
-          "fix-acceptance-test": undefined,
-        },
+        leaf: { ...s.leaf, diagnose: undefined, "fix-acceptance-test": undefined },
+        // The suite's last result is about a suite that did not hold this
+        // test, so it says nothing about the one that does.
+        testRun: undefined,
         write: undefined,
       }),
     }),

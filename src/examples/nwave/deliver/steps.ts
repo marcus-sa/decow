@@ -15,10 +15,19 @@
  * not a closed-enum decision — so their decision space is a singleton and the
  * routable outcome downstream is the effect's result or the validator's.
  *
- * Nothing here runs a test, writes a symbol, or shells out. The leaves are
- * classifications over evidence the state carries, and `implement`'s effect is
- * handed to whatever executor the caller injected. See the README's
- * "Not built yet".
+ * There is no leaf for "did the suite pass". There used to be, classifying
+ * runner output the caller had seeded, and it was the wrong shape: a suite's
+ * outcome is the outcome of running it, so the graph asks for a `run-tests`
+ * effect and routes the typed result. A model is not needed to read an exit
+ * code, and one that could disagree with it is a second source of truth for a
+ * fact the runner already answered. `run-tests.red` is still a leaf, because
+ * its question is not "did it pass" but "is this acceptance test vacuous",
+ * which is a judgement about WHY it passed rather than a reading of whether it
+ * did.
+ *
+ * Nothing else here runs a test, writes a symbol, or shells out. The leaves
+ * are classifications over evidence the state carries, and `implement`'s
+ * effect is handed to whatever executor the caller injected.
  */
 
 import { z } from "zod";
@@ -60,7 +69,6 @@ export const LEAF_IDS = [
   "run-tests.red",
   "implement",
   "select-tests",
-  "run-tests",
   "diagnose",
   "fix-acceptance-test",
   "surface-design-gap",
@@ -75,10 +83,6 @@ export type LeafId = (typeof LEAF_IDS)[number];
 /** The first run of the activated acceptance test, before any production code. */
 export const RED_OUTCOMES = ["red-observed", "already-green", "harness-failed"] as const;
 export type RedOutcome = (typeof RED_OUTCOMES)[number];
-
-/** Every later run of the suite. */
-export const TEST_OUTCOMES = ["green", "still-red", "broke-other", "harness-failed"] as const;
-export type TestOutcome = (typeof TEST_OUTCOMES)[number];
 
 /**
  * Which tests to run, ABOVE the impact floor. The floor is the VCS's — the
@@ -147,7 +151,6 @@ export const LEAF_DECISIONS = {
   "run-tests.red": RED_OUTCOMES,
   implement: IMPLEMENT_OUTCOMES,
   "select-tests": SELECT_TESTS_OUTCOMES,
-  "run-tests": TEST_OUTCOMES,
   diagnose: DIAGNOSE_OUTCOMES,
   "fix-acceptance-test": FIX_AT_OUTCOMES,
   "surface-design-gap": DESIGN_GAP_OUTCOMES,
@@ -373,7 +376,6 @@ const REQUIREMENTS: { [K in LeafId]: ((d: readonly string[]) => Requirement<Leaf
   "run-tests.red": [anchorMustBeVerbatim, vacuousAtIsTestingTheatre, outcomesAreDistinct],
   implement: [noInventedApi, minimalChange],
   "select-tests": [testsMayBeAddedNeverRemoved, selectionMatchesItsDecision],
-  "run-tests": [anchorMustBeVerbatim, outcomesAreDistinct],
   diagnose: [anchorMustBeVerbatim, outcomesAreDistinct, designGapIsNotInventedApi],
   "fix-acceptance-test": [atFixPreservesTheCriterion, noInventedApi],
   "surface-design-gap": [designGapIsNotInventedApi, noInventedApi],
@@ -399,8 +401,6 @@ const SYSTEM: Record<LeafId, string> = {
     "You choose whether any test should run IN ADDITION to the impact floor the VCS already " +
     "computed. The floor always runs and you cannot narrow it. Report `extra` with the ids to add, " +
     "or `no-extra` with an empty list.",
-  "run-tests":
-    "You classify one run of the suite. Answer with one word. Quote the runner output verbatim in `anchor`.",
   diagnose:
     "You classify WHY one acceptance test is still red, so the failure is routed to whoever owns " +
     "it: impl-wrong (the production code), at-wrong (the test asserts the criterion wrongly), " +
@@ -434,7 +434,6 @@ const PROMPT: Record<LeafId, (i: LeafInput) => string> = {
     `The symbol this step wrote:\n${i.wrote ?? "(nothing written yet)"}\n\n` +
     `The impact floor already runs these tests:\n` +
     `${i.impacted.length === 0 ? "(none)" : i.impacted.map((t) => `- ${t}`).join("\n")}`,
-  "run-tests": (i) => `Step ${i.step.id}\n\nRunner output:\n${i.evidence}`,
   diagnose: (i) =>
     `Step ${i.step.id}\n\nAcceptance criteria:\n${i.step.criteria}\n\n` +
     `The design declares exactly this surface:\n${i.step.design}\n\nRunner output:\n${i.evidence}`,

@@ -92,7 +92,15 @@ const asEffectResult = (effect: Effect, result: WriteResult): EffectResult => {
     case "conflict":
       return { effect, outcome: "conflict", currentVersion: result.currentVersion };
     case "rejected":
-      return { effect, outcome: "rejected", by: result.by };
+      return {
+        effect,
+        outcome: "rejected",
+        by: result.by,
+        // The failing test ids, when the stage named them. A graph routes on
+        // whether they are its own acceptance tests, which is the difference
+        // between "still red" and "broke something else".
+        ...(result.failed === undefined ? {} : { detail: { failed: result.failed } }),
+      };
     case "infra-failed":
       return { effect, outcome: "infra-failed" };
   }

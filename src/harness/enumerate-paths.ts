@@ -1,13 +1,18 @@
 /**
  * The path space of a workflow is finite, so it can be walked before anything
- * runs. Three tools live here:
+ * runs. Four tools live here:
  *
  * - `cartesian`, for enumerating the decision space a set of steps can return.
  * - `enumeratePaths`, a depth-first walk of the *reachable* decision tree: it
- *   re-runs a workflow once per path, forcing a different combination of leaf
- *   decisions each time, and stops when every choice point is exhausted. A
- *   loop makes a leaf answer more than once per run, so the space is
- *   sequences, not tuples — and it stays finite because every loop is bounded.
+ *   re-runs a workflow once per path, forcing a different combination of
+ *   choices each time, and stops when every choice point is exhausted. A loop
+ *   makes a leaf answer more than once per run, so the space is sequences, not
+ *   tuples — and it stays finite because every loop is bounded.
+ * - `scriptedExecutor`, the walk's SECOND axis. A leaf's decision is one thing
+ *   a graph routes on; the typed result of the effects it asked for is the
+ *   other, and a walk that enumerates only the first covers half the edge
+ *   tables. The executor consults a declared `EffectOutcomeSpace` — per effect
+ *   type, the outcomes to try — and forks the path per outcome.
  * - `inspectGraph`, a static walk of the graph itself, which rejects a graph
  *   with a dangling edge, an unreachable node, a fanout target that is not a
  *   step, a malformed loop, a raw back edge, or no terminal — the structural
@@ -21,7 +26,8 @@
  * every edge table, which is exactly the closed set guarantee 1 buys us.
  */
 
-import type { NodeId, Workflow } from "../core/workflow.ts";
+import type { Effect, EffectResult } from "../core/effects.ts";
+import type { EffectExecutor, NodeId, Workflow } from "../core/workflow.ts";
 
 /** All n-length tuples over `xs`, in a stable order. */
 export const cartesian = <T>(xs: readonly T[], n: number): T[][] =>
@@ -267,15 +273,68 @@ export type Choose = <T>(id: string, options: readonly T[]) => T;
 type ChoicePoint = { id: string; index: number; count: number };
 
 /**
+ * One outcome an effect of some type may come back with, named so the choice
+ * point is legible in a failure message.
+ *
+ * `result` is a function of the effect rather than a value because the
+ * interesting outcomes are relative to it: a committed `replace-symbol`
+ * commits at `expectedVersion + 1`, and a conflict carries the version the
+ * world moved to.
+ */
+export type EffectOutcome = { name: string; result: (effect: Effect) => EffectResult };
+
+/**
+ * The outcomes the walk will try, per effect type. Small and explicit on
+ * purpose: this is a multiplier on the path count at every node that emits the
+ * effect, so it holds the outcomes a graph ROUTES differently, not every
+ * outcome the type system admits.
+ */
+export type EffectOutcomeSpace = Partial<Record<Effect["type"], readonly EffectOutcome[]>>;
+
+/**
+ * An executor that answers every effect from the declared space, forking the
+ * walk once per effect per outcome.
+ *
+ * An effect type the space does not declare is REFUSED rather than answered
+ * `committed`. Silently committing would make the walk's coverage claim a
+ * fiction for that effect — the edges its other outcomes route to would never
+ * be walked, and nothing would say so. So a graph that grows an effect grows
+ * its space in the same commit, or its own walk fails by name.
+ *
+ * One outcome per effect, not per batch. A graph whose batch is atomic — the
+ * roadmap example's `persist`, where a partial write is not a smaller success
+ * — needs its own executor, because forking per effect there would enumerate
+ * combinations the executor could never produce.
+ */
+export const scriptedExecutor = (choose: Choose, space: EffectOutcomeSpace): EffectExecutor =>
+  async (effects) =>
+    effects.map((effect) => {
+      const outcomes = space[effect.type];
+      if (outcomes === undefined || outcomes.length === 0) {
+        throw new Error(
+          `enumerate-paths: no declared outcome space for effect "${effect.type}" — ` +
+            `the walk forks on effect outcomes, so every effect type the graph emits ` +
+            `must name the outcomes it may come back with`,
+        );
+      }
+      return choose(`effect:${effect.type}`, outcomes).result(effect);
+    });
+
+/**
  * Walk every reachable path through a workflow, once each.
  *
  * `runOnce` runs the graph with the `choose` it is handed wired into whatever
  * decides: a journal standing in for the models, an effect executor standing
- * in for the VCS. The walk is a depth-first traversal of the decision tree —
+ * in for the world. The walk is a depth-first traversal of the decision tree —
  * run with every choice at its first option, then re-run forcing the last
  * choice point to its next option, and so on until none is left. Unreachable
  * combinations are never run, which is what keeps a graph with three bounded
- * loops to four figures of paths instead of six.
+ * loops to three figures of paths instead of six.
+ *
+ * Two kinds of thing are choices: what a leaf decided, and what came back from
+ * the effects a step asked for. `scriptedExecutor` above is the second, and it
+ * is not optional garnish — half of DELIVER's edge tables route an
+ * `EffectResult`.
  *
  * The one requirement: the order of choice points must be a function of the
  * choices already made. A `fanout` breaks that, because its sub-steps race, so

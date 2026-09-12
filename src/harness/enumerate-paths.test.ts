@@ -1,15 +1,26 @@
 /**
  * The path walker, against a synthetic decider rather than a workflow.
  *
- * `enumeratePaths` is what makes the claim "1270 paths, every one of them
+ * `enumeratePaths` is what makes the claim "447 paths, every one of them
  * reaches a declared outcome" checkable, so its own arithmetic is worth
  * pinning: it must visit each reachable combination exactly once, it must not
  * visit combinations a shorter path never reached, and it must refuse a
  * decision order that is not a function of the decisions already made.
+ *
+ * `scriptedExecutor` is the second axis and is pinned the same way: an effect
+ * forks once per declared outcome, an effect type with no declared outcomes is
+ * refused rather than answered, and a step that emits nothing forks nothing.
  */
 
 import { describe, expect, test } from "bun:test";
-import { cartesian, enumeratePaths, loopBody } from "./enumerate-paths.ts";
+import {
+  cartesian,
+  enumeratePaths,
+  loopBody,
+  scriptedExecutor,
+  type EffectOutcomeSpace,
+} from "./enumerate-paths.ts";
+import type { Effect, EffectResult } from "../core/effects.ts";
 import { branch, loop, type Workflow } from "../core/workflow.ts";
 
 describe("cartesian", () => {
@@ -83,6 +94,86 @@ describe("enumeratePaths", () => {
     expect(enumeratePaths(async (choose) => choose("empty", []))).rejects.toThrow(
       /choice point "empty" has no options/,
     );
+  });
+});
+
+/**
+ * The second axis. A leaf's decision is one thing a graph routes on; the typed
+ * result of the effects it asked for is the other, and a walk that enumerates
+ * only the first covers half the edge tables.
+ */
+describe("scriptedExecutor: the effect-outcome axis", () => {
+  const trail = (line: string): Effect => ({ type: "append-trail", line });
+  const write = (symbolId: string): Effect => ({
+    type: "replace-symbol",
+    symbolId,
+    expectedVersion: 1,
+    body: "…",
+  });
+
+  const SPACE: EffectOutcomeSpace = {
+    "replace-symbol": [
+      { name: "committed", result: (e) => ({ effect: e, outcome: "committed", version: 2 }) },
+      { name: "conflict", result: (e) => ({ effect: e, outcome: "conflict", currentVersion: 7 }) },
+      { name: "rejected", result: (e) => ({ effect: e, outcome: "rejected", by: "typecheck" }) },
+    ],
+    "append-trail": [
+      { name: "committed", result: (e) => ({ effect: e, outcome: "committed", version: 1 }) },
+    ],
+  };
+
+  test("an effect forks the walk once per declared outcome", async () => {
+    const paths = await enumeratePaths(async (choose) => {
+      const execute = scriptedExecutor(choose, SPACE);
+      const [result] = await execute([write("s-1")]);
+      return (result as EffectResult).outcome;
+    });
+    expect(paths.sort()).toEqual(["committed", "conflict", "rejected"]);
+  });
+
+  test("two effects in one batch fork independently, which is the product", async () => {
+    const paths = await enumeratePaths(async (choose) => {
+      const execute = scriptedExecutor(choose, SPACE);
+      const results = await execute([write("s-1"), write("s-2")]);
+      return results.map((r) => r.outcome).join("+");
+    });
+    expect(paths).toHaveLength(9);
+  });
+
+  test("a one-outcome effect type forks nothing", async () => {
+    const paths = await enumeratePaths(async (choose) => {
+      const execute = scriptedExecutor(choose, SPACE);
+      const [result] = await execute([trail("a line")]);
+      return (result as EffectResult).outcome;
+    });
+    expect(paths).toEqual(["committed"]);
+  });
+
+  test("a step that emits no effects forks nothing", async () => {
+    const paths = await enumeratePaths(async (choose) => {
+      const execute = scriptedExecutor(choose, SPACE);
+      expect(await execute([])).toEqual([]);
+      return "one path";
+    });
+    expect(paths).toEqual(["one path"]);
+  });
+
+  test("an effect type the space does not declare is refused, not committed", async () => {
+    // Silently committing would make the walk's coverage claim a fiction for
+    // that effect: the edges its other outcomes route to would never be
+    // walked, and nothing would say so.
+    const execute = scriptedExecutor(<T,>(_id: string, options: readonly T[]) => options[0] as T, SPACE);
+    await expect(execute([{ type: "run-tests", impacted: [] }])).rejects.toThrow(
+      /no declared outcome space for effect "run-tests"/,
+    );
+  });
+
+  test("an effect type declared with an empty space is refused too", async () => {
+    const execute = scriptedExecutor(
+      <T,>(_id: string, options: readonly T[]) => options[0] as T,
+      { "append-trail": [] },
+    );
+    await expect(execute([trail("a line")])).rejects.toThrow(/no declared outcome space/);
   });
 });
 

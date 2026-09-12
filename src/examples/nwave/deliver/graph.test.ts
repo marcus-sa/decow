@@ -4,9 +4,10 @@
  * DISTILL's path space is a tuple: four classifiers answer once each, so a
  * cartesian product covers it. DELIVER's is a sequence, because a loop asks
  * the same leaf again on the next iteration. `enumeratePaths` walks the
- * reachable decision tree instead: every leaf decision, every write outcome,
- * every loop count up to its bound. **447 paths**, and the count is finite
- * only because every loop carries one.
+ * reachable decision tree instead, on two axes: every leaf decision, and every
+ * outcome the effects it asked for may come back with, up to every loop's
+ * bound. **447 paths**, and the count is finite only because every loop
+ * carries one.
  *
  * Zero model calls, no API key, no network. The stub journal throws on a miss
  * and the model bindings throw if called at all.
@@ -24,7 +25,14 @@ import {
   type Node,
   type Workflow,
 } from "../../../core/workflow.ts";
-import { enumeratePaths, graphDefects, inspectGraph, type Choose } from "../../../harness/enumerate-paths.ts";
+import {
+  enumeratePaths,
+  graphDefects,
+  inspectGraph,
+  scriptedExecutor,
+  type Choose,
+  type EffectOutcomeSpace,
+} from "../../../harness/enumerate-paths.ts";
 import { describeTrace, endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "../../../harness/matchers.ts";
 import { exhausted, ok, stubJournal } from "../../../harness/stub-journal.ts";
 import {
@@ -69,6 +77,21 @@ const EVIDENCE = "test result: FAILED. assertion failed: expected Running, got P
  */
 const IMPACTED = ["test-submit-to-running", "test-exit-observer-writes-row"];
 
+/**
+ * This step's OWN acceptance test, and one that is not. The whole
+ * still-red-versus-broke-other split is a set membership against the first, so
+ * a scripted suite failure has to name one or the other.
+ */
+const OWN_AT = "test-submit-to-running";
+const OTHER_TEST = "test-exit-observer-writes-row";
+
+/**
+ * The state every test starts from. `acceptanceTests` is what the `oracle`
+ * writes once it has located them; until this graph has one, a caller stands
+ * in for it, the same way `evidence` and `impacted` are stood in for.
+ */
+const seedState = (): State => ({ ...seed(STEP, EVIDENCE, IMPACTED), acceptanceTests: [OWN_AT] });
+
 /** One payload shape covers every leaf output schema; the graph reads none of them. */
 const PAYLOAD = {
   anchor: "expected Running, got Pending",
@@ -84,6 +107,35 @@ const EXHAUSTED = "$exhausted";
 
 /** `EffectResult`'s outcome space, which the executor picks from. */
 const WRITE_OUTCOMES = ["committed", "conflict", "rejected", "infra-failed"] as const;
+
+/**
+ * The suite's outcome space, as the walk and the scripted tests both name it.
+ * Five members, because five are what the graph ROUTES differently: a pass,
+ * a failure inside this step's own acceptance tests, a failure outside them,
+ * a refused selection, and a broken runner.
+ */
+const TEST_OUTCOMES = {
+  committed: (effect: Effect): EffectResult => ({ effect, outcome: "committed", version: 1 }),
+  "own-at-failed": (effect: Effect): EffectResult => ({
+    effect,
+    outcome: "rejected",
+    by: "tests",
+    detail: { failed: [OWN_AT] },
+  }),
+  "other-failed": (effect: Effect): EffectResult => ({
+    effect,
+    outcome: "rejected",
+    by: "tests",
+    detail: { failed: [OTHER_TEST] },
+  }),
+  "selection-refused": (effect: Effect): EffectResult => ({
+    effect,
+    outcome: "rejected",
+    by: "contract",
+  }),
+  "infra-failed": (effect: Effect): EffectResult => ({ effect, outcome: "infra-failed" }),
+} as const;
+type TestOutcomeName = keyof typeof TEST_OUTCOMES;
 
 type Script = Partial<Record<LeafId, string>>;
 
@@ -122,19 +174,29 @@ const writeResult = (effect: Effect, outcome: WriteOutcome): EffectResult => {
   }
 };
 
+/** A scripted executor: one named suite outcome per `run-tests`, in order. */
+const testsLike = (names: readonly TestOutcomeName[]): EffectExecutor => {
+  let n = 0;
+  return async (effects) =>
+    effects.map((effect) =>
+      effect.type === "run-tests"
+        ? TEST_OUTCOMES[names[n++] ?? "committed"](effect)
+        : writeResult(effect, "committed"),
+    );
+};
+
 const HAPPY: Script = {
   "activate-at": "activated",
   "run-tests.red": "red-observed",
   implement: "written",
   "select-tests": "no-extra",
-  "run-tests": "green",
   refactor: "refactored",
   gates: "clean",
   commit: "committed",
 };
 
 const start = (script: Script, execute: EffectExecutor = landsCleanly) =>
-  run<State>(deliverGraph(journalFor(script), defs), seed(STEP, EVIDENCE, IMPACTED), execute);
+  run<State>(deliverGraph(journalFor(script), defs), seedState(), execute);
 
 /** The loop-count row of what a person reads, for asserting on a parked run. */
 const iterationsOf = (trail: readonly unknown[]) =>
@@ -194,7 +256,7 @@ describe("deliver graph", () => {
 
     const paths = await enumeratePaths(async (choose) => {
       const wf = deliverGraph(chooseJournal(choose), defs);
-      const outcome = await run<State>(wf, seed(STEP, EVIDENCE, IMPACTED), chooseExecutor(choose));
+      const outcome = await run<State>(wf, seedState(), scriptedExecutor(choose, DELIVER_SPACE));
 
       expect(isDeclaredOutcome(outcome)).toBe(true);
       expect(endedOnDeclaredNode(wf, outcome)).toBe(true);
@@ -220,7 +282,10 @@ describe("deliver graph", () => {
   }, 60_000);
 
   test("the test loop retries implement inside its bound, then hands the bound to a person", async () => {
-    const outcome = await start({ ...HAPPY, "run-tests": "still-red", diagnose: "impl-wrong" });
+    const outcome = await start(
+      { ...HAPPY, diagnose: "impl-wrong" },
+      testsLike(["own-at-failed", "own-at-failed"]),
+    );
 
     expect(outcome.kind).toBe("suspended");
     if (outcome.kind !== "suspended") return;
@@ -233,13 +298,13 @@ describe("deliver graph", () => {
   });
 
   test("broke-other retries like still-red rather than burning a different budget", async () => {
-    const outcome = await start({ ...HAPPY, "run-tests": "broke-other" });
+    const outcome = await start(HAPPY, testsLike(["other-failed", "other-failed"]));
     expect(outcome.kind === "suspended" && outcome.reason).toBe("test-loop-exhausted");
     expect(visitCount(outcome.trace, "implement")).toBe(MAX_TEST_ATTEMPTS);
   });
 
   test("a harness failure stops the test loop at once instead of spending the budget", async () => {
-    const outcome = await start({ ...HAPPY, "run-tests": "harness-failed" });
+    const outcome = await start(HAPPY, testsLike(["infra-failed"]));
     expect(outcome.kind === "suspended" && outcome.reason).toBe("harness-failed");
     expect(visitCount(outcome.trace, "implement")).toBe(1);
   });
@@ -283,7 +348,7 @@ describe("deliver graph", () => {
         }),
       },
     };
-    const outcome = await run<State>(twoCycles, seed(STEP, EVIDENCE, IMPACTED), landsCleanly);
+    const outcome = await run<State>(twoCycles, seedState(), landsCleanly);
 
     expect(outcome.kind).toBe("suspended");
     if (outcome.kind !== "suspended") return;
@@ -414,7 +479,12 @@ describe("deliver graph", () => {
  */
 describe("deliver graph, the diagnosis branch", () => {
   const stillRed = (diagnosis: string, extra: Script = {}) =>
-    start({ ...HAPPY, "run-tests": "still-red", diagnose: diagnosis, ...extra });
+    start(
+      { ...HAPPY, diagnose: diagnosis, ...extra },
+      // Two failures naming this step's own acceptance test, so both
+      // iterations of the test loop classify a genuinely still-red suite.
+      testsLike(["own-at-failed", "own-at-failed"]),
+    );
 
   test("impl-wrong retries implement, which is the loop it always was", async () => {
     const outcome = await stillRed("impl-wrong");
@@ -500,10 +570,122 @@ describe("deliver graph, the diagnosis branch", () => {
   });
 });
 
+/**
+ * `test.route` routes the EFFECT's outcome, not a leaf's reading of it. One
+ * test per member of the outcome space, plus the two arms the space does not
+ * name: a conflict, and a failure that names no failing test.
+ */
+describe("the suite's outcome decides, and the branch is a pure function of it", () => {
+  test("committed is green: the cycle proceeds to refactor and commits", async () => {
+    const outcome = await start(HAPPY, testsLike(["committed"]));
+
+    expect(outcome.kind === "terminal" && outcome.terminal.kind).toBe("accepted");
+    expect(visited(outcome.trace, "diagnose")).toBe(false);
+    expect(outcome.trace.slice(outcome.trace.indexOf("run-tests"), outcome.trace.indexOf("run-tests") + 4)).toEqual([
+      "run-tests",
+      "test.route",
+      "test.verdict",
+      "refactor",
+    ]);
+  });
+
+  test("rejected: tests naming only this step's own AT is still-red, so it is diagnosed", async () => {
+    const outcome = await start(
+      { ...HAPPY, diagnose: "impl-wrong" },
+      testsLike(["own-at-failed", "own-at-failed"]),
+    );
+
+    expect(outcome.trace.slice(outcome.trace.indexOf("test.route"), outcome.trace.indexOf("test.route") + 2)).toEqual([
+      "test.route",
+      "diagnose",
+    ]);
+    expect(outcome.kind === "suspended" && outcome.reason).toBe("test-loop-exhausted");
+  });
+
+  test("rejected: tests naming anything else is broke-other, which is not diagnosed", async () => {
+    // A different owner, and the diagnosis leaf has no evidence about it.
+    const outcome = await start(HAPPY, testsLike(["other-failed", "other-failed"]));
+
+    expect(visited(outcome.trace, "diagnose")).toBe(false);
+    expect(visitCount(outcome.trace, "implement")).toBe(MAX_TEST_ATTEMPTS);
+    expect(outcome.kind === "suspended" && outcome.reason).toBe("test-loop-exhausted");
+  });
+
+  test("a failure naming NO test is broke-other, not a diagnosis on evidence nobody has", async () => {
+    const unnamed: EffectExecutor = async (effects) =>
+      effects.map((effect) =>
+        effect.type === "run-tests"
+          ? { effect, outcome: "rejected" as const, by: "tests" as const }
+          : writeResult(effect, "committed"),
+      );
+    const outcome = await start({ ...HAPPY, diagnose: "impl-wrong" }, unnamed);
+
+    expect(visited(outcome.trace, "diagnose")).toBe(false);
+    expect(outcome.kind === "suspended" && outcome.reason).toBe("test-loop-exhausted");
+  });
+
+  test("rejected: contract is the selection's own violation, and it goes to a person", async () => {
+    // The floor is the VCS's. A selection that reached below it is not
+    // something anything inside the cycle could repair, so the run unwinds
+    // through the loop boundary and parks with its own reason.
+    const outcome = await start({ ...HAPPY, "select-tests": "extra" }, testsLike(["selection-refused"]));
+
+    expect(outcome.kind).toBe("suspended");
+    if (outcome.kind !== "suspended") return;
+    expect(outcome.reason).toBe("test-selection-refused");
+    expect(visitCount(outcome.trace, "implement")).toBe(1);
+    expect(visited(outcome.trace, "diagnose")).toBe(false);
+    expect(outcome.trace.at(-1)).toBe("human");
+  });
+
+  test("infra-failed is harness-failed: a broken runner does not burn the budget", async () => {
+    const outcome = await start(HAPPY, testsLike(["infra-failed"]));
+
+    expect(outcome.kind === "suspended" && outcome.reason).toBe("harness-failed");
+    expect(visitCount(outcome.trace, "implement")).toBe(1);
+  });
+
+  test("a conflict on a test run is harness-failed, because a run claims no version", async () => {
+    // Nothing about running a suite takes an optimistic version, so there is
+    // no check for it to lose. One arriving means the executor is wrong, which
+    // is the harness failing rather than the change being bad.
+    const conflicting: EffectExecutor = async (effects) =>
+      effects.map((effect) =>
+        effect.type === "run-tests"
+          ? { effect, outcome: "conflict" as const, currentVersion: 9 }
+          : writeResult(effect, "committed"),
+      );
+    const outcome = await start(HAPPY, conflicting);
+
+    expect(outcome.kind === "suspended" && outcome.reason).toBe("harness-failed");
+    expect(visitCount(outcome.trace, "implement")).toBe(1);
+  });
+
+  test("the suite is asked to run the selection above the floor, scoped to what was written", async () => {
+    const asked: Effect[] = [];
+    const record: EffectExecutor = async (effects) => {
+      asked.push(...effects);
+      return effects.map((effect) =>
+        effect.type === "run-tests"
+          ? TEST_OUTCOMES.committed(effect)
+          : writeResult(effect, "committed"),
+      );
+    };
+    await start({ ...HAPPY, "select-tests": "extra" }, record);
+
+    // `impacted` is the symbol the write touched; `extra` is what the leaf
+    // added. The floor itself is the executor's to recompute, which is why
+    // the graph has no way to name it here.
+    expect(asked.filter((e) => e.type === "run-tests")).toEqual([
+      { type: "run-tests", impacted: [PAYLOAD.symbolId], extra: PAYLOAD.extra },
+    ]);
+  });
+});
+
 describe("deliver graph, resumed by a person", () => {
   const park = async () => {
     const wf = deliverGraph(journalFor({ ...HAPPY, "run-tests.red": "already-green" }), defs);
-    const parked = await run<State>(wf, seed(STEP, EVIDENCE, IMPACTED), landsCleanly);
+    const parked = await run<State>(wf, seedState(), landsCleanly);
     if (parked.kind !== "suspended") throw new Error("expected the run to park");
     return { wf, parked };
   };
@@ -534,7 +716,7 @@ describe("deliver graph, resumed by a person", () => {
       journalFor({ ...HAPPY, "run-tests.red": "already-green", commit: EXHAUSTED }),
       defs,
     );
-    const parked = await run<State>(wf, seed(STEP, EVIDENCE, IMPACTED), landsCleanly);
+    const parked = await run<State>(wf, seedState(), landsCleanly);
     if (parked.kind !== "suspended") throw new Error("expected the run to park");
 
     const outcome = await resume<State>(wf, parked.runId, { decision: "commit" }, landsCleanly);
@@ -612,10 +794,26 @@ const chooseJournal = (choose: Choose): Journal => ({
   },
 });
 
-/** Answers every `replace-symbol` from `EffectResult`'s own outcome space. */
-const chooseExecutor = (choose: Choose): EffectExecutor => async (effects) =>
-  effects.map((effect) =>
-    effect.type === "replace-symbol"
-      ? writeResult(effect, choose("effect:replace-symbol", WRITE_OUTCOMES))
-      : { effect, outcome: "committed" as const, version: 1 },
-  );
+/**
+ * The walk's second axis: the outcomes each effect this graph emits may come
+ * back with. Every effect type the graph emits is named here, because
+ * `scriptedExecutor` refuses one that is not — a silent `committed` would make
+ * the coverage claim a fiction for the edges the other outcomes route to.
+ *
+ * `append-trail` has one outcome and therefore forks nothing. It is declared
+ * anyway: the leaf constructor emits it whenever a validator was never
+ * satisfied, so leaving it out would fail the walk rather than pass it.
+ */
+const DELIVER_SPACE: EffectOutcomeSpace = {
+  "replace-symbol": WRITE_OUTCOMES.map((outcome) => ({
+    name: outcome,
+    result: (effect: Effect) => writeResult(effect, outcome),
+  })),
+  "run-tests": (Object.keys(TEST_OUTCOMES) as TestOutcomeName[]).map((name) => ({
+    name,
+    result: TEST_OUTCOMES[name],
+  })),
+  "append-trail": [
+    { name: "committed", result: (effect: Effect) => ({ effect, outcome: "committed", version: 1 }) },
+  ],
+};

@@ -18,7 +18,9 @@
  *      one? A body that removes the symbol it claims to edit fails here, as a
  *      contract violation
  *   7  typecheck stage
- *   8  tests stage, over the impact-scoped subset
+ *   8  tests stage, over the impact-scoped subset MINUS any test this write is
+ *      itself rewriting: the gate asks whether the change broke something
+ *      else, and an acceptance test's first honest run fails by design
  *   9  policy stage
  *  10  commit: re-key the file, append the child event, then append the
  *      transaction event naming it, so the parent lands after its children
@@ -55,7 +57,13 @@ import {
 export type WriteResult =
   | { outcome: "committed"; version: number; seq: number; verification: VerificationStatus }
   | { outcome: "conflict"; currentVersion: number }
-  | { outcome: "rejected"; by: RejectedBy; detail: string }
+  | {
+      outcome: "rejected";
+      by: RejectedBy;
+      detail: string;
+      /** Ids of the tests that failed, when the stage named them. */
+      failed?: readonly string[];
+    }
   | { outcome: "infra-failed"; detail: string };
 
 export type WritePath = {
@@ -170,7 +178,12 @@ export const openWritePath = (spec: {
 }): WritePath => {
   const { root, registry, log, leases, impact, parser, verifier } = spec;
 
-  const rejected = (by: RejectedBy, detail: string): WriteResult => ({ outcome: "rejected", by, detail });
+  const rejected = (by: RejectedBy, detail: string, failed?: readonly string[]): WriteResult => ({
+    outcome: "rejected",
+    by,
+    detail,
+    ...(failed === undefined ? {} : { failed }),
+  });
 
   /**
    * One declared write, end to end. The three operations differ only in how
@@ -253,7 +266,7 @@ export const openWritePath = (spec: {
         detail: outcome.detail,
       });
       return outcome.status === "failed"
-        ? rejected(outcome.by, outcome.detail)
+        ? rejected(outcome.by, outcome.detail, outcome.failed)
         : { outcome: "infra-failed", detail: outcome.detail };
     };
 
@@ -293,7 +306,28 @@ export const openWritePath = (spec: {
           added: declaration.added,
         }),
       () => verifier.typecheck(ctx),
-      () => verifier.tests({ root, symbolIds: ctx.symbolIds, targets: impact.impactedTests(ctx.symbolIds) }),
+      /**
+       * The impacted tests, MINUS the tests this write is itself rewriting.
+       *
+       * Running the very test you just edited to decide whether you were
+       * allowed to edit it makes "activate a pending acceptance test" an
+       * unrepresentable operation: an acceptance test's first honest run
+       * FAILS, and that failure is the RED observation the caller's own next
+       * step exists to make. The gate's question is "did you break something
+       * else", and every other test that reaches this file still runs, so
+       * that question is still answered.
+       *
+       * A production symbol's write is unaffected: its id is not a test id,
+       * so nothing is filtered and the tests that cover it all run.
+       */
+      () => {
+        const written = new Set(ctx.symbolIds);
+        return verifier.tests({
+          root,
+          symbolIds: ctx.symbolIds,
+          targets: impact.impactedTests(ctx.symbolIds).filter((t) => !written.has(t.id)),
+        });
+      },
       () => verifier.policy(ctx),
     ];
     for (const stage of stages) {
@@ -458,7 +492,9 @@ export const openWritePath = (spec: {
         case "advisory":
           return { outcome: "committed", version: seq, seq, verification: outcome.status };
         case "failed":
-          return rejected(outcome.by, outcome.detail);
+          // The failing ids travel out of here, because the caller's next
+          // decision is whether they are its own acceptance tests.
+          return rejected(outcome.by, outcome.detail, outcome.failed);
         case "infra-failed":
           return { outcome: "infra-failed", detail: outcome.detail };
       }

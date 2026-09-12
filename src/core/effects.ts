@@ -42,10 +42,23 @@ export type Effect =
  */
 export type RejectedBy = "typecheck" | "tests" | "schema" | "contract" | "structural";
 
+/**
+ * What a rejection can name beyond the gate that produced it.
+ *
+ * `failed` is the ids of the tests that failed. It exists because a graph has
+ * to tell "my own acceptance test is still red" from "I broke something else"
+ * — two causes with two different owners and two different routes — and that
+ * distinction is a set membership against the step's own acceptance tests, not
+ * a judgement a model should be asked to make. A stage that cannot name which
+ * test failed leaves it absent, and the graph reads the absence honestly
+ * rather than guessing.
+ */
+export type RejectionDetail = { failed?: readonly string[] };
+
 export type EffectResult =
   | { effect: Effect; outcome: "committed"; version: number }
   | { effect: Effect; outcome: "conflict"; currentVersion: number }
-  | { effect: Effect; outcome: "rejected"; by: RejectedBy }
+  | { effect: Effect; outcome: "rejected"; by: RejectedBy; detail?: RejectionDetail }
   | { effect: Effect; outcome: "infra-failed" };
 
 export type Artifact = { version: number; row: unknown };

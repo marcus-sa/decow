@@ -51,7 +51,20 @@ export type RejectedBy = "structural" | "contract" | "typecheck" | "tests";
 
 export type StageOutcome =
   | { status: "passed" }
-  | { status: "failed"; by: RejectedBy; detail: string }
+  | {
+      status: "failed";
+      by: RejectedBy;
+      detail: string;
+      /**
+       * Ids of the targets that failed, when the stage can name them. The
+       * tests stage can, and a caller that has to tell "the test I was making
+       * pass is still failing" from "I broke a different one" needs it: that
+       * is a set membership rather than a judgement. A stage with nothing to
+       * name leaves it absent rather than reporting an empty set, which would
+       * claim that nothing failed.
+       */
+      failed?: readonly string[];
+    }
   /** § 6.4: the check could not decide. Recorded, does not block. */
   | { status: "advisory"; detail: string }
   /** The stage itself broke. Never the agent's fault (§ 5.4). */
@@ -181,7 +194,15 @@ export const bunTests: Verifier["tests"] = async (ctx) => {
     try {
       const { code, output } = await spawn(["bun", "test", target.path, "-t", target.name], ctx.root);
       if (code !== 0) {
-        return { status: "failed", by: "tests", detail: excerpt(`${target.path} :: ${target.name}\n${output}`) };
+        return {
+          status: "failed",
+          by: "tests",
+          detail: excerpt(`${target.path} :: ${target.name}\n${output}`),
+          // Which test failed, by id, because the caller routes on whether it
+          // is one of its own. The run stops at the first failure, so this is
+          // one id rather than the whole failing set.
+          failed: [target.id],
+        };
       }
     } catch (err) {
       return { status: "infra-failed", detail: `bun test could not be run: ${String(err)}` };
