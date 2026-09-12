@@ -35,6 +35,7 @@
 
 import { Mastra } from "@mastra/core/mastra";
 import { InMemoryStore } from "@mastra/core/storage";
+import { LibSQLStore } from "@mastra/libsql";
 import { createStep, createWorkflow, type AnyWorkflow as MastraWorkflow } from "@mastra/core/workflows";
 import { z } from "zod";
 import { graphDefects } from "../harness/enumerate-paths.ts";
@@ -101,10 +102,48 @@ const appendTrace = async (
   await setState({ trace: [...(state?.trace ?? []), ...ids], loops: state?.loops ?? {} });
 };
 
-/** Snapshots live here, so a parked run can be resumed from a fresh compile. */
-let runtime: Mastra | undefined;
-export const workflowRuntime = (): Mastra => {
-  runtime ??= new Mastra({ storage: new InMemoryStore({ id: "deterministic-workflows" }), logger: false });
+/**
+ * Where a run's snapshot lives, so a parked run can be resumed from a fresh
+ * compile. `resume` rebuilds the graph rather than holding a live handle, and
+ * the runtime is what it reattaches to by `runId`.
+ *
+ * A `Mastra` instance is the unit rather than a storage adapter, because
+ * `compiled.__registerMastra(runtime)` is what binds a workflow to a store and
+ * that takes a runtime. Two runtimes over ONE file is therefore a legal shape,
+ * and it is the whole point: one process parks a run, exits, and another
+ * process opens the same file and resumes it.
+ */
+export type WorkflowRuntime = Mastra;
+
+/**
+ * A runtime whose snapshots live at `url`.
+ *
+ * `:memory:` is the default and is what the whole test suite runs on: a run
+ * parked and resumed inside one process needs no file. A `file:` URL is what
+ * makes a suspension survive a process boundary — the human-review gate in the
+ * roadmap workflow is answered by a SECOND command, so the run that parked is
+ * long gone by the time the answer arrives.
+ *
+ * TWO ADAPTERS, and the split is measured rather than stylistic. Running the
+ * whole suite on `LibSQLStore({ url: ":memory:" })` also works and takes
+ * **20.6 s** against **4.6 s** on `InMemoryStore`: the 781 enumerated paths
+ * write a snapshot per step, and a SQL round trip per write is 4.5x the cost
+ * of a map write. The durable path is the one that needs a database; the
+ * in-memory one needs a map. So `:memory:` stays a map and a URL opens libSQL.
+ */
+export const openWorkflowRuntime = (url = ":memory:"): WorkflowRuntime =>
+  new Mastra({
+    storage:
+      url === ":memory:"
+        ? new InMemoryStore({ id: "deterministic-workflows" })
+        : new LibSQLStore({ id: "deterministic-workflows", url }),
+    logger: false,
+  });
+
+/** The process-wide default. In-memory, and shared so `resume` reattaches. */
+let runtime: WorkflowRuntime | undefined;
+export const workflowRuntime = (): WorkflowRuntime => {
+  runtime ??= openWorkflowRuntime();
   return runtime;
 };
 
@@ -406,12 +445,17 @@ const compileSegment = <S>(
  * same graph always yields the same workflow id and the same step ids, which
  * is what lets `resume` rebuild it and reattach to a persisted run.
  */
-export const compileWorkflow = <S>(wf: Workflow<S>, execute: EffectExecutor): MastraWorkflow => {
+export const compileWorkflow = <S>(
+  wf: Workflow<S>,
+  execute: EffectExecutor,
+  /** Where the run's snapshot lives. The process-wide in-memory one by default. */
+  runtime: WorkflowRuntime = workflowRuntime(),
+): MastraWorkflow => {
   const defects = graphDefects(wf);
   if (defects.length > 0) {
     throw new Error(`graph bug: cannot compile this workflow:\n  ${defects.join("\n  ")}`);
   }
   const compiled = compileSegment(wf, wf.start, `wf:${wf.start}`, execute);
-  compiled.__registerMastra(workflowRuntime());
+  compiled.__registerMastra(runtime);
   return compiled;
 };

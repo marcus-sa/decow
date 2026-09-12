@@ -8,7 +8,12 @@
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun test",
     "smoke": "bun run src/examples/nwave/distill/smoke.ts",
-    "smoke:deliver": "bun run src/examples/nwave/deliver/smoke.ts"
+    "smoke:deliver": "bun run src/examples/nwave/deliver/smoke.ts",
+    "todo:roadmap": "bun run src/examples/nwave/todo/roadmap.ts",
+    "todo:review": "bun run src/examples/nwave/todo/review.ts",
+    "todo:deliver": "bun run src/examples/nwave/todo/deliver.ts",
+    "todo:resume": "bun run src/examples/nwave/todo/resume.ts",
+    "todo:report": "bun run src/examples/nwave/todo/summary.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
@@ -19,6 +24,7 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.269",
     "@mastra/core": "^1.66.0",
+    "@mastra/libsql": "^1.22.5",
     "tree-sitter": "^0.25.1",
     "tree-sitter-typescript": "^0.23.2",
     "zod": "^4.6.2"
