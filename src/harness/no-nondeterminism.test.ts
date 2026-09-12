@@ -18,17 +18,33 @@ import { dirname, join, relative } from "node:path";
 const SRC = dirname(dirname(import.meta.path));
 
 /** Literal source fragments that introduce nondeterminism into a decision. */
-const BANNED = ["Date.now", "Math.random", "new Date("] as const;
+const BANNED = ["Date.now", "Math.random", "new Date(", "randomUUID"] as const;
+
+/**
+ * The agent-native VCS takes its clock and its id generator as constructor
+ * arguments so that a lease TTL is a function call rather than a wait and an
+ * event log is comparable across runs. `src/vcs/defaults.ts` is the one file
+ * allowed to supply the real ones, so it is the one file excluded.
+ */
+const EXEMPT = new Set([join(SRC, "vcs/defaults.ts")]);
 
 /**
  * Files the graph's control flow depends on: the contract, the compiler that
- * turns it into a Mastra workflow, every graph definition, and every file that
- * defines a decision function or a mechanical check a branch can observe.
+ * turns it into a Mastra workflow, every graph definition, every file that
+ * defines a decision function or a mechanical check a branch can observe, and
+ * the whole of the VCS module, whose determinism rests on the same rule one
+ * layer down.
  */
 const scanned = async (): Promise<string[]> => {
   const files = new Set<string>([join(SRC, "core/workflow.ts"), join(SRC, "core/compile.ts")]);
-  for (const pattern of ["examples/**/graph.ts", "examples/**/classify.ts", "examples/**/steps.ts"]) {
+  for (const pattern of [
+    "examples/**/graph.ts",
+    "examples/**/classify.ts",
+    "examples/**/steps.ts",
+    "vcs/**/*.ts",
+  ]) {
     for await (const match of new Glob(pattern).scan({ cwd: SRC, absolute: true })) {
+      if (match.endsWith(".test.ts") || EXEMPT.has(match)) continue;
       files.add(match);
     }
   }
@@ -46,7 +62,12 @@ describe("no nondeterminism inside the graph", () => {
     expect(files).toContain("core/compile.ts");
     expect(files).toContain("examples/distill/graph.ts");
     expect(files).toContain("examples/deliver/graph.ts");
-    expect(files.length).toBeGreaterThanOrEqual(6);
+    expect(files).toContain("vcs/registry.ts");
+    expect(files).toContain("vcs/leases.ts");
+    expect(files).toContain("vcs/writes.ts");
+    expect(files).toContain("vcs/structural/typescript.ts");
+    expect(files).not.toContain("vcs/defaults.ts");
+    expect(files.length).toBeGreaterThanOrEqual(15);
   });
 
   test("no scanned file reads a clock or an RNG", async () => {
@@ -62,6 +83,15 @@ describe("no nondeterminism inside the graph", () => {
       });
     }
     expect(offenders).toEqual([]);
+  });
+
+  test("the one exempt file is the one that supplies the real clock and ids", async () => {
+    // The exemption earns its keep only if something is actually behind it: a
+    // defaults file that read no clock would mean the injection seam is
+    // decorative and the production path is getting its time from elsewhere.
+    const source = await Bun.file(join(SRC, "vcs/defaults.ts")).text();
+    expect(source).toContain("Date.now");
+    expect(source).toContain("randomUUID");
   });
 
   test("the scanner would catch a planted violation", async () => {

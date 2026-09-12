@@ -19,6 +19,8 @@
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.269",
     "@mastra/core": "^1.66.0",
+    "tree-sitter": "^0.25.1",
+    "tree-sitter-typescript": "^0.23.2",
     "zod": "^4.6.2"
   }
 }
