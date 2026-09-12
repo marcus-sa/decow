@@ -11,10 +11,11 @@ imports nothing from here, and `src/vcs/executor.ts` imports the `Effect` and
 `EffectResult` types from `src/core/effects.ts` and nothing else from the
 framework. Everything else under `src/vcs/` does not know the framework exists.
 
-**95 tests, 3.0 s, no network, no key, no model.** The verification stages are
-injected everywhere except one file, so "typecheck failed" is an input rather
+**140 tests, 1.8 s, no network, no key, no model.** The verification stages are
+injected everywhere except two files, so "typecheck failed" is an input rather
 than a compiler run; `real-tools.test.ts` runs the real `bunx tsc --noEmit` and
-`bun test` stages once, for most of that total.
+`bun test` stages once, and `measure.test.ts` runs the real oracle measurement
+against five files that differ only in HOW they fail.
 
 ## Map to the design document
 
@@ -25,9 +26,9 @@ than a compiler run; `real-tools.test.ts` runs the real `bunx tsc --noEmit` and
 | `registry.ts` | § 3.2 Identity persists through change, § 4.3 Symbol identity registry, § 9.1 Out-of-band changes. Opaque ids, versions, tombstones, file ids, desync state, `importExternal` / `rejectExternal`. |
 | `log.ts` | § 4.4 Event log. Append-only, seq-ordered, intent-carrying, lease-linked. `history` / `at` / `byTask` / `byLease` are the four capabilities the section claims over a commit graph. |
 | `leases.ts` | § 5 Coordination protocol. Atomic multi-acquire, the mode matrix and its hierarchy, optimistic version checks, TTL and heartbeat, release-time intent validation. |
-| `verify.ts` | § 6.1 Layers of verification, § 6.4 When verification cannot decide. The four stages, the failure categories, the verification statuses, and the default implementations that shell out. |
+| `verify.ts` | § 6.1 Layers of verification, § 6.4 When verification cannot decide. The four stages, the failure categories, the verification statuses, the default implementations that shell out — plus the oracle measurement, which is not a stage and lives here because this is the module's one place that knows how to run a runner and read what it printed. |
 | `impact.ts` | § 6.2 Test impact analysis, § 6.3 Cold start (mode 3: static graph alone). |
-| `writes.ts` | § 5.4 Release and commit, § 6.1. `replaceSymbolBody`, `renameSymbol`, `deleteSymbol`, `runTests`, and the rollback. |
+| `writes.ts` | § 5.4 Release and commit, § 6.1. `replaceSymbolBody`, `renameSymbol`, `deleteSymbol`, `writeFile`, `runTests`, `measureOracle`, and the rollback. |
 | `executor.ts` | The framework seam. `DETERMINISTIC-WORKFLOWS.md` § "The agent-native VCS is the effect executor and mechanical verifier". |
 | `index.ts` | § 4.3's "runs as a single process and is the source of truth". The composition root: one database, one parser, one verifier, one clock, one id generator. |
 | `defaults.ts` | The only file allowed to read a clock or an RNG. |
@@ -120,9 +121,12 @@ symbols (id TEXT PRIMARY KEY, file_id TEXT NOT NULL, kind TEXT NOT NULL,
          tombstoned INTEGER NOT NULL DEFAULT 0, ord INTEGER NOT NULL)
 
 -- § 5.1. `versions` is the snapshot handed back at acquisition; `intent` is the
--- payload release validates against. Rows are closed, never deleted.
+-- payload release validates against. `paths` is the territorial half of the
+-- claim: prefixes or globs a `write-file` may land under, for a file that has
+-- no version to be optimistic about because it does not exist yet. Rows are
+-- closed, never deleted.
 leases (id TEXT PRIMARY KEY, session TEXT NOT NULL, mode TEXT NOT NULL,
-        symbol_ids TEXT NOT NULL, ttl_ms INTEGER NOT NULL,
+        symbol_ids TEXT NOT NULL, paths TEXT NOT NULL, ttl_ms INTEGER NOT NULL,
         expires_at INTEGER NOT NULL, intent TEXT NOT NULL,
         versions TEXT NOT NULL, released INTEGER NOT NULL DEFAULT 0)
 
@@ -134,8 +138,8 @@ impact_edges (from_file_id TEXT NOT NULL, to_file_id TEXT NOT NULL,
 
 ## The write path
 
-Ten steps. Three operations, and they differ only in how they edit the source,
-what identity delta they declare, and what lease mode they require.
+Ten steps. Three SYMBOL operations, and they differ only in how they edit the
+source, what identity delta they declare, and what lease mode they require.
 
 1. **Resolve the lease.** Live, held in a mode that permits the operation
    (`write` or `exclusive` for an edit or a rename, `exclusive` only for a
@@ -183,6 +187,102 @@ between 5 and 9 restores the file byte for byte and appends a `write-failed`
 event carrying which of § 5.4's three categories it was. An `advisory` outcome
 does not block; it downgrades the write's recorded verification status (§ 6.4).
 
+### `writeFile`: the operation that can produce a file
+
+A fourth operation, and not that shape, because it cannot be. The three above
+all resolve a symbol id first, so a file that does not exist is unreachable
+from any of them — the right shape for a crafter working inside a declared
+surface, and useless for an author whose whole job is to write an oracle that
+is not there yet.
+
+What changes:
+
+- **The claim is a path scope, not a version.** A file has none to be
+  optimistic about before it exists, so the lease holds a territorial claim
+  over a region of the tree and `writeFile` checks that it covers the path.
+- **The intent declares the PATH**, under `expectedOutcome.created`, which is
+  re-specified as paths rather than symbol ids for the same reason. Release
+  learns the matching half: a symbol a whole-file write created could not have
+  been named by id at acquire time, so a symbol whose file the lease's scope
+  covers is inside the declaration.
+- **The structural question is weaker, by exactly the right amount.**
+  `wholeFileStage` asks that the file parses and that no identity it already
+  held has vanished. What APPEARS is the author's business; what disappears is
+  not, because the registry never infers a delete from an absence (§ 9.1).
+- **The tests stage is skipped**, and that is the point rather than an
+  omission. An oracle's first honest run fails; a stage that ran the suite
+  would refuse every oracle for being what an oracle is. Measuring it is a
+  separate observation with its own verdict.
+- **A failed write restores the previous bytes, or removes the file it
+  created.** A rollback of a creation is a removal.
+- **The creation is attributed to the TASK.** `file-created` is a new event
+  kind, distinct from `file-tracked` — one carries a task, the other a source
+  channel — because reading them as one would make "who wrote this file"
+  unanswerable for exactly the files an agent wrote.
+
+### `measureOracle`: not a write, not a gate
+
+One oracle, executed, with a verdict read off it. It takes no lease, changes
+nothing, and its interesting answer is a FAILURE.
+
+The reason it is here rather than in a leaf is the rule the shipped nwave
+runner names `boundary:software-measures-model-decides`: the two roles that
+hold an oracle — its author, `Read, Edit`, and its reviewer, an enforced empty
+tool set — cannot run it. So "this oracle fails on its assertion and not on its
+scaffolding" is a property this module owns and measures.
+
+Exit status alone cannot answer it, because a runner exits non-zero for both a
+genuine assertion failure and an oracle that errored in its own scaffolding.
+So the counts are read, and the AXIS that reached the verdict travels with it:
+
+```
+exit status absent, or outside {0, 1}   -> broken,        axis "exit-status"
+no summary counts at all                -> broken,        axis "no-summary"
+exit 0                                  -> green,         axis "counts"
+errors > 0                              -> broken,        axis "counts"
+failures > 0                            -> red,           axis "counts"
+otherwise                               -> indeterminate, axis "counts"
+```
+
+`bunCounts` reads bun's own summary lines, and the table it is written against
+was measured on bun 1.3.12 rather than assumed — it is in that function's
+comment. Two consequences worth naming: bun reports an unhandled error between
+tests as a separate ` N error` line, which is a real signal for `broken`; and
+an ABSENT summary means the runner ran nothing, which is why that is `broken`
+on its own axis rather than `red` on exit status.
+
+A runner that never STARTED is `infra-failed` with no measurement at all.
+Nothing about the oracle was observed, so nothing about it is claimed, and in
+particular its author is not blamed. That diverges from nwave, which reads a
+None status as `broken`; the framework's own "a flaky harness must not burn a
+budget" discipline is the stronger rule here.
+
+EVERY measurement is on the event log, including the red ones. `red` is the
+admitted answer and it is exactly the one a later reader needs, because it is
+what says the oracle failed before one production byte existed.
+
+### Known-red targets
+
+The tests stage's question is "did you break something ELSE". It already
+excludes every test the BATCH is rewriting (deviation 14). Once oracles are
+live files rather than pending markers that is not wide enough: a value is only
+ready to be delivered once its own oracle has been measured red, so a module
+with two undelivered values always has a live failing test in it, and the gate
+was refusing a sibling's correct write for it.
+
+`replaceSymbolBody` and `runTests` therefore take `knownRed`: tests the caller
+knows were already failing for a reason this write did not cause. The caller
+has to say so because only the caller can know it — nothing in the bytes
+distinguishes "you broke this" from "this was broken" without running the suite
+twice, which is exactly the cost the impact graph exists to avoid.
+
+For `runTests` the set comes off BOTH the run and the floor the union is
+checked against. Excluding it from one and not the other would make the caller
+refuse itself for omitting a test it was told to leave out. It is not the
+caller narrowing the floor, which is the one thing the union rule forbids: the
+floor is about what this change could have affected, and a test that was red
+before it ran is a fact about the world the caller was handed.
+
 The result union is deliberately the same shape as `EffectResult`'s:
 
 | Write path | `EffectResult` |
@@ -198,6 +298,9 @@ The result union is deliberately the same shape as `EffectResult`'s:
 `outcome` and on `by`, and it interprets nothing.
 
 ## Leases
+
+An acquire names the complete set it will need — symbols, PATH SCOPES, or both,
+and not neither.
 
 The mode matrix, § 5.2 as a table. Rows are the mode a live lease holds,
 columns the mode being requested, and the cell says whether the request is
@@ -218,6 +321,18 @@ evaluated against leases on that symbol, on everything above it, and on
 everything below it, so a write on a class is blocked by a lease on any of its
 methods and the reverse. That is § 5.2's intention locks, computed from the
 container path rather than stored.
+
+And the same table applies over the TREE. Two sessions whose path scopes
+overlap are asking for the same region, and who may have it is the question the
+matrix already answers. `scopeCovers` is a prefix or a glob; `scopesOverlap` is
+symmetric. For prefixes it is exact — `test` overlaps `test/todo.test.ts` and
+neither overlaps `src`. For two globs it is an APPROXIMATION, because "can two
+patterns match the same string" is not a question a matcher answers: one
+scope's glob is matched against the other's literal text. That is right for
+every shape a caller here writes and it never reports an overlap that is not
+one; what it can miss is two globs that overlap only on strings neither spells.
+Stated rather than hidden — a caller that needs the stronger guarantee names
+prefixes.
 
 Deadlock is prevented by construction rather than detected. An acquire names the
 complete set it will need, and a session that already holds a live lease cannot
@@ -301,13 +416,22 @@ const execute = vcsExecutor({
 await run(deliverGraph(journal, defs), seed(step, evidence), execute);
 ```
 
-The batch is the unit. A step's `Effect[]` may name several symbols, and § 5.3
-says an acquire names the complete set it will need, so the executor takes
-**one** write lease covering every `replace-symbol` target in the batch, applies
-the writes in order, releases, and maps each outcome onto an `EffectResult`.
-That is the design document's "fanout over writes needs leases per symbol, not
-per step", and it is also why hold-and-request being refused costs nothing: the
-executor never needs it.
+The batch is the unit. A step's `Effect[]` may name several symbols and several
+paths, and § 5.3 says an acquire names the complete set it will need, so the
+executor takes **one** write lease covering every `replace-symbol` target AND
+every `write-file` path in the batch, applies the writes in order, releases,
+and maps each outcome onto an `EffectResult`. That is the design document's
+"fanout over writes needs leases per symbol, not per step", and it is also why
+hold-and-request being refused costs nothing: the executor never needs it.
+
+Ahead of all of it sits the PROTECTED scope. Any `replace-symbol` or
+`write-file` landing under one is `rejected { by: "contract" }` before a lease
+is asked for, with the refusal appended to the event log. This is
+`_crafter_owns` as an executor rule: every path a task declares is the
+crafter's EXCEPT the oracle, because RED to GREEN must be bought by production
+and never by editing the test that measures it. Expressing it here rather than
+in a graph is what makes it hold for every write the graph could emit,
+including one a model proposed and the graph merely passed along.
 
 The session and the task intent are fixed per executor instance, because
 `EffectExecutor` is `(effects) => Promise<EffectResult[]>` and threading
@@ -333,6 +457,13 @@ And the two effects that are not writes:
 - **`append-trail`** becomes a `trail` event under the task. The exhaustion
   trail of a step whose validator was never satisfied is provenance, and the
   event log is the provenance store.
+- **`measure-oracle`** is the one effect whose mapping is not the identity.
+  `green` is `committed`, because it is the only verdict where the world
+  accepted what it was handed; `red`, `broken` and `indeterminate` are
+  `rejected { by: "tests" }` carrying the verdict that names which. The
+  measurement rides on `measured`, so a pure branch reads all four answers off
+  one field rather than two. A runner that never started is `infra-failed` with
+  no measurement at all.
 - **`upsert-artifact`** goes to the `ArtifactStore` the executor was handed
   (`src/artifacts/store.ts`), under the same optimistic version check
   `replace-symbol` gets one column over. The VCS is the data plane for CODE and
@@ -450,9 +581,10 @@ not be writing lease ids into effect payloads.
 15. **A test's modifier does not change its identity.** § 4.1 lists what a test
     symbol is without addressing `test.skip` / `test.todo` / `test.only` /
     `test.failing`. They are recognised, and they map to the same identity key
-    as the unmodified call, because identity is `(kind, container, name)`. The
-    consequence is the point: a caller stripping a pending marker declares no
-    identity change and the structural stage agrees with it.
+    as the unmodified call, because identity is `(kind, container, name)`.
+    Nothing in this repository depends on that any more — pending markers were
+    the previous cut's model of DISTILL and are gone — but the parser is more
+    correct with it than without, so it stays.
 
 16. **`StageOutcome`'s failed variant and `WriteResult`'s rejected gained
     `failed?`.** The ids of the targets that failed, when the stage can name
@@ -461,6 +593,48 @@ not be writing lease ids into effect payloads.
     set membership rather than a judgement. A stage with nothing to name leaves
     it absent rather than reporting an empty set, which would claim that
     nothing failed.
+
+17. **A fourth operation, `writeFile`, which § 5 does not have.** Every
+    operation the document names resolves a symbol id first, so a file that
+    does not exist is unreachable from all of them. That is the right shape for
+    an agent working inside a declared surface and the wrong one for an author
+    whose job is to write a test that is not there yet. The claim it holds is a
+    PATH SCOPE rather than a version, because a file has none before it exists;
+    `expectedOutcome.created` is re-specified as paths for the same reason
+    (nothing had ever populated it with symbol ids); and its structural stage
+    is weaker by exactly the right amount — what appears is the author's
+    business, what vanishes is not. Its tests stage is absent rather than
+    stubbed: see the write path above.
+
+18. **Leases hold path scopes as well as symbols, and the mode matrix applies
+    to both.** § 5.2's intention locks are over the symbol hierarchy; this is
+    the same table over the tree, because two sessions whose scopes overlap are
+    asking for the same region. The glob-vs-glob overlap test is an
+    approximation, stated where it lives.
+
+19. **`measureOracle`, which is neither a write nor a stage.** § 6 is about
+    gates: cheap ones first, every one a reason to refuse. This is the
+    opposite — nothing gates on it, it blocks nothing, and its interesting
+    answer is a failure. It is here because it is the module's one place that
+    knows how to run a runner and read what it printed, and because the roles
+    that hold an oracle cannot run it. The verdict rule and its measured
+    evidence are in the write-path section; the one divergence from nwave is
+    that a runner which never STARTED is `infra-failed` rather than `broken`.
+
+20. **`knownRed` on `replaceSymbolBody` and `runTests`.** Deviation 14's rule,
+    one step wider: a test whose failure this write did not cause must not
+    refuse it. The batch filter covers the tests the write is itself
+    rewriting; this covers the ones that were already red. Only the caller can
+    know which those are, so it says, and for `runTests` the set comes off the
+    floor as well as the run — excluding it from one and not the other would
+    make the caller refuse itself for omitting a test it was told to leave out.
+
+21. **A protected scope on the executor.** Not in the document at all, because
+    § 9.4's authorization is the thing it would have belonged to and that is
+    not built. This is narrower and does one job: a write landing under a
+    declared scope is refused before a lease is asked for, which is how one
+    role's ownership of one file becomes structural rather than a rule a
+    reviewer applies.
 
 ## Not built yet
 
@@ -507,9 +681,13 @@ not be writing lease ids into effect payloads.
   path, but nothing recovers a lease held by a process that died; the lease
   simply expires at its deadline, which is the intended behaviour and is
   untested against a real restart.
-- **The proposal-shape Claude Code binding.** `src/bindings/claude-code.ts` is
-  the opaque shape: the agent edits the workspace through its own tools and the
-  framework never sees the writes, so it cannot lease them, verify them, or roll
-  them back. The proposal shape returns the agent's writes as `replace-symbol`
-  effects for the runner to commit through this module. That is the next cut,
-  and it now has its executor.
+- **A second oracle measurement per run.** `measureOracle` runs the oracle once
+  and reads one verdict. A flaky oracle — one that is red on its first run and
+  green on its second — is therefore indistinguishable from a stable one, and
+  the framework records the first answer as the fact. Running it twice would
+  detect it and would double the cost of the one observation that is a fixed
+  floor; nothing has measured how often it matters.
+- **Authorization (§ 9.4) beyond the protected scope.** A `session` is still a
+  string, any session may lease anything, and `protected` is a per-executor
+  list rather than a policy the repository declares. It walls one file from one
+  role because one caller asked it to.

@@ -2,49 +2,50 @@
 
 A prototype of the framework described in [`DETERMINISTIC-WORKFLOWS.md`](./DETERMINISTIC-WORKFLOWS.md): a finite graph owns control flow, small models own one decision each, and the whole path space is enumerable before anything runs.
 
-The property the rest of the design rests on is testable in this repo right now, on three graphs: **162 paths through the DISTILL classification graph, 450 through the DELIVER step cycle, and 169 through the roadmap authoring workflow, zero model calls, no API key, no network.** The whole suite — 335 tests, including all 781 of those walked paths through the real Mastra engine — takes **about 9 s**.
+The property the rest of the design rests on is testable in this repo right now, on four graphs: **169 paths through the roadmap authoring workflow, 55 through DISTILL's obligations graph, 421 through its oracle graph, and 443 through the DELIVER step cycle — zero model calls, no API key, no network.** The whole suite — 392 tests, including all 1,088 of those walked paths through the real Mastra engine — takes **about 8.7 s**.
 
-DELIVER and the roadmap workflow are the two with cycles in them. Their path spaces are three figures rather than infinite because every repetition in them is a `loop` node with a required bound.
+All four have cycles in them. Their path spaces are two and three figures rather than infinite because every repetition is a `loop` node with a required bound.
 
-The three examples are one consumer's waves, so they live together under [`src/examples/nwave/`](#the-three-worked-examples) — and as of this cut they are one **pipeline** rather than three demonstrations: the roadmap workflow writes rows, [the scheduler](#the-scheduler-and-the-pipeline) reads them, and the DELIVER step cycle runs once per row against a real checkout.
+The four examples are one consumer's waves, so they live together under [`src/examples/nwave/`](#the-four-worked-examples), and they are one **pipeline** rather than four demonstrations: the roadmap workflow writes rows, [DISTILL](#distill-is-two-graphs) fills in what each value must be observed to do and writes the oracle that observes it, and the DELIVER step cycle runs once per row whose oracle has been measured red.
 
-The second half of the repo is the [VCS module](#vcs-module): `replace-symbol` and `run-tests` execute for real, under a lease, through a verification gate, into an append-only event log. `run-tests` is a **union**: the VCS owns the impact floor and the workflow owns selection above it, so a leaf may add a test and can never subtract one. Artifact rows now have [a real database](#artifact-rows) behind them too, so a roadmap outlives the process that authored it.
+That last clause is the shape of this cut. **The oracle is authored by one wave, executed by software, and walled off from the next wave.** RED is not a node in the step cycle; it is a recorded verdict the step cycle refuses to run without.
 
-As of this cut there is something to deliver *to*: [`targets/todo/`](#the-todo-target), a small TypeScript project with two stubbed methods and four pending acceptance tests, plus [three commands](#the-three-commands) that point the roadmap workflow and the step cycle at a copy of it and [a run report](#the-run-report) that records what every leaf call decided and cost. Suspensions are [durable](#durable-snapshots) now, so the human-review gate is one command parking a run and a second command answering it. **No real-model run has been performed yet** — see [The real run](#the-real-run).
+The second half of the repo is the [VCS module](#vcs-module): `replace-symbol`, `write-file`, `run-tests` and `measure-oracle` execute for real, under a lease, through a verification gate, into an append-only event log. `run-tests` is a **union**: the VCS owns the impact floor and the workflow owns selection above it, so a leaf may add a test and can never subtract one. Artifact rows have [a real database](#artifact-rows) behind them, so a roadmap outlives the process that authored it.
+
+There is something to deliver *to*: [`targets/todo/`](#the-todo-target), a small TypeScript project with two stubbed methods and **no test file at all**, plus [five commands](#the-commands) that point all three waves at a copy of it and [a run report](#the-run-report) that records what every leaf call decided and cost. Suspensions are [durable](#durable-snapshots), so the human-review gate is one command parking a run and a second command answering it. **No real-model run has been performed yet** — see [The real run](#the-real-run).
 
 ## Install, test, run
 
 ```bash
 bun install
-bun test          # 335 tests, no network, no key, no model, ~9 s
+bun test          # 392 tests, no network, no key, no model, ~8.7 s
 bun run typecheck # tsc --noEmit
 bun run check     # both
 ```
 
 `bunfig.toml` scopes `bun test` to `src/`. `targets/` is a template project a run copies and `runs/` holds those copies; neither is this repository's own suite.
 
-Nothing in the test suite talks to a model. The two smoke scripts and the four `todo:*` commands do, and every one of them refuses to run without a key:
+Nothing in the test suite talks to a model. The two smoke scripts and the five `todo:*` commands do, and every one of them refuses to run without a key:
 
 ```bash
-ANTHROPIC_API_KEY=... bun run smoke
-
-# Optional: a different model family for the validator, which refutes more
-# independently than Haiku refuting Haiku.
-ANTHROPIC_API_KEY=... OPENAI_API_KEY=... bun run smoke
+# One oracle, authored by a real Claude Code subagent in the PROPOSAL shape,
+# written through the real VCS, and measured by a real `bun test`.
+ANTHROPIC_API_KEY=... bun run smoke:oracle
 
 # DELIVER, where three leaves are Claude Code subagents rather than one model
 # call each. They run against DW_WORKSPACE, defaulting to the cwd.
 ANTHROPIC_API_KEY=... DW_WORKSPACE=/path/to/repo bun run smoke:deliver
 ```
 
-`smoke` pushes one scenario through four real classifiers and prints each lane verdict, the merge verdict, the terminal or the suspension, and the trace. `smoke:deliver` pushes one roadmap step through the step cycle, with the three diagnosis leaves bound to subagents — see [Bindings](#bindings).
+`smoke:oracle` is the one to read first: it builds a temp project with a stubbed method, dispatches the acceptance designer in a scratch copy, turns what it changed into `write-file` effects, commits them through the write path, and prints the verdict software read off the result. `smoke:deliver` pushes one roadmap step through the step cycle — see [Bindings](#bindings).
 
-The four `todo:*` commands are the end-to-end path, against a real project rather than a literal:
+The `todo:*` commands are the end-to-end path, against a real project rather than a literal:
 
 ```bash
 ANTHROPIC_API_KEY=... bun run todo:roadmap first          # author, park at human-review
 ANTHROPIC_API_KEY=... bun run todo:review  first approve  # a SECOND process resumes it
-ANTHROPIC_API_KEY=... bun run todo:deliver first          # the step cycle, once per row
+ANTHROPIC_API_KEY=... bun run todo:distill first          # the facts, then the oracle, measured
+ANTHROPIC_API_KEY=... bun run todo:deliver first          # the step cycle, once per red-oracled row
                       bun run todo:report  first          # the table. No key: it reads a file
 ```
 
@@ -65,11 +66,11 @@ See [The todo target](#the-todo-target).
 | `src/bindings/` | § Framework versus consumer → "model bindings: which small models, which validator family". `mastra.ts` is one model call; `claude-code.ts` is a Claude Code subagent. |
 | `src/checks/` | § Framework versus consumer → "a library of mechanical checks": `verbatim.ts`, `enum-member.ts`, `id-in-set.ts`. |
 | `src/harness/` | § Framework versus consumer → "test harness": `stub-journal.ts`, `enumerate-paths.ts` (the graph inspector, the reachable-path walker, and the effect-outcome axis), `matchers.ts`. |
-| `src/examples/nwave/distill/` | § Worked example: DISTILL test-lane classification. Bootstrap steps 2 and 3 — the known-good hand-written graph and its requirement rows. |
-| `src/examples/nwave/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops, with the `oracle` ahead of RED. `pipeline.ts` is bootstrap step 7's second half: the scheduler composed over one roadmap. |
+| `src/examples/nwave/distill/` | § DISTILL is two graphs. `manifest.ts` is `des distill`'s closed rule set as a pure function; `obligations/` is the graph around it; `oracle/` is `des oracle --value N`, where the acceptance designer authors and software measures. Bootstrap steps 2 and 3. |
+| `src/examples/nwave/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops, starting at `implement` because RED is a row it reads. `pipeline.ts` is bootstrap step 7's second half: the scheduler composed over one roadmap. |
 | `src/examples/nwave/roadmap/` | § DELIVER is two graphs → the roadmap half, and § Framework versus consumer → the authoring workflow. Bootstrap step 7's first half — the roadmap as rows, with two pure decision functions and no generator. |
 | `src/examples/nwave/todo/` | The composition that points the roadmap workflow and the step cycle at a real project, plus the run report. Not a wave: the consumer's own commands. |
-| `targets/todo/` | The delivery target. A template project with two stubbed methods and four pending acceptance tests, copied into a run directory and never mutated in place. |
+| `targets/todo/` | The delivery target. A template project with two stubbed methods and no test file, copied into a run directory and never mutated in place. The oracle is authored into it, not shipped with it. |
 | `src/vcs/` | § The agent-native VCS is the effect executor and mechanical verifier, and the whole of [`ai-vcs.md`](./ai-vcs.md) phases 2 to 4. See [`src/vcs/README.md`](./src/vcs/README.md). |
 
 The model bindings live under `src/bindings/` and nothing in `core/` imports them: the design's framework/consumer table puts "which small models, which validator family" on the consumer side, and the smoke scripts are where a consumer picks.
@@ -198,7 +199,7 @@ if (outcome.kind === "suspended") {
 - The answer is validated by the node's `resumeSchema` before `absorb` sees it, and the graph branches on it like any other decision. A model still never picks a transition — and neither does a free-text human reply.
 - `resume` recompiles the graph. The compilation is a pure function of the graph, so the step ids match the persisted snapshot and the run reattaches by `runId`. That is the same path a different process would take — and with a durable runtime it literally is one: `run(wf, state, execute, runtime?)` and `resume(wf, runId, answer, execute, runtime?)` take the runtime whose snapshots they use, so a run parked by one command is answered by another. See [Durable snapshots](#durable-snapshots).
 
-In the DISTILL example the person answers `proceed | abandon | override`. `abandon` rejects. `proceed` and `override` both re-run the merge — as a **second branch node**, not a back edge — whose edge table is terminal on every verdict, so a person's answer cannot bounce the run back to the same person. `override` sets one classifier's lane (and clears its `exhausted` flag, since a person answered what the validator could not), which is what typically clears the block.
+In the ROADMAP example the person answers `approve | revise | abandon` at a review that sits INSIDE the author loop, so `revise` re-drives the decomposition with their notes. Everywhere else — the block node in ROADMAP, both of DISTILL's, and DELIVER's — the answer set is smaller, and in three of them it is one word. That is a position rather than an omission: a block reaching those nodes needs work outside a closed enum, and offering a second answer would mean inventing a route the design does not have.
 
 ### Two journals
 
@@ -242,7 +243,15 @@ Two shapes, and only the first is built.
 
 **Opaque.** The agent edits the workspace itself, through its own tools, and the binding returns only what the schema asks for. The writes have already happened by the time `generate` resolves; the framework never sees them, so it cannot lease them, verify them, or roll them back. `claudeCode` is this shape. The consequence is not stylistic: under it a `conflict` is *unrepresentable*, because the write never crossed the effect boundary where a version check could have happened.
 
-**Proposal.** The agent returns its writes as data — `replace-symbol` effects — and the runner commits them through the agent-native VCS, under a lease, with the typecheck-and-impacted-tests gate at the write boundary and the task id recorded as the intent. A conflict comes back as a decision value a branch routes. **The half of this that was missing is now built**: the VCS is in [`src/vcs/`](./src/vcs/README.md) and its executor is `vcsExecutor`, below. What is still missing is the binding: `claudeCode` returns an object, not effects, so nothing yet produces a proposal for the executor to commit. That is the next cut.
+**Proposal.** The agent still edits, because a tool set is what makes it an agent rather than a chat — but it edits a **scratch copy** of the source tree, and afterwards the copy is diffed. Every changed file under the allowed paths becomes a `write-file` effect, or a `replace-symbol` when the caller supplies a `symbolFor` port that can name the symbol it belongs to; a symbol id is the VCS's to assign, and this binding must not import the VCS to guess one. The runner commits them through the agent-native VCS, under a lease, with the gate at the write boundary and the task id recorded as the intent. **Both shapes are now built**, and `proposal` selects the second.
+
+Three properties of the proposal shape are worth stating, because each is a decision rather than a mechanism:
+
+- **A byte outside the allowed paths refuses the WHOLE turn**, before any effect is emitted. Not "most of what it did": a turn that wrote where it may not proposes nothing, and the refusal is what the next attempt is told.
+- **A deletion is refused rather than dropped.** `Effect` has no way to remove a file, so a turn that deleted one proposed something the framework cannot commit, and saying so beats committing the rest.
+- **The effects land on `payload.proposal`.** `stepOutput` fixes the output shape at `{ decision, payload }`, which makes that the one unambiguous place for them; the agent never produces the field and the binding always overwrites it. A step that wants a proposal declares it optional, which is also what keeps the JSON Schema handed to the SDK satisfiable.
+
+`bun run smoke:oracle` runs it against a real acceptance designer.
 
 ### Executors
 
@@ -251,9 +260,11 @@ A `ModelBinding` is where a model plugs in. An `EffectExecutor` is where the *wo
 | Executor | Behind it | `replace-symbol` / `run-tests` | `upsert-artifact` |
 |---|---|---|---|
 | `memoryEffects({ store? })` | an [artifact store](#artifact-rows), and an array for the trail | `infra-failed`, because there is nothing behind it and that is the honest answer | the store |
-| `vcsExecutor({ vcs, session, intent, artifacts? })` | the [VCS module](#vcs-module): one lease per batch, the verification gate, the event log | executed for real, and the outcome is what the branch routes. `run-tests` runs the union and enforces the floor — see [The `run-tests` union](#the-run-tests-union) | the store, or `infra-failed` without one |
+| `vcsExecutor({ vcs, session, intent, artifacts?, protected?, knownRed? })` | the [VCS module](#vcs-module): one lease per batch, the verification gate, the event log | executed for real, and the outcome is what the branch routes. `run-tests` runs the union and enforces the floor — see [The `run-tests` union](#the-run-tests-union). `write-file` creates. `measure-oracle` executes one test and reads a verdict | the store, or `infra-failed` without one |
 
-`vcsExecutor` takes ONE write lease covering every `replace-symbol` target in the batch, applies the writes, releases, and maps each outcome onto an `EffectResult`. The session and the task intent are fixed per executor instance, so the `EffectExecutor` signature does not change: one executor per task is the answer, rather than threading provenance through the runner.
+`vcsExecutor` takes ONE write lease covering every `replace-symbol` target AND every `write-file` path in the batch, applies the writes, releases, and maps each outcome onto an `EffectResult`. The session and the task intent are fixed per executor instance, so the `EffectExecutor` signature does not change: one executor per task is the answer, rather than threading provenance through the runner.
+
+Two options are about ownership rather than plumbing. **`protected`** refuses any write landing under a declared scope before a lease is asked for, which is how the crafter is walled off from the oracle. **`knownRed`** names tests the caller knows were already failing for a reason this task did not cause, which the gate excludes — without it a module with two undelivered values is undeliverable, because every undelivered value has a live red oracle in it.
 
 ### What `claudeCode` does with the SDK
 
@@ -268,13 +279,13 @@ A `ModelBinding` is where a model plugs in. An `EffectExecutor` is where the *wo
 
 ## VCS module
 
-[`src/vcs/`](./src/vcs/README.md) implements [`ai-vcs.md`](./ai-vcs.md) as a library on `bun:sqlite`: a tree-sitter symbol inventory, an identity registry with opaque ids that survive declared renames, an append-only event log, a lease manager with atomic multi-acquire and hierarchical modes, and a verification pipeline that runs inside the write path and rolls the file back byte for byte when a stage refuses.
+[`src/vcs/`](./src/vcs/README.md) implements [`ai-vcs.md`](./ai-vcs.md) as a library on `bun:sqlite`: a tree-sitter symbol inventory, an identity registry with opaque ids that survive declared renames, an append-only event log, a lease manager with atomic multi-acquire over **symbols and path scopes**, a verification pipeline that runs inside the write path and rolls the file back byte for byte when a stage refuses, and an oracle measurement that is not a gate at all — it executes one test and reads `green | red | broken | indeterminate` off it, because the two roles that hold an oracle cannot run it.
 
 **The dependency runs one way.** `src/core` imports nothing from `src/vcs`. `src/vcs/executor.ts` imports the `Effect` and `EffectResult` types from `src/core/effects.ts` and nothing else from the framework, and every other file under `src/vcs/` does not know the framework exists. The framework is the control plane; the VCS is the data plane for code.
 
 The design document's own test for whether the seam works is one path: "the runner executes an `Effect[]` through the VCS with lease, verify, and log, and gets back a typed result a branch can route on." That path is `src/vcs/executor.test.ts`, driven through the real Mastra runner on a temp TypeScript project: a `leaf` emits a `replace-symbol`, the branch after it routes `committed`, and a second run with a stale `expectedVersion` routes `conflict` to a rebase node instead.
 
-**95 tests, 3.0 s.** Full detail, the storage schema, the write path step by step, the deviations and what is still missing: [`src/vcs/README.md`](./src/vcs/README.md).
+**140 tests, 1.8 s.** Full detail, the storage schema, the write path step by step, the deviations and what is still missing: [`src/vcs/README.md`](./src/vcs/README.md).
 
 ## Artifact rows
 
@@ -293,18 +304,20 @@ Both executors route to it, with the same optimistic version check `replace-symb
 
 `memoryEffects().artifacts` survived the change as a live read-only **view** over the store's event log rather than a second `Map`. A getter would have handed out the state at destructuring time, and `const { artifacts } = memoryEffects()` is how every caller reads it.
 
-## The three worked examples
+## The four worked examples
 
-They live under `src/examples/nwave/`, together, because they are three waves of one consumer's process rather than three unrelated demonstrations — and since this cut they compose: ROADMAP writes the rows, [the scheduler](#the-scheduler-and-the-pipeline) reads them, DELIVER runs once per row.
+They live under `src/examples/nwave/`, together, because they are waves of one consumer's process rather than unrelated demonstrations — and they compose: ROADMAP writes the rows, DISTILL fills in their acceptance facts and writes the oracle that measures each value, and DELIVER runs once per row whose oracle came back red.
 
-| | DISTILL | DELIVER | ROADMAP |
-|---|---|---|---|
-| Shape | one fanout of four classifiers, then two merge branches | three nested bounded loops, eleven leaves, four non-model steps, fifteen branches | one bounded loop, two leaves, three non-model steps, eight branches, two suspend nodes |
-| Cycles | none; the second merge is re-convergence, not a back edge | `cycle` ⊃ `test-loop`, `gates-loop` | `author`, bounded at 2 |
-| Decision space | a tuple: four classifiers answer once each | a sequence: a loop asks the same leaf again next iteration, and every effect it asks for has its own outcome space | a sequence, and a choice of *data*: two branches read pure functions of the roadmap |
-| Enumerated by | `cartesian(LANES, 4)` × two boundary flags | `enumeratePaths`, a walk of the reachable decision tree, on both axes | `enumeratePaths`, resuming every suspension it reaches |
-| Paths | **162** | **450** | **169** |
-| Wall clock | ~0.6 s | ~4.5 s | ~1.6 s |
+| | ROADMAP | DISTILL / obligations | DISTILL / oracle | DELIVER |
+|---|---|---|---|---|
+| Shape | one bounded loop, two leaves, three non-model steps, eight branches, two suspend nodes | one bounded loop, ONE leaf, two non-model steps, four branches | one bounded loop, one leaf, two non-model steps, four branches | three nested bounded loops, ten leaves, one non-model step, twelve branches |
+| Cycles | `author`, bounded at 2 | `obligations`, at 2 | `author`, at 2 | `cycle` ⊃ `test-loop`, `gates-loop` |
+| Decision space | a sequence, and a choice of *data*: two branches read pure functions of the roadmap | a choice of *manifest*: the branch after the leaf reads a pure function of it | a decision, a write outcome, and an *effect verdict* the runner produced | a sequence, and every effect it asks for has its own outcome space |
+| Enumerated by | `enumeratePaths`, resuming every suspension it reaches | `enumeratePaths`, resuming | `enumeratePaths` + `scriptedExecutor`, resuming | `enumeratePaths` + `scriptedExecutor` |
+| Paths | **169** | **55** | **421** | **443** |
+| Wall clock | ~0.45 s | ~0.13 s | ~0.97 s | ~1.5 s |
+
+Two of them are worth a second look for opposite reasons. The obligations graph is the smallest thing in the repo that still earns a graph: one leaf, a total function, and no person on the happy path. The oracle graph is the only one whose decisive input is neither a model's answer nor a person's — it is a verdict software measured, and the walk gets it through the same `scriptedExecutor` seam it gets a write outcome from.
 
 ### The `run-tests` union
 
@@ -331,24 +344,77 @@ with the omitted ids named in the rejection detail and in the `tests-run` event'
 
 In DELIVER the selection is a leaf, `select-tests`, between `implement` and `run-tests`. Its decision space is `no-extra | extra` and the ids are payload: a set of test ids is not a closed enum, so it cannot drive an edge, and keeping it out of the decision is also what stops the path space scaling with the size of the suite. There is no `fewer`, and that is the rule rather than an omission. `no-extra` does not carry the ids even when the payload holds some — the mechanical check `deliver.selection-matches-its-decision` refuses that contradiction at the model boundary, and reading the decision in the `carry` hook makes it structural for a journal replay that never ran the check.
 
-### The oracle: locate and activate
+## DISTILL is two graphs
 
-nWave's discipline is that DISTILL pre-authors the acceptance-test bodies with a pending marker and DELIVER activates them. So the node ahead of RED **locates**, it does not author. A roadmap row's acceptance obligations each carry an optional `oracleLocator`, the `oracle` resolves those against the VCS symbol inventory, and the verdict is two words: every obligation resolved is `located`, and anything else is `missing-at`, which parks for a person under `missing-acceptance-test`. An obligation with no locator is missing by definition, which is the normal state of a roadmap authored before its tests were written; a step with no obligations at all is the same finding by another route.
+The previous cut of this repo had a DISTILL example that classified test scenarios into lanes, and a DELIVER graph whose first node located a pre-authored acceptance test behind a `test.skip(` marker and stripped it. Both were built on a model of the wave that the shipped nwave runner does not have, and both are gone.
 
-`activate-at` then strips the pending marker off each located test, one `replace-symbol` per test at the version the inventory reported, through the same write path every other change goes through. Neither node is a leaf: resolving a locator is a lookup and stripping a marker is a string operation, and a model asked to do the second would be rewriting the assertion the step is measured against.
+**`des distill` is provider-free.** Its input is a JSON manifest — per value an observation that must already exist in the handover by exact match, a non-empty list of `{ id, stimulus, expected }` obligations, exactly one oracle locator, and a whole-file support list — and it validates a closed rule set, renders a brief, and persists the facts. It buys no model turn and writes no test. There is no lane in it, no `.feature` file, no `steps/**` tree, no seven-category taxonomy, no fifteen-item checklist, and no pending marker anywhere. Completeness is a **total relation** in both directions — every obligation to at least one falsifiable observation and back — which is the rule a checklist exists to replace rather than to implement.
 
-**The marker convention, for this repo's TypeScript tests:**
+**`des oracle --value N` is the step that writes the test**, on the acceptance designer's own `Read, Edit` tool set, scoped to the subject's test paths. And then software runs it.
 
-```ts
-test.skip("…", () => { … })    // pending
-test("…", () => { … })         // active
+### The obligations graph: one leaf in front of a total function
+
+```
+obligations = loop(body: propose-obligations, until: valid or blocked, max: 2)
+|
++- propose-obligations -> propose.route  -+- proposed  -> validate-manifest
+|                                         +- exhausted -> obligations (blocked)
++- validate-manifest --> manifest.route  -+- valid     -> obligations (leave)
+                                          +- invalid   -> obligations (iterate)
+
+obligations.verdict -+- valid   -> persist -> accepted
+                     +- blocked -> human   -> rejected
 ```
 
-and the same for `it`, and for `todo` as well as `skip`. That convention is chosen for one reason beyond being the one the language already has: it is **identity-preserving**. A symbol's identity is `(kind, container, name)` and a modifier is none of those, so the strip is a body edit rather than a rename — which is what lets it through a write path that refuses an undeclared identity change. That needed the tree-sitter layer to see `test.skip("x")` as the same symbol as `test("x")`, which it now does, and the claim is asserted against a real inventory and then end to end through the real write path, because if it were false the node would be unusable rather than merely wrong.
+The leaf's decision space is a **singleton**. It proposes; whether the proposal is admissible is `manifest.ts`'s, and that is a total function of the manifest, the roadmap, and one injected repository fact. Giving the leaf a second decision would be asking a model to grade its own manifest, which is the arrangement the validator replaces.
 
-One thing had to give in the VCS for this to work at all. The write path's tests stage now runs the impacted tests **minus any test the write is itself rewriting**. Running the very test you just activated to decide whether you were allowed to activate it makes a pending acceptance test unactivatable, since its first honest run fails by design and that failure is the RED observation the next node exists to make. Every other test that reaches the file still runs, so "you broke something else" is still gated; a production symbol's write is unaffected, because its id is not a test id.
+Eleven named defects, because the defects are the feedback the next proposal reads and "invalid" tells a model nothing it can act on. Where a typed schema makes one of nwave's fourteen rules *unrepresentable* rather than merely invalid — `schema_version` is 1, the top level has exactly two keys, `acceptance_supports` is an array — `manifest.ts` says so rather than counting to fourteen. One is ours and not nwave's: `uncovered-value`, because `des distill` merges a partial manifest into a graph that may already carry facts and this wave runs once per roadmap with nothing to merge with.
 
-The locator form is `path::name` or a bare `name`. A bare name matching more than one test resolves to **nothing** rather than to the first: an ambiguous locator names nothing in particular, and activating the wrong test is worse than reporting that the roadmap did not say which.
+`support-ignored` is the one rule that is a question about the *repository* — a support the repository ignores is a generated artifact rather than evidence reproducible from the commit — so its predicate is injected (`git check-ignore` in the composition, a literal in the walk) and the leaf's own mechanical checks cannot carry it. The test asserts both halves: with the predicate the manifest is refused, without it the same manifest is admissible, because an unanswered ignore question is not a defect.
+
+**There is no human gate on the happy path**, unlike ROADMAP's. That is the one shape decision here worth defending. A decomposition is the highest-judgement act in the pipeline and its output is a diff somebody reads; this is not that. Every reason this step can refuse is a named defect a proposal can be re-driven against, so a review gate would be a person re-reading what a total function already decided.
+
+### The oracle graph: the model decides, and software measures
+
+```
+author = loop(body: author-oracle, until: red or blocked, max: 2)
+|
++- author-oracle --> author.route --+- authored       -> write-oracle
+|                                   +- cannot-express -> author (blocked: design)
++- write-oracle ---> write.verdict -+- committed      -> measure
+|                                   +- conflict       -> author (iterate)
+|                                   +- defective      -> author (iterate, with the gate's detail)
+|                                   +- refused        -> author (blocked: out of scope)
++- measure -------> measure.verdict +- red            -> author (leave)
+                                    +- broken         -> author (iterate, with the output)
+                                    +- green          -> author (blocked: vacuous)
+                                    +- indeterminate  -> author (blocked: harness)
+```
+
+`measure` is **not a leaf**, and that is the load-bearing shape rather than an optimisation. The two roles that hold an oracle — its author with `Read, Edit`, and its reviewer with an enforced empty tool set — *cannot run it*. So "this oracle fails on its assertion and not on its scaffolding" is a property the runner owns and measures; the shipped code names it `boundary:software-measures-model-decides`, and observing an execution is a fixed floor rather than a rigor knob.
+
+The pre-craft oracle reviewer is **retired** with it. Between "measured" and "judged" there was a fourth model boundary, and the incident it existed for — a judge approving a broken oracle in 27 seconds — is answered by a measurement that is software and free. The oracle's independent judgement is the whole-diff review at the end, which sees the oracle and the implementation together.
+
+| verdict | route | why |
+|---|---|---|
+| `red` | leave, `accepted`, and an `oracle_runs` row | the desired answer |
+| `broken` | the one correction turn, with the runner's verbatim output | the defect is the oracle's, and no role downstream may repair it |
+| `green` | a person, `vacuous-oracle` | a test that passes before any production code proves nothing |
+| `indeterminate` | a person, `harness` | a non-zero exit whose own summary records no failure and no error |
+
+`green` is where this diverges from nwave deliberately. The shipped runner computes the same verdict and does not *arm* it, because four of its own designed behaviours legitimately reach a green oracle before a craft turn — a resumed run, a value a sibling delivered, a no-delta request, a silent craft turn. A graph that runs one value once with nothing behind it reaches none of them, so parking is the honest answer here.
+
+`cannot-express` is the designer's typed rejection: *the constructive chain cannot be expressed through the declared public port without inventing a field, an operation, a fixture fact or an expected result.* It is charged to the **design**, from a two-member owner enum, and a rejecting author owns no byte — its finding travels, its edits do not, and a mechanical check enforces that.
+
+### One defect from the shipped runner, closed rather than copied
+
+`des distill`'s obligations never reach the oracle author. `_derive` builds its `AuthorityFacts` with `acceptance_obligations` at its default and only the craft path populates it, so the acceptance author receives the obligation *ids* the design declared and not the stimulus/expected pairs `des distill` produced — and is asked to write an oracle for obligations it cannot read. Here they are an input to the author leaf.
+
+### The crafter is walled off from the oracle
+
+`_crafter_owns`, as an executor rule. Every path a task declares is the crafter's **except the oracle**, because RED to GREEN must be bought by production and never by editing the test that measures it. The DELIVER pipeline builds each row's executor with `protected: [the row's oracle file]`, so a `replace-symbol` or a `write-file` landing there is `rejected { by: "contract" }` before a lease is asked for, with the refusal on the event log.
+
+Expressing it in the executor rather than in a graph is what makes it hold for every write the graph could emit — including one a model proposed and the graph merely passed along. The supports are *not* walled: a support is the oracle's dependency rather than the thing that measures the value, which is the same line the shipped runner's own ownership check draws.
 
 ### `run-tests` is effect-driven
 
@@ -371,21 +437,24 @@ Three of those arms are positions rather than mechanics. A failure that names **
 
 That split needed the ids to reach the branch, so `EffectResult`'s `rejected` gained `detail?: { failed?: string[] }`, `StageOutcome`'s failed variant gained `failed?`, and `bunTests` populates it with the target that failed. A stage that cannot name which test failed leaves it absent, and the graph reads the absence honestly rather than guessing.
 
-### DELIVER, and why 450
+### DELIVER, why it starts at `implement`, and why 443
 
-The DELIVER step cycle is the design's fixed graph: activate the acceptance test, observe RED, implement until green, refactor, gate, commit. Every leaf is a `runStep` with an injected model binding, exactly like DISTILL. Four of them classify and carry the enums the design names:
+The DELIVER step cycle is the design's fixed graph: implement until green, refactor, gate, commit. Every leaf is a `runStep` with an injected model binding. Two of them classify and carry the enums the design names:
 
-- `run-tests.red` → `red-observed | already-green | harness-failed`
 - `diagnose` → `impl-wrong | at-wrong | design-missing | harness-failed`
 - `gates` → `clean | clippy-in-scope | mutation-below-gate | out-of-scope-structural`
 
-`select-tests` carries a fourth, `no-extra | extra`, which is the union rule above. The other seven (`implement`, `fix-acceptance-test`, `surface-design-gap`, `refactor`, `fix-lint`, `add-test`, `commit`) are generative. "Make this AT pass with the minimal change" is code generation, not a closed-enum decision, so their decision space is a singleton and the routable outcome downstream is something else: for `implement`, the **effect result**. It returns a `replace-symbol` effect and the branch after it routes `committed | conflict | rejected | infra-failed`, plus `exhausted` for "the validator was never satisfied". A conflict rebases onto the version the world moved to and retries inside the bound; `infra-failed` is distinct from `rejected` so a flaky harness does not burn the implement budget on a change that was fine.
+`select-tests` carries a third, `no-extra | extra`, which is the union rule above. The other seven (`implement`, `fix-acceptance-test`, `surface-design-gap`, `refactor`, `fix-lint`, `add-test`, `commit`) are generative. "Make this AT pass with the minimal change" is code generation, not a closed-enum decision, so their decision space is a singleton and the routable outcome downstream is something else: for `implement`, the **effect result**. It returns a `replace-symbol` effect and the branch after it routes `committed | conflict | rejected | infra-failed`, plus `exhausted` for "the validator was never satisfied".
 
-Four nodes are **not** leaves, and each one is a node that used to have a model behind it or would obviously have been given one: [`oracle` and `activate-at`](#the-oracle-locate-and-activate) resolve and rewrite, [`run-tests`](#run-tests-is-effect-driven) reads an effect's result, and `test-loop.head` is a pure branch. A node whose answer a cheaper thing already produces does not get a model.
+**The cycle starts at `implement`, and nothing precedes it.** There is no oracle node and no RED node, because neither has anything left to do: the oracle was authored and executed in [its own graph](#the-oracle-graph-the-model-decides-and-software-measures), and this one reads the recorded verdict. So "no edge bypasses RED" is a **readiness precondition** rather than a topology claim — a row whose oracle has no `red` in `oracle_runs` never becomes ready — which mirrors the shipped runner's own rule that with no recorded oracle the next step for a value is `des oracle`, never `des craft`.
+
+That is a stronger guarantee than an edge, not a weaker one. An edge could be reached with a fabricated observation; a row that is not ready has no run at all. `todo:deliver` refuses such a row **by name** rather than skipping it.
+
+Two nodes are **not** leaves: [`run-tests`](#run-tests-is-effect-driven) reads an effect's result, and `test-loop.head` is a pure branch. A node whose answer a cheaper thing already produces does not get a model, and "cheaper" now includes "a measurement another wave already took".
 
 Nothing in the DELIVER *walk* runs a test or writes a symbol: the leaves answer from a stub journal and `scriptedExecutor` answers the effects, because the walk is a control-flow test and giving it a filesystem would make it something else. `memoryEffects()` returns `infra-failed` for `replace-symbol` and that outcome is **routed, not hidden** — a test drives it through the real graph and asserts the run parks. The same graph against a real checkout is [the pipeline](#the-scheduler-and-the-pipeline), which does run `bun test` and does write symbols.
 
-**450 paths** is every leaf decision, every effect outcome, every inventory the oracle may resolve against, and every loop count up to its bound, with unreachable combinations never run. Coverage is asserted, not assumed: the walk visits every node the graph declares except `human.route` (reachable only by answering a suspension, which the resume tests cover), produces all twelve declared `HUMAN_REASONS`, and produces both terminal kinds.
+**443 paths** is every leaf decision, every effect outcome, and every loop count up to its bound, with unreachable combinations never run. Coverage is asserted, not assumed: the walk visits every node the graph declares except `human.route` (reachable only by answering a suspension, which the resume tests cover), produces all nine declared `HUMAN_REASONS`, and produces both terminal kinds.
 
 **Why `MAX_CYCLES` is 1 while the other two bounds are 2.** It was 1270 paths at 7.5 ms each before the diagnosis branch, 2215 at ~15 ms each after it, and adding `select-tests` took it past 7000 paths and 544 s. `select-tests` sits inside `test-loop`, which sits inside `cycle`, so its multiplier compounds once per (cycle × test) iteration, and the branch after it converging two edges on `run-tests` makes the compiler build the rest of the loop body twice per compile on top of that. The documented fallback was applied first and measured: `MAX_GATE_ATTEMPTS: 2 → 1` gives **5615 paths in 254 s**, because the gates loop is not one of the two loops the new leaf is inside. So the bound that gave way is the one the new leaf is actually inside, and the three single-bound cuts were measured rather than guessed:
 
@@ -394,9 +463,9 @@ Nothing in the DELIVER *walk* runs a test or writes a symbol: the leaves answer 
 | 2 / 2 / 2 | > 7000 | > 544 s |
 | `MAX_GATE_ATTEMPTS` → 1 (the documented fallback) | 5615 | 254 s |
 | `MAX_TEST_ATTEMPTS` → 1 | 285 | ~2 s |
-| **`MAX_CYCLES` → 1** | **447**, now **450** | ~2 s, now **~4.5 s** |
+| **`MAX_CYCLES` → 1** | **450**, now **443** | ~4.5 s, now **~1.5 s** |
 
-The walk got slower without getting bigger, and the reason is worth naming because it is the compiler's cost model rather than the walk's. Making `run-tests` effect-driven added one edge to `test.route` and one to `test.verdict`, both inside the innermost loop, and every branch edge compiles to a nested workflow carrying the rest of that path. Two extra edges inside `cycle` ⊃ `test-loop` is 2.5 s of compile. The three paths added on top of 447 are the activation write's three ways of not committing, plus the oracle's `missing-at`, minus the leaf `exhausted` that `activate-at` no longer has.
+The count went DOWN by seven and the walk got three times faster, and both are the same cause read from two ends. Deleting the oracle, the activation and the RED leaf removed the activation write's three ways of not committing, the oracle's `missing-at`, and one leaf `exhausted`; it also removed six nodes and eleven edges from ahead of the outermost loop, and every branch edge compiles to a nested workflow carrying the rest of that path. The walk's cost was never the walking.
 
 `MAX_TEST_ATTEMPTS` is the most expensive to cut in signal: five tests depend on the test loop running twice — the implement retry, the conflict rebase, the rejected-write retry, `broke-other`, and the whole `at-wrong` re-run-without-re-implementing claim. So the cycle gives way, and the one observation that costs is bought back rather than dropped: the test that needs two cycles (`a surviving mutant re-enters the test loop on the next cycle`) rebuilds the `cycle` node at `max: 2` for itself, using nothing but `loop` and the node map. The walk pays for one cycle; the one test that needs two builds two.
 
@@ -441,14 +510,20 @@ RoadmapStep = {
   observation: string;                 // what will be observably true when it is done
   dependencies: string[];              // step ids that must be accepted first
   authority: string;                   // a locator into the design source it implements
-  acceptance: AcceptanceObligation[];  // ≥ 1
   predictedTouches: string[];          // symbol ids or paths it expects to write
+
+  // DISTILL's to fill. ROADMAP leaves all three empty.
+  acceptance: AcceptanceObligation[];
+  oracle?: string;                     // `path::selector`, exactly one per value
+  supports: string[];                  // whole-file test substrate the oracle needs
 }
-AcceptanceObligation = { id: string; text: string; oracleLocator?: string }
+AcceptanceObligation = { id: string; stimulus: string; expected: string }
 Roadmap = { request: string; steps: RoadmapStep[] }
 ```
 
 `predictedTouches` is the one field beyond the handover's own, and it is there because the disjointness check needs an axis to measure. `steps` is deliberately allowed to be empty by the schema: that is what `decompose` returns when it answers `cannot-decompose`, and an empty roadmap is refused by `validate-shape` as a *named defect* rather than by the parser, so the refusal reaches the graph as data.
+
+**The last three fields are the wave boundary.** What a value must be observed to do is [DISTILL's act](#distill-is-two-graphs), not the decomposer's, and `acceptanceIsDistills` is a mechanical check on `decompose`'s own output that refuses a proposal which filled them in.
 
 Declaration order is significant. It is the total order the disjointness resolution uses to decide which way a new dependency edge points, and nWave's handover relies on the same order for the same reason.
 
@@ -464,10 +539,12 @@ That is the point of the example. A graph's branches do not have to read a model
 | `duplicate-id` | two rows claim one identity |
 | `dangling-dependency` | a dependency names no step in the roadmap |
 | `cycle` | the dependency graph is not a DAG, named by the path that closes it |
-| `no-acceptance` | a step declares nothing it must satisfy |
+| `observation-too-short` | a step says too little to be worked from, with its length |
 | `empty-authority` | a step implements no named design source |
 
 They are **named rather than boolean** because they are the feedback `decompose` reads on the next iteration: "invalid" tells a model nothing it can act on. And `decompose`'s own requirement rows consume the same predicates through `firstDefectOfKind`, so the step's mechanical guardrail (which runs before a validator model is spent) and the graph's gate (which runs on whatever got past it) cannot drift apart.
+
+`no-acceptance` was one of these and is deliberately gone. `observation-too-short` took its place, with nwave's own `MINIMUM_OBSERVATION_CHARACTERS` of 40 — measured rather than chosen, from the shortest real accepted-turn diagnostic in the shipped runner. A shape check demanding obligations at ROADMAP time would refuse every roadmap for not having done a later wave's job; what ROADMAP can still ask is whether the observation says enough to decide anything about.
 
 **`measure-disjointness`** mirrors `parallel_safety.py`. A pair the roadmap declares independent whose `predictedTouches` overlap is DRIFT, and the overlapping entries are the finding. The resolution on top of that is deterministic: order the pair by declaration order, lower ordinal first, and record the edge. If adding one would close a cycle, the verdict is `drift-unresolvable` and the pair is named.
 
@@ -507,11 +584,11 @@ That is a position rather than an omission. Every route into `human` is a block 
 
 **It chooses data, not just decisions.** Two branches read pure functions of the roadmap, so to reach `shape.route`'s `invalid` edge or `disjointness.route`'s `consistent` and `drift-unresolvable` edges the walk has to vary the *roadmap*. The choice point at `decompose` is therefore a choice of **proposal**, drawn from the hand-written roadmaps in `src/examples/nwave/roadmap/fixture.ts`: `KNOWN_GOOD` (three steps, one declared dependency, one deliberate overlap → `edges-added`), `DISJOINT` (→ `consistent`), `UNRESOLVABLE` (→ `drift-unresolvable`), `MALFORMED` (every shape defect at once), plus `cannot-decompose` and the exhausted validator. Enumerating a graph whose decisions are functions of its data means enumerating enough data to reach every edge.
 
-`KNOWN_GOOD` is also the oracle in the framework/consumer sense: the harness proves a roadmap is well-formed, and a hand-written one is the only thing that says a well-formed one is *right*. `KNOWN_GOOD_RESOLVED` beside it is the expected output rows, which is what makes "the resolution is not advice" a testable claim rather than a comment.
+`KNOWN_GOOD` is also the known-good artifact in the framework/consumer sense: the harness proves a roadmap is well-formed, and a hand-written one is the only thing that says a well-formed one is *right*. `KNOWN_GOOD_RESOLVED` beside it is the expected output rows, which is what makes "the resolution is not advice" a testable claim rather than a comment.
 
 ## The scheduler and the pipeline
 
-The roadmap is rows. The step cycle is one fixed graph. The scheduler instantiates the graph once per row and runs the ready set concurrently. This is the cut that turns three examples into one pipeline.
+The roadmap is rows. The step cycle is one fixed graph. The scheduler instantiates the graph once per row and runs the ready set concurrently. Two waves use it now: DISTILL runs one oracle turn per value in dependency order, and DELIVER runs the step cycle per row.
 
 **[`src/core/scheduler.ts`](./src/core/scheduler.ts) is generic.** A row is `{ id, dependencies }` and nothing else; what a row means, where it is read from, and what its run does are the consumer's.
 
@@ -522,6 +599,7 @@ openScheduler<S>({
   resumeOne,               // (row, runId, answer) => Promise<RunOutcome<S>>
   statusOf,                // (rowId) => Promise<RowStatus>       the projection
   record,                  // (rowId, outcome) => Promise<void>   the only write
+  eligible?,               // (rowId) => Promise<boolean>         may it run at all?
   concurrency,             // a positive integer
   resourcesFor?,           // (row) => string[]
   leases?,                 // ResourceLeases; inMemoryLeases() is supplied
@@ -532,6 +610,7 @@ openScheduler<S>({
 **State is a projection**, which is the one design decision worth defending. The scheduler persists nothing of its own: it asks `statusOf` for every row, reports each finished run through `record`, and re-reads. That is the stance nwave's `delivery_state.py` takes — the next step is *derived* from persisted facts and never decided — and it buys the property that matters: a scheduler that died mid-feature restarts by reading rather than by remembering. A row in flight has nothing persisted yet, so it reads `pending` and is simply run again.
 
 - **The frontier** is every row whose every dependency reads `accepted`. A `rejected` or `suspended` row therefore blocks only its dependents, and that *falls out of* the rule rather than being enforced: nothing downstream of it becomes ready and everything else keeps running. A person's queue is a list of independent blocked subtrees.
+- **`eligible` is the precondition the frontier rule cannot express.** "Is everything this row waits on done" and "may this row start at all" are different questions, and `statusOf` cannot carry the second: a row that has not run is `pending` whether or not it may. It is read once per refresh, beside `statusOf`, so `ready` stays synchronous and a consumer's answer is a projection like every other fact here. An ineligible row blocks its dependents exactly the way a rejected one does. DELIVER's is `oracleIsRed`.
 - **Resuming** a parked row continues it through the framework's own `resume` and then re-evaluates the frontier in the same call, so answering one row continues the feature rather than the row.
 - **Resource leases** serialize shared test infrastructure and nothing else. A row declares the names it needs, the scheduler takes the whole set atomically before the run and releases it after (`finally`, so a throwing run does not deadlock the next one), and two rows sharing one name serialize on that name while two rows sharing none run together. Taking the set at once is what makes it deadlock-free: a run never holds one name while waiting for another. `inMemoryLeases` grants waiters FIFO, so which of two blocked rows goes first is a function of the order they asked rather than of timing.
 - **A `runOne` that throws is a graph bug and is not absorbed.** Everything a graph decides is data, so a throw means the graph itself is malformed, and swallowing it into a status would hide that.
@@ -543,7 +622,12 @@ openScheduler<S>({
 - **the row id as the task id**, so the event log's answer to "what changed" joins the journal's answer to "what did this step decide" on one key;
 - and therefore the row id in **every leaf's journal input**, because `StepUnderDelivery` carries it and the journal key is a hash of the input. Two rows cannot share a key, so one row's decision cannot replay as another's. That is asserted directly rather than assumed.
 
-`vcsOracleIndex` lives here rather than in `oracle.ts` so that the graph, and the walk of it, can read the port's type without dragging a database and a native parser behind it.
+Two things the DELIVER pipeline builds per row are about OWNERSHIP rather than plumbing, and both are executor options rather than graph edges:
+
+- **`protected: [the row's oracle file]`** — `_crafter_owns`. Every path the task declares is the crafter's except the oracle.
+- **`knownRed`: every other undelivered value's oracle.** Every one of them is red by construction, because a value is only ready once its own oracle has been measured red. Without this a module with two undelivered values is undeliverable: the gate refuses row A's correct write because row B's oracle — which A did not break and cannot fix — is failing. An *accepted* sibling's oracle is deliberately not in the set: that one is green, and breaking it is a real regression the gate exists to catch.
+
+That second one was found by running the worked example, not by reading the code. The first end-to-end run of the todo target refused `complete`'s write for `remove`'s red oracle, which is exactly the shape the batch filter had already been widened for once.
 
 **The end-to-end test is the one this cut is for**, and the one test in the repo allowed to shell out. A two-step roadmap (B depends on A) is persisted *through the roadmap workflow's own `persist`* into the artifact store; a temp TypeScript project holds two pending acceptance tests and two production symbols; the leaves are journal hits so nothing reaches a model; and the tests stage is the real `bunTests`. A runs, B runs after A is `accepted`, both `step_runs` rows read `accepted`, the event log shows the activation and the implement write under each row's own session and task id, and `bun test` over the project at the end reports 2 pass. A companion test drives an implementation that does *not* satisfy its activated test and watches the real gate refuse it, roll the file back byte for byte, and leave B unready.
 
@@ -563,36 +647,58 @@ resume(wf, runId, answer, execute, runtime?)
 
 `:memory:` is the default and is what the whole suite runs on. A `file:` URL opens libSQL, and that is what makes the roadmap workflow's human-review gate two commands instead of one: `todo:roadmap` parks a run and exits, a person reads it, `todo:review` opens a new runtime over the same file and continues the same run. `src/core/durable-snapshots.test.ts` proves it the only way that means anything — two runtime instances over one file, the first dropped before the second is built — and pairs it with the negative, a second runtime on a *different* file that cannot see the parked run.
 
-**Two adapters rather than one, and the split is measured.** Running the whole suite on `LibSQLStore({ url: ":memory:" })` also works, and takes **20.6 s** against **4.6 s** on `InMemoryStore`: the 781 enumerated paths write a snapshot per step, and a SQL round trip per write is 4.5× the cost of a map write. The durable path needs a database; the in-memory one needs a map.
+**Two adapters rather than one, and the split is measured.** Running the whole suite on `LibSQLStore({ url: ":memory:" })` also works, and took **20.6 s** against **4.6 s** on `InMemoryStore` when it was measured: the enumerated paths — 1,088 of them now — write a snapshot per step, and a SQL round trip per write is 4.5× the cost of a map write. The durable path needs a database; the in-memory one needs a map.
 
 ## The todo target
 
-[`targets/todo/`](./targets/todo) is what the two waves are pointed at. A `TodoStore` with `add`, `complete`, `remove` and `list`; `add` and `list` implemented; **`complete` and `remove` stubs whose bodies throw**; eight acceptance tests in `test/todo.test.ts`, four active and **four pending behind `test.skip(`**; and a `design.md` that is the authority for the whole public surface.
+[`targets/todo/`](./targets/todo) is what the three waves are pointed at. A `TodoStore` with `add`, `complete`, `remove` and `list`; `add` and `list` implemented; **`complete` and `remove` stubs whose bodies throw**; and a `design.md` that is the authority for the public surface, the driving port, and the test path scope.
 
-The walking-skeleton shape is the point rather than a convenience. `Effect` has `replace-symbol` and no way to create a file or a symbol, and all three of the write path's operations resolve an existing symbol id first — so a stub is what gives DELIVER something to write into. The missing behaviour is a gap in a body, which the framework can close; a missing *symbol* is a gap it cannot.
+**There is no test file**, and that is the point rather than an omission. The oracle for each value is authored by DISTILL into `test/` and measured red before one production byte is written. A pre-written test would make RED a thing the repository asserted rather than a thing the runner measured — which is precisely the model the previous cut of this repo was built on and this one deleted.
+
+The walking-skeleton shape still matters for the production half. `replace-symbol` names an existing symbol, so a stub is what gives DELIVER something to write into: the missing behaviour is a gap in a body, which the framework can close, and a missing *symbol* is a gap it cannot. `write-file` is what creates the oracle; `replace-symbol` is what fills the body.
+
+`design.md` declares the scope on one line:
+
+```
+- Test path scope: `test/`
+```
+
+Three consumers read it, which is why it is one line and not three constants: the author writes there, the executor walls the oracle there, and the manifest validator refuses a support outside it. `testPathScope` refuses by name when it is absent, because a default of `test/` would work silently for every project whose substrate lives there and mis-scope every project whose does not.
 
 **The template is never mutated.** Every run copies it to `runs/<name>/todo/` and works there.
 
-### The three commands
+### The commands
 
 ```
 ANTHROPIC_API_KEY=... bun run todo:roadmap first          # author, park at human-review
 ANTHROPIC_API_KEY=... bun run todo:review  first approve  # resume in a second process
-ANTHROPIC_API_KEY=... bun run todo:deliver first          # the step cycle, once per row
+ANTHROPIC_API_KEY=... bun run todo:distill first          # the facts, then the oracle, measured
+ANTHROPIC_API_KEY=... bun run todo:deliver first          # the step cycle, once per red-oracled row
                       bun run todo:report  first          # the table. No key: it reads a file
 ```
 
-and `todo:resume <name> <row> <commit|abandon>` for a DELIVER row that parked. A run directory holds the copied project plus five files — `vcs.sqlite`, `artifacts.sqlite`, `journal.sqlite`, `mastra.sqlite`, `report.jsonl` — and `run.json`, because the commands are separate processes and nothing is held between them. `runs/` is gitignored.
+and `todo:resume <name> <row> <commit|abandon>` for a DELIVER row that parked. A run directory holds the copied project plus five files — `vcs.sqlite`, `artifacts.sqlite`, `journal.sqlite`, `mastra.sqlite`, `report.jsonl` — and `run.json`, because the commands are separate processes and nothing is held between them. `runs/` is gitignored. `test/` is tracked only once it exists, because the oracle is what creates it.
 
-Models: `decompose` on `anthropic/claude-opus-5`, `implement` on `anthropic/claude-sonnet-5`, every other leaf and every validator on `anthropic/claude-haiku-4-5`. No escalation is wired, deliberately — `escalateTo` unset is what makes the report's exhaustion count the number of decisions the *small* models could not get past their own validators.
+`todo:distill` prints each value's obligations, its oracle and its supports, then the **measured verdict** per value. `todo:deliver` refuses a value with no red oracle by name rather than skipping it.
+
+Models: `decompose` on `anthropic/claude-opus-5`, `author-oracle` and `implement` on `anthropic/claude-sonnet-5`, every other leaf and every validator on `anthropic/claude-haiku-4-5`. `author-oracle` sits on the open-output class for the same reason `implement` does — writing an executable oracle that falsifies every obligation through a declared port is code generation, and what makes it safe is narrow validation plus a measurement, not a smaller model. No escalation is wired, deliberately: `escalateTo` unset is what makes the report's exhaustion count the number of decisions the *small* models could not get past their own validators.
 
 **The design source is `design.md` plus the VCS symbol inventory**, and the addition is load-bearing: `predictedTouches` and `implement`'s `symbolId` are opaque VCS ids assigned at track time, so a model that has never seen the inventory names one that does not exist and every write it proposes comes back `rejected: contract`.
 
-Full detail in [`src/examples/nwave/README.md`](./src/examples/nwave/README.md#todo--the-two-waves-pointed-at-a-real-project).
+Full detail in [`src/examples/nwave/README.md`](./src/examples/nwave/README.md#todo--the-three-waves-pointed-at-a-real-project).
 
 ### The stubbed end-to-end
 
-`src/examples/nwave/todo/todo.test.ts` is the same path with the inference removed: the target copied to a temp directory, the roadmap authored through the roadmap workflow's own graph and persisted by its own `persist`, the scheduler reading the rows back, and one DELIVER run per row that locates the four pending tests, activates them through the write path, writes both stub bodies, and is gated by a **real** `bunx tsc --noEmit` and a **real** impact-scoped `bun test` on every write. Then the project's own suite runs: 8 pass, 0 skip, exit 0. **About 2.7 s, zero model calls.**
+`src/examples/nwave/todo/todo.test.ts` is the same path with the inference removed, and it is the one test that covers all three waves:
+
+- the target copied to a temp directory, tracked with the **default** verifier — a real `bunx tsc --noEmit`, a real impact-scoped `bun test`, a real oracle measurement;
+- the roadmap authored through the roadmap workflow's own graph and persisted by its own `persist`, with all three of DISTILL's fields empty;
+- the obligations graph filling them in and `persist` writing the enriched rows back;
+- the oracle graph authoring one test file per value through a real `write-file` and a **real `bun test` measuring each one red** — nothing in the test file asserts the redness, because the runner is what says so;
+- DELIVER refusing nothing (both rows are oracled), writing both stub bodies through the real gate, and leaving both oracle files **byte-identical**;
+- and the project's own suite: 2 pass, 0 skip, exit 0.
+
+**About 1.6 s, zero model calls.** A companion test asserts the other half: with no `oracle_runs` row, `unoracled()` names both values, the scheduler runs nothing, and the stubs are untouched — the model bindings throw, so reaching a leaf at all would fail it.
 
 ## The run report
 
@@ -617,6 +723,8 @@ Three facts join into a line from three places: the attempt from `runStep`'s obs
 Everything except the inference is exercised without it. What the real run would answer, and nothing else can:
 
 - whether Opus, given `design.md` plus the symbol inventory, proposes a decomposition a person would approve;
+- whether a small model, given one observation and a declared port, states an obligation as a stimulus and an expected result rather than restating the observation;
+- **whether an oracle a model wrote is an oracle worth measuring.** The framework can prove it was executed, that it failed on its assertion rather than its scaffolding, and that the crafter never touched it. It cannot prove it asserts the right thing, and the rules bound to that leaf — a total relation in both directions, the declared public port, no invented expected result — are prose refuted by a small model, which is the class this design is least confident about elsewhere;
 - whether a Haiku validator refuting a Haiku worker catches what a frontier reviewer catches;
 - what a completed task costs, in calls and in tokens.
 
@@ -626,8 +734,15 @@ To perform it:
 ANTHROPIC_API_KEY=... bun run todo:roadmap first
 #   read the printed roadmap, then
 ANTHROPIC_API_KEY=... bun run todo:review first approve
+ANTHROPIC_API_KEY=... bun run todo:distill first
 ANTHROPIC_API_KEY=... bun run todo:deliver first
                       bun run todo:report first
+```
+
+Or, for the smallest real thing — one oracle, one subagent, one measurement, no run directory:
+
+```bash
+ANTHROPIC_API_KEY=... bun run smoke:oracle
 ```
 
 ## Deviations from the design
@@ -684,9 +799,9 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 25. **`Effect`'s `run-tests` gained `extra`, and the floor moved into the VCS.** The design's union has one field, `impacted`, which makes test selection the workflow's in both directions. `extra?: string[]` splits it: the VCS recomputes the floor from the symbols the batch wrote and refuses a union that misses one of its tests. The shape that forced is a signature the design does not name — `WritePath.runTests` takes `extra` and `wrote` beside `symbolIds`, and `ImpactGraph` gained `testsById` so a test id is runnable at all. Three named sets rather than one, because "the floor is computed by the VCS, not trusted from the effect" needs the written symbols to reach the place that computes it, and the design specifies the rule without specifying the call. See [The `run-tests` union](#the-run-tests-union).
 
-26. **The effect's outcome decides whether the suite passed, and the classifier leaf is gone.** The previous cut left this open: `select-tests` carried a selection nothing consumed, because the design does not say whether a leaf's classification or the effect's outcome wins. It is the effect's outcome, and the classifying `run-tests` leaf is deleted rather than left dead — its enum, its requirement rows, its prompt and its tests. A suite's result is what running it produces, and a model asked the same question is a second source of truth for a fact the runner already answered. `run-tests.red` stays a leaf, because its question is not "did it pass" but "is this acceptance test vacuous", which is a judgement about *why* it passed. The routing table and the three arms that are positions rather than mechanics are under [`run-tests` is effect-driven](#run-tests-is-effect-driven).
+26. **The effect's outcome decides whether the suite passed, and the classifier leaf is gone.** The previous cut left this open: `select-tests` carried a selection nothing consumed, because the design does not say whether a leaf's classification or the effect's outcome wins. It is the effect's outcome, and the classifying `run-tests` leaf is deleted rather than left dead — its enum, its requirement rows, its prompt and its tests. A suite's result is what running it produces, and a model asked the same question is a second source of truth for a fact the runner already answered. The routing table and the three arms that are positions rather than mechanics are under [`run-tests` is effect-driven](#run-tests-is-effect-driven). (`run-tests.red` survived this deviation and not the next one: see 46.)
 
-27. **`MAX_CYCLES` is 1, and the documented fallback was not enough.** The README's own advice was that `MAX_GATE_ATTEMPTS` is the cheapest bound to cut. It was applied first and measured at 5615 paths in 254 s, because `select-tests` sits inside `test-loop` inside `cycle` and the gates loop is neither. All three single-bound cuts were measured and the cycle is the one that gives way; the table and the reasoning are in [DELIVER, and why 450](#deliver-and-why-450). The one observation it costs is rebuilt locally by the one test that needs it.
+27. **`MAX_CYCLES` is 1, and the documented fallback was not enough.** The README's own advice was that `MAX_GATE_ATTEMPTS` is the cheapest bound to cut. It was applied first and measured at 5615 paths in 254 s, because `select-tests` sits inside `test-loop` inside `cycle` and the gates loop is neither. All three single-bound cuts were measured and the cycle is the one that gives way; the table and the reasoning are in [DELIVER, why it starts at `implement`, and why 443](#deliver-why-it-starts-at-implement-and-why-443). The one observation it costs is rebuilt locally by the one test that needs it.
 
 28. **The roadmap's `human` suspend node has a one-member decision enum.** The design names the three answers at `human-review` and routes four things to `human` without naming an answer space for it. One answer is the honest closure: every block reaching it needs work outside a closed enum, and a second answer would be a route the design does not have. Reasoned in full under [One loop, two people](#one-loop-two-people-and-what-revise-costs).
 
@@ -701,13 +816,13 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 33. **`EffectResult`'s `rejected` gained `detail?: { failed?: string[] }`.** The still-red-versus-broke-other split is a set membership against the step's own acceptance tests, so the failing ids have to reach the branch; the design's union carries only `by`. `StageOutcome`'s failed variant gained `failed?` for the same reason one layer down, and `bunTests` populates it with the target that failed. A stage that cannot name which test failed leaves it absent, and the graph reads the absence honestly rather than guessing — which is why the no-ids case is `broke-other` rather than `still-red`.
 
-34. **The write path's tests stage excludes any test the write is itself rewriting.** Not a design change so much as a design *omission* that only surfaced when the oracle landed: running the very test you just activated to decide whether you were allowed to activate it makes a pending acceptance test unactivatable, since its first honest run fails by design. Every other test that reaches the file still runs, so `ai-vcs.md` § 6.1's actual question ("did you break something else") is still answered, and a production symbol's write is unaffected because its id is not a test id. The RED observation the gate would otherwise pre-empt is the graph's own next node.
+34. **The write path's tests stage excludes any test the write is itself rewriting.** Not a design change so much as a design *omission*: running the very test you just rewrote to decide whether you were allowed to rewrite it makes an acceptance test unwritable, since its first honest run fails by design. Every other test that reaches the file still runs, so `ai-vcs.md` § 6.1's actual question ("did you break something else") is still answered, and a production symbol's write is unaffected because its id is not a test id. Widened twice since: to the batch (44) and to known-red targets (49).
 
-35. **The tree-sitter layer sees `test.skip("x")` as the same symbol as `test("x")`.** A modifier — `skip`, `todo`, `only`, `failing` — on a `test` or `it` call is now recognised, and it does not change the identity key, because identity is `(kind, container, name)` and a modifier is none of those. `ai-vcs.md` § 4.1 lists what a test symbol is without addressing modifiers. Making the strip a body edit rather than a rename is what lets an activation through a write path that refuses an undeclared identity change; without it `test.skip` would not be a test at all and activating one would add an identity the edit did not declare.
+35. **The tree-sitter layer sees `test.skip("x")` as the same symbol as `test("x")`.** A modifier — `skip`, `todo`, `only`, `failing` — on a `test` or `it` call is recognised, and it does not change the identity key, because identity is `(kind, container, name)` and a modifier is none of those. `ai-vcs.md` § 4.1 lists what a test symbol is without addressing modifiers. Nothing depends on this any more — pending markers were the previous cut's model of DISTILL and are gone — but the parser is more correct with it than without, so it stays.
 
-36. **`deliverGraph` takes a third argument: the oracle's read port.** The design names the `oracle` node without naming how it reaches the inventory, and there is no read effect — `Effect` is four writes. So `OracleIndex` is an injected port, `{ locate(locator) => Promise<TestSymbol | undefined> }`, supplied by the pipeline over a real VCS and by a literal in the walk. `StepUnderDelivery` grew `acceptance`, `predictedTouches` and `authority` to carry what the roadmap row already declares, and `State` grew `located`, `missingAt`, `oracle`, `activation` and `acceptanceTests`.
+36. **`StepUnderDelivery` carries the roadmap row's own facts.** `acceptance`, `predictedTouches`, `authority` and `oracle`, so a leaf reads what the row declares rather than a projection of it. `State` carries `acceptanceTests` — the test ids the row's oracle names, resolved ONCE where the row becomes a run. Resolving them inside the graph would read an inventory that has moved since the oracle was measured.
 
-37. **`activate-at` is a step, not a leaf, and so is `run-tests`.** Both had a model behind them in the previous cut. Neither needs one: stripping a pending marker is a string operation and reading whether a suite passed is reading an effect's typed result. `ACTIVATE_OUTCOMES` and `TEST_OUTCOMES` are deleted with their rows. This is the design's "what decomposes and what stays wide" applied one notch further than the document takes it, and the document now says so.
+37. **`run-tests` is a step, not a leaf.** It had a model behind it in an earlier cut. It does not need one: reading whether a suite passed is reading an effect's typed result. `TEST_OUTCOMES` is deleted with its rows. This is the design's "what decomposes and what stays wide" applied one notch further than the document takes it, and the document now says so.
 
 38. **The harness gained a second axis, `scriptedExecutor(choose, space)`.** The design's harness is "stub journal, path enumeration, trace matchers", and the walk enumerated leaf decisions only — which covered half of DELIVER's edge tables, because the other half route an `EffectResult`. An `EffectOutcomeSpace` names, per effect type, the outcomes to try, and the executor forks the path per outcome. An effect type the space does **not** declare is refused rather than answered `committed`: a silent commit makes the coverage claim a fiction for the edges the other outcomes route to, and nothing would say so. It is one outcome per effect rather than per batch, so a graph whose batch is atomic (the roadmap's `persist`, where a partial write is not a smaller success) keeps its own executor.
 
@@ -721,23 +836,45 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 43. **`openPipeline` gained a per-row observer factory, an `onRun` hook and `resumeParked`.** The observer is `(rowId) => StepObserver` rather than one observer, because a record's most useful field is which roadmap step it belongs to and the journal key does not carry it — the row id is inside the hashed input. `onRun` exists because the `step_runs` row records the outcome and the run id but the TRACE only exists on the outcome. `resumeParked` reads the parked run id off the row's own `step_runs` row instead of out of the scheduler's memory, which is deviation 40's limitation answered where the projection already lives: the same rows that say "this row is parked" say "under which run".
 
-44. **The tests stage excludes every test the BATCH is rewriting, not just the write in hand.** Deviation 34 established the exclusion and scoped it per write. The todo target broke it: a step whose acceptance criterion has TWO pending tests activates both, as two writes under one lease, and the per-write filter leaves the first-activated test in the second one's impacted set — where it fails, by design, because the production code it asserts is still a stub — so the second activation is refused for the first one's honest red. The lease is what names the batch, so the lease is what the filter is over. A defect found by pointing the framework at a real project, which is what the target is for.
+44. **The tests stage excludes every test the BATCH is rewriting, not just the write in hand.** Deviation 34 established the exclusion and scoped it per write. The todo target broke it: a value with TWO acceptance tests writes both as two writes under one lease, and the per-write filter leaves the first in the second's impacted set — where it fails, by design, because the production code it asserts is still a stub. The lease is what names the batch, so the lease is what the filter is over. A defect found by pointing the framework at a real project, which is what the target is for.
 
-45. **`bun test` is scoped to `src/` by `bunfig.toml`.** `targets/todo/test/todo.test.ts` is a *fixture*, not a test of this repository, and `runs/` holds copies of it; both would otherwise be collected by a bare `bun test` at the root. The root `tsconfig.json` excludes the same two directories, because the target has its own and the copies are typechecked by the write path's own `tsc` stage, inside the run.
+45. **`bun test` is scoped to `src/` by `bunfig.toml`.** `targets/` is a template project and `runs/` holds copies of it, including the oracles DISTILL writes into them; both would otherwise be collected by a bare `bun test` at the root. The root `tsconfig.json` excludes the same two directories, because the target has its own and the copies are typechecked by the write path's own `tsc` stage, inside the run.
 
-Source is ~18,830 lines: ~11,080 of implementation and ~7,750 of tests. The VCS module is ~4,780 of that, split ~2,830 implementation and ~1,960 tests; the DELIVER example is ~3,760, split ~2,080 and ~1,670; the roadmap example is ~2,280, split ~1,650 and ~630; the artifact store is ~420, split ~190 and ~230.
+46. **`run-tests.red`, `oracle` and `activate-at` are deleted, and RED moved a layer out.** The previous cut had DELIVER locate a pre-authored acceptance test behind a `test.skip(` marker, strip the marker, and classify the first run. All three were built on a model of DISTILL that the shipped nwave runner does not have: nothing there pre-authors a body behind a marker, and `des oracle` is a separate step that WRITES the test and has software measure it. So the step cycle starts at `implement`, and "no edge bypasses RED" is a readiness precondition — `oracleIsRed` on the `oracle_runs` projection, `eligible` on the scheduler — which is stronger than an edge rather than weaker, because an edge can be reached with a fabricated observation and a row that is not ready has no run at all.
+
+47. **`Effect` gained `write-file` and `measure-oracle`.** The first because every other write resolves a symbol id, so a file that does not exist is unreachable from all of them — and an author's whole job is to write a test that is not there yet. Its concurrency model is a lease PATH SCOPE rather than a version, its structural stage asks only that no identity the file already held vanished, and its tests stage is absent rather than stubbed: an oracle's first honest run fails, so a stage that ran the suite would refuse every oracle for being what an oracle is. The second because measuring one oracle is a different question from running a suite, with a different desired answer.
+
+48. **`OracleMeasurement` rides on `EffectResult` as an optional `measured`, not as a fifth outcome.** The outcome union is what every other graph's edge tables are total over, and a fifth member would give each of them a dead edge. All four verdicts come off one field, so a pure branch stays a pure branch; `measurementOf` does the union narrowing once, because `conflict` is the one outcome that can never carry one. The mapping is the only place in `vcsExecutor` that is not the identity function: `green` is `committed` and the other three are `rejected { by: "tests" }`.
+
+49. **`knownRed` on `replaceSymbolBody` and `runTests`.** Deviation 34's rule one step wider: a test whose failure this write did not cause must not refuse it. Once oracles are live files rather than pending markers, every undelivered value has a live red oracle in the modules it shares, and the gate was refusing a sibling's correct write for it — found on the first end-to-end run of the todo target, where `complete`'s write was refused by `remove`'s red oracle. Only the caller can know which tests those are, so it says; and for `runTests` the set comes off the floor as well as the run, because excluding it from one and not the other would make the caller refuse itself for omitting a test it was told to leave out.
+
+50. **`protected` on `vcsExecutor`.** `_crafter_owns` as an executor rule rather than a graph edge. A write landing under a declared scope is `rejected { by: "contract" }` before a lease is asked for, which is what makes it hold for every write the graph could emit — including one a model proposed and the graph merely passed along. `ai-vcs.md` has no such thing: § 9.4's authorization is what it would have belonged to, and that is not built.
+
+51. **`SchedulerSpec` gained `eligible`.** "Is everything this row waits on done" and "may this row start at all" are different questions, and `statusOf` cannot carry the second because a row that has not run is `pending` whether or not it may. Read once per refresh beside `statusOf`, so `ready` stays synchronous. An ineligible row blocks its dependents exactly the way a rejected one does.
+
+52. **`claudeCode` gained `proposal`, and the effects land on `payload.proposal`.** The agent still edits, because a tool set is what makes it an agent; it edits a SCRATCH COPY, and the diff afterwards is what becomes effects. A `replace-symbol` needs a symbol id, which is the VCS's to assign, so the binding takes a `symbolFor` port and falls back to `write-file` rather than importing the VCS to guess one. `stepOutput` fixes the output shape at `{ decision, payload }`, which makes `payload.proposal` the one unambiguous place for the result; the step declares it optional, which is also what keeps the JSON Schema handed to the SDK satisfiable by an agent that never produces it.
+
+53. **`AcceptanceObligation` is `{ id, stimulus, expected }`, and the locator moved to the row.** It was `{ id, text, oracleLocator? }`. The shipped `distill_document.py` has the three fields, and the split is load-bearing: an oracle author handed one sentence of prose has to invent both a stimulus and an expected result before it can write an assertion. The locator moved onto `RoadmapStep` as `oracle` because there is exactly ONE per value — the thing that measures a value has to be a thing software can run and read a verdict off, and two would make "the oracle was red" ambiguous — with `supports` beside it.
+
+54. **`validate-shape` dropped `no-acceptance` and gained `observation-too-short`.** What a value must be observed to do is DISTILL's act; a shape check demanding obligations at ROADMAP time would refuse every roadmap for not having done a later wave's job. What ROADMAP can still ask is whether the observation says enough to be worked from, with nwave's own `MINIMUM_OBSERVATION_CHARACTERS` of 40 — measured rather than chosen, from the shortest real accepted-turn diagnostic in the shipped runner. The boundary is enforced twice: `acceptanceIsDistills` is a mechanical check on `decompose`'s own output.
+
+55. **The test path scope is read off one declared line in `design.md`.** Three consumers need it — the author writes there, the executor walls the oracle there, the manifest validator refuses a support outside it — so it is one line and not three constants. `testPathScope` refuses by name when it is absent rather than defaulting to `test/`, because a default would work silently for every project whose substrate lives there and mis-scope every project whose does not.
+
+56. **`support-ignored` is answered by an injected predicate, not by the VCS.** `git check-ignore` is the only thing that can say whether a repository ignores a path, and the VCS has no opinion: its registry tracks what it was told to track. A repository with no git in it answers `false`, because an unanswered ignore question is not a defect and refusing every support in a checkout without git would be inventing one.
+
+Source is ~23,100 lines: ~13,820 of implementation and ~9,280 of tests. The VCS module is ~6,390 of that, split ~3,600 implementation and ~2,800 tests; DISTILL is ~3,130, split ~2,290 and ~840; DELIVER is ~3,240, split ~1,850 and ~1,390; the roadmap example is ~2,450, split ~1,730 and ~720; the todo composition is ~2,250, split ~1,460 and ~800; the artifact store is ~420, split ~190 and ~230.
 
 ## Not built yet
 
 - **Emitting a Mastra dynamic-workflow JSON definition from a `Workflow<S>`.** Mastra's dynamic workflows (beta) are the design's "graph topology as data" already built: a JSON graph over registered agents, tools, and nested workflows, validated and persisted by `addDynamicWorkflow()`. The compiler currently emits live `createStep` closures; emitting the JSON definition instead is what would let the authoring workflow write a graph without writing source.
-- **An `author-at` leaf, which needs a `create-file` write the VCS does not have.** The `oracle` resolves an obligation's locator and reports `missing-at` when nothing answers it, which routes to a person. The design's other option is to author the missing acceptance test on the acceptance-designer's binding — and that cannot be built here honestly: `Effect` has `replace-symbol` and no way to create a file or a symbol that does not exist, and the write path's three operations all resolve an existing symbol id first. Faking it by rewriting a neighbouring symbol's body would put an assertion in a file the registry never observed. So the node is a person, and the leaf is listed here rather than stubbed.
-- **RED reads a string rather than an effect's result.** `run-tests.red` is a leaf and its `evidence` is a string the pipeline hands it. Its question is genuinely a judgement (`already-green` is "this acceptance test is vacuous", not "it passed"), so it is a leaf on purpose. The string is no longer invented — `src/examples/nwave/todo/evidence.ts` produces it by copying the run's project to a scratch directory, stripping every pending marker, and running the suite, so what the leaf classifies is the output the acceptance tests actually produce against the stub bodies. The built version makes the RED run an effect whose typed result the leaf reads; that is a graph change and it is not made.
 - **A real-model run.** Every command exists and every one of them refuses without a key. None has been run against a model. See [The real run](#the-real-run).
+- **A second oracle measurement.** `measure-oracle` runs the oracle once and reads one verdict, so a flaky oracle — red on its first run, green on its second — is indistinguishable from a stable one and the first answer is recorded as the fact. Running it twice would detect it and would double the cost of the one observation that is a fixed floor; nothing has measured how often it matters.
+- **A resume path for a parked ORACLE run.** Its block node takes one answer, `abandon`, and the composition does not offer it: a parked oracle run is read from the trail and the roadmap or the design is changed instead. The projection therefore reads every non-red run as `suspended`, which is exact — every block in that graph *is* a suspension, and the only route to its `reject` terminal is a person answering.
+- **A support that is itself a value.** The manifest admits whole-file supports and refuses a support that names the oracle, but nothing stops two values declaring the same support file, and nothing sequences who writes it first. In a roadmap where that happened the second author's write would land on the first's bytes and the `wholeFileStage` identity check would be the only thing standing between them.
 - **Derived `step_edges`.** The scheduler reads the `dependencies` the roadmap row declares, and the roadmap workflow's disjointness measurement is what adds the ones the author missed. The design's stronger version derives the DAG from symbol overlap *instead of* hand-authored edges, which would remove the highest-error part of roadmap authoring from the model. The measurement exists; the replacement does not.
-- **The proposal-shape binding.** `claudeCode` is the opaque shape: the agent edits the workspace through its own tools and the framework never sees the writes, so it cannot lease them, verify them, or roll them back — and a `conflict` is unrepresentable, because nothing crossed the effect boundary. The proposal shape returns the agent's writes as `replace-symbol` effects, which `vcsExecutor` now knows how to commit. The executor exists; the binding that would produce a proposal does not.
 - **`src/vcs`'s own remaining items**, in full in [`src/vcs/README.md`](./src/vcs/README.md#not-built-yet). The ones that matter to the framework: the **ast-grep pattern layer** and the **policy stage** it would carry (the stage is a stub that passes); the **LSP layer**, so there is no cross-file reference resolution and the typecheck stage shells out to `tsc` over the whole project; **coverage-refined impact**, so the test-impact graph is the static import graph alone; the **asynchronous verification tier**, so a slow test blocks a write rather than committing it `pending`; **wait-die** and **queued acquires**, so an acquire is fail-fast and hold-and-request has no fallback; **lease-level rollback**, so a lease whose second write fails leaves the first committed; **git export**; **cross-repository coordination**; and **authorization**, because a session is a string and any session may lease anything.
 - **The symbol-set-difference check.** `deliver.implement-to-the-design` carries no mechanical check, only a model refuting against the rule text. The symbol inventory that would make it a set difference over exported symbols now exists in `src/vcs/structural`; the check that consumes it does not.
-- **The authoring workflow that writes GRAPH rows.** Bootstrap step 4: requirement rows in, graph rows out, diffed against the hand-written graph. Nothing generates a graph; DISTILL, DELIVER and the roadmap workflow are all hand-written, which is what makes them the oracle. The roadmap-authoring workflow is a different thing that the design's table lists on the same line: it writes *roadmap* rows, not graph rows, and it is built.
+- **The authoring workflow that writes GRAPH rows.** Bootstrap step 4: requirement rows in, graph rows out, diffed against the hand-written graph. Nothing generates a graph; all four here are hand-written, which is what makes them the oracle. The roadmap-authoring workflow is a different thing that the design's table lists on the same line: it writes *roadmap* rows, not graph rows, and it is built.
 - **Graph topology as data.** Nodes and edges are TypeScript, not rows. Exhaustiveness is the compiler's red squiggle, not a constraint query. The design takes the middle path; this prototype takes the typed end of it.
 - **`symbol-diff.ts`.** The fourth mechanical check in the design's `checks/` listing. Its input, the symbol inventory, is now built; the check is not. See the symbol-set-difference item above.
 - **Escalation cost accounting.** `escalateTo` fires once after the attempt budget, as specified, but nothing measures cost per completed task — the open question the design says should be answered before the legibility argument is used to justify the approach.
