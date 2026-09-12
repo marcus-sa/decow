@@ -11,6 +11,9 @@
  *    `rejected`; a `suspend` node parks the run for a person and the graph
  *    branches on the typed decision they return.
  * 4. Effects are data. A step returns Effect[]; the compiled step executes them.
+ * 5. Repetition is a `loop` node with a required bound. A raw back edge in the
+ *    node map is refused. An unbounded loop is unrepresentable, because
+ *    enumeration needs a finite path space.
  *
  * This file is the contract. The graph is executed by compiling it to a Mastra
  * workflow (see ./compile.ts) and driving that through `createRun()`.
@@ -35,6 +38,19 @@ export type Terminal<S> =
 
 export const TERMINAL_KINDS = ["accepted", "rejected"] as const;
 
+/**
+ * What a `loop` tells its `absorb` hook when it leaves. This is the whole
+ * surface through which "the bound was reached" becomes something the graph
+ * can route on: the loop folds these two facts into the caller's state, and a
+ * branch after the loop reads them like any other decision input.
+ */
+export type LoopExit = {
+  /** How many times the body ran. At least 1: the body always runs once. */
+  iterations: number;
+  /** True when the body ran `max` times and `until` was still false. */
+  exhausted: boolean;
+};
+
 export type Node<S> =
   | {
       type: "step";
@@ -44,6 +60,29 @@ export type Node<S> =
     }
   | { type: "fanout"; steps: NodeId[]; join: NodeId }
   | { type: "branch"; on: (s: S) => string; edges: Record<string, NodeId> }
+  | {
+      /**
+       * Run the sub-graph at `body`, then evaluate `until`. True: leave for
+       * `next`. False with iterations below `max`: run the body again. False
+       * at `max`: leave for `next` anyway, with `exhausted: true` handed to
+       * `absorb`, so a branch after the loop can route the bound being hit.
+       *
+       * The body's boundary is declared, not inferred: a body node whose edge
+       * names THIS loop's id is the iteration boundary, and that is the only
+       * edge allowed out of the body. `graphDefects` proves it.
+       *
+       * `until` is a decision function. It is pure, it reads no clock and no
+       * RNG, and it is covered by the no-nondeterminism scanner like a
+       * branch's `on`.
+       */
+      type: "loop";
+      body: NodeId;
+      until: (s: S) => boolean;
+      /** Required and a positive integer. An unbounded loop cannot be built. */
+      max: number;
+      absorb: (s: S, exit: LoopExit) => S;
+      next: NodeId;
+    }
   | {
       /**
        * Park the run for a person. `reason` is a closed enum per workflow and
@@ -93,6 +132,23 @@ export const suspend = <S, R>(spec: {
   next: spec.next,
 });
 
+/**
+ * The bounded-repetition constructor. There is no unbounded form: `max` is a
+ * required field, and `graphDefects` rejects anything that is not a positive
+ * integer, so the compiler never sees a loop whose path space is infinite.
+ *
+ * `absorb` is where the exit facts enter the graph. The usual shape is
+ * `(s, exit) => ({ ...s, iterations: exit.iterations, stuck: exit.exhausted })`,
+ * with a branch on `next` routing `stuck` to a person.
+ */
+export const loop = <S>(spec: {
+  body: NodeId;
+  until: (s: S) => boolean;
+  max: number;
+  absorb: (s: S, exit: LoopExit) => S;
+  next: NodeId;
+}): Node<S> => ({ type: "loop", ...spec });
+
 /** Executes the effects a step returned and feeds typed results back. */
 export type EffectExecutor = (effects: Effect[]) => Promise<EffectResult[]>;
 
@@ -141,7 +197,7 @@ export async function run<S>(
   const handle = await compiled.createRun();
   const result = await handle.start({
     inputData: state,
-    initialState: { trace: [] },
+    initialState: { trace: [], loops: {} },
     outputOptions: { includeState: true },
   });
   return outcome<S>(result as unknown as Record<string, unknown>, handle.runId);

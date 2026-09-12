@@ -8,9 +8,10 @@
 import { describe, expect, test } from "bun:test";
 import { createWorkflowStateReader } from "@mastra/core/workflows";
 import { z } from "zod";
+import { visitCount } from "../harness/matchers.ts";
 import { compileWorkflow, workflowRuntime } from "./compile.ts";
 import type { Effect, EffectResult } from "./effects.ts";
-import { branch, resume, run, suspend, type Node, type Workflow } from "./workflow.ts";
+import { branch, loop, resume, run, suspend, type Node, type Workflow } from "./workflow.ts";
 
 type S = { n: number; note?: string; answer?: "left" | "right" };
 
@@ -138,7 +139,7 @@ describe("graph bugs throw before anything runs", () => {
     ).toThrow(/dangling edge: a -> nowhere/);
   });
 
-  test("a back edge names the edge and says cycles are out of scope", () => {
+  test("a raw back edge names the edge and points at the loop node", () => {
     const cyclic: Workflow<S> = {
       start: "a",
       nodes: {
@@ -151,7 +152,7 @@ describe("graph bugs throw before anything runs", () => {
       },
     };
     expect(compile(cyclic)).toThrow(
-      /back edge: gate -> a — cycles are not supported by the Mastra compiler in this cut/,
+      /back edge: gate -> a — repetition goes through a bounded loop node, not a raw back edge/,
     );
   });
 
@@ -256,5 +257,236 @@ describe("suspension is snapshot-backed", () => {
     expect(restarted.status).toBe("success");
     if (restarted.status !== "success" || first.status !== "success") return;
     expect(restarted.result).toEqual(first.result);
+  });
+});
+
+describe("loops are bounded, and the bound is part of the graph", () => {
+  type L = { n: number; answer?: "bump" | "hold"; iterations?: number; stuck?: boolean };
+
+  const Answer = z.object({ answer: z.enum(["bump", "hold"]) });
+
+  /** spin: ask a person, apply their answer, iterate. Bounded at `max`. */
+  const spinning = (max: number, until: (s: L) => boolean): Workflow<L> => ({
+    start: "spin",
+    nodes: {
+      spin: loop<L>({
+        body: "ask",
+        until,
+        max,
+        absorb: (s, exit) => ({ ...s, iterations: exit.iterations, stuck: exit.exhausted }),
+        next: "done",
+      }),
+      ask: suspend<L, z.infer<typeof Answer>>({
+        reason: () => "needs-a-person",
+        trail: (s) => [{ n: s.n }],
+        resumeSchema: Answer,
+        absorb: (s, a) => ({ ...s, answer: a.answer }),
+        next: "apply",
+      }),
+      apply: {
+        type: "step",
+        run: async (s) => ({ state: { ...s, n: s.answer === "bump" ? s.n + 1 : s.n }, effects: [] }),
+        absorb: (s) => s,
+        next: "spin",
+      },
+      done: { type: "terminal", done: (s) => ({ kind: "accepted", state: s }) },
+    },
+  });
+
+  const counting = (max: number, target: number): Workflow<L> => ({
+    start: "spin",
+    nodes: {
+      spin: loop<L>({
+        body: "bump",
+        until: (s) => s.n >= target,
+        max,
+        absorb: (s, exit) => ({ ...s, iterations: exit.iterations, stuck: exit.exhausted }),
+        next: "done",
+      }),
+      bump: {
+        type: "step",
+        run: async (s) => ({ state: { ...s, n: s.n + 1 }, effects: [] }),
+        absorb: (s) => s,
+        next: "spin",
+      },
+      done: { type: "terminal", done: (s) => ({ kind: "accepted", state: s }) },
+    },
+  });
+
+  test("the body runs until the condition holds, and the loop id marks each pass", async () => {
+    const outcome = await run<L>(counting(10, 3), { n: 0 }, noEffects);
+    expect(outcome.kind === "terminal" && outcome.terminal.state.n).toBe(3);
+    expect(outcome.trace).toEqual(["spin", "bump", "spin", "bump", "spin", "bump", "done"]);
+    expect(visitCount(outcome.trace, "spin")).toBe(3);
+  });
+
+  test("the body always runs once, even when the condition already holds", async () => {
+    const outcome = await run<L>(counting(10, 0), { n: 0 }, noEffects);
+    expect(outcome.trace).toEqual(["spin", "bump", "done"]);
+    expect(outcome.kind === "terminal" && outcome.terminal.state.iterations).toBe(1);
+  });
+
+  test("reaching the bound leaves the loop with exhausted true, not with an exception", async () => {
+    const outcome = await run<L>(counting(2, 99), { n: 0 }, noEffects);
+    expect(outcome.kind).toBe("terminal");
+    expect(outcome.kind === "terminal" && outcome.terminal.state.iterations).toBe(2);
+    expect(outcome.kind === "terminal" && outcome.terminal.state.stuck).toBe(true);
+    expect(visitCount(outcome.trace, "bump")).toBe(2);
+  });
+
+  test("finishing inside the bound leaves with exhausted false", async () => {
+    const outcome = await run<L>(counting(5, 2), { n: 0 }, noEffects);
+    expect(outcome.kind === "terminal" && outcome.terminal.state.stuck).toBe(false);
+    expect(outcome.kind === "terminal" && outcome.terminal.state.iterations).toBe(2);
+  });
+
+  test("a suspension inside a loop body resumes into the SAME iteration", async () => {
+    const wf = spinning(3, (s) => s.n >= 2);
+    const parked = await run<L>(wf, { n: 0 }, noEffects);
+
+    expect(parked.kind === "suspended" && parked.reason).toBe("needs-a-person");
+    expect(parked.trace).toEqual(["spin", "ask"]);
+
+    // Resuming picks up AFTER `ask` in iteration 1 — `apply` runs before the
+    // next `spin`. A restart of the iteration would show `spin` twice in a row.
+    const second = await resume<L>(wf, parked.runId, { answer: "bump" }, noEffects);
+    expect(second.kind).toBe("suspended");
+    expect(second.trace).toEqual(["spin", "ask", "apply", "spin", "ask"]);
+
+    const third = await resume<L>(wf, parked.runId, { answer: "bump" }, noEffects);
+    expect(third.trace).toEqual(["spin", "ask", "apply", "spin", "ask", "apply", "done"]);
+    expect(third.kind === "terminal" && third.terminal.state.n).toBe(2);
+    // The count survived two suspensions: it lives in the engine's state.
+    expect(third.kind === "terminal" && third.terminal.state.iterations).toBe(2);
+    expect(third.kind === "terminal" && third.terminal.state.stuck).toBe(false);
+  });
+
+  test("a loop nested in a loop counts from zero on every re-entry", async () => {
+    type N = { inner: number; outer: number; log: string[] };
+    const wf: Workflow<N> = {
+      start: "outer",
+      nodes: {
+        outer: loop<N>({
+          body: "inner",
+          until: (s) => s.outer >= 2,
+          max: 4,
+          absorb: (s, exit) => ({ ...s, log: [...s.log, `outer=${exit.iterations}`] }),
+          next: "done",
+        }),
+        inner: loop<N>({
+          body: "bump-inner",
+          until: (s) => s.inner >= 2,
+          max: 4,
+          absorb: (s, exit) => ({ ...s, log: [...s.log, `inner=${exit.iterations}`] }),
+          next: "bump-outer",
+        }),
+        "bump-inner": {
+          type: "step",
+          run: async (s) => ({ state: { ...s, inner: s.inner + 1 }, effects: [] }),
+          absorb: (s) => s,
+          next: "inner",
+        },
+        "bump-outer": {
+          type: "step",
+          run: async (s) => ({ state: { ...s, outer: s.outer + 1, inner: 0 }, effects: [] }),
+          absorb: (s) => s,
+          next: "outer",
+        },
+        done: { type: "terminal", done: (s) => ({ kind: "accepted", state: s }) },
+      },
+    };
+
+    const outcome = await run<N>(wf, { inner: 0, outer: 0, log: [] }, noEffects);
+    expect(outcome.kind === "terminal" && outcome.terminal.state.log).toEqual([
+      "inner=2",
+      "inner=2",
+      "outer=2",
+    ]);
+    expect(visitCount(outcome.trace, "inner")).toBe(4);
+    expect(visitCount(outcome.trace, "outer")).toBe(2);
+  });
+});
+
+describe("malformed loops throw before anything runs", () => {
+  type L = { n: number };
+  const compile = <T>(wf: Workflow<T>) => () => compileWorkflow(wf, noEffects);
+  const terminal: Node<L> = { type: "terminal", done: (s) => ({ kind: "accepted", state: s }) };
+  const step = (next: string): Node<L> => ({
+    type: "step",
+    run: async (s) => ({ state: s, effects: [] }),
+    absorb: (s) => s,
+    next,
+  });
+  const spin = (over: Partial<Parameters<typeof loop<L>>[0]> = {}): Node<L> =>
+    loop<L>({ body: "body", until: () => true, max: 2, absorb: (s) => s, next: "done", ...over });
+
+  test("max 0 names the bound and says why it cannot be enumerated", () => {
+    expect(
+      compile<L>({
+        start: "spin",
+        nodes: { spin: spin({ max: 0 }), body: step("spin"), done: terminal },
+      }),
+    ).toThrow(/loop bound must be a positive integer: spin has max 0/);
+  });
+
+  test("a fractional bound is refused too", () => {
+    expect(
+      compile<L>({
+        start: "spin",
+        nodes: { spin: spin({ max: 1.5 }), body: step("spin"), done: terminal },
+      }),
+    ).toThrow(/loop bound must be a positive integer: spin has max 1.5/);
+  });
+
+  test("a body with no edge back to the loop is not a body", () => {
+    expect(
+      compile<L>({
+        start: "spin",
+        nodes: { spin: spin(), body: step("done"), done: terminal },
+      }),
+    ).toThrow(/loop body never returns to the loop: spin -> body has no path back to spin/);
+  });
+
+  test("a body that escapes names the edge that leaves", () => {
+    expect(
+      compile<L>({
+        start: "spin",
+        nodes: {
+          spin: spin(),
+          body: {
+            type: "branch",
+            on: () => "again",
+            edges: { again: "spin", out: "done" },
+          },
+          done: terminal,
+        },
+      }),
+    ).toThrow(/loop body escapes: body -> done leaves the body of spin/);
+  });
+
+  test("an exit that re-enters the body is refused", () => {
+    expect(
+      compile<L>({
+        start: "spin",
+        nodes: { spin: spin({ next: "body" }), body: step("spin"), done: terminal },
+      }),
+    ).toThrow(/loop exit re-enters its own body: spin -> body/);
+  });
+
+  test("a jump into the middle of a body is refused", () => {
+    expect(
+      compile<L>({
+        start: "gate",
+        nodes: {
+          gate: branch<L, "in" | "spin">((s) => (s.n > 0 ? "in" : "spin"), {
+            in: "body",
+            spin: "spin",
+          }),
+          spin: spin(),
+          body: step("spin"),
+          done: terminal,
+        },
+      }),
+    ).toThrow(/loop body entered from outside: gate -> body is inside the body of spin/);
   });
 });

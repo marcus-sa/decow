@@ -1,15 +1,18 @@
 /**
  * Compiles a `Workflow<S>` node map to a Mastra workflow.
  *
- * The node map is an arbitrary directed acyclic graph; Mastra's builder is a
- * linear chain of combinators. The bridge is the continuation: a chain runs
- * until it reaches a branch, and each edge of that branch compiles to a NESTED
- * workflow carrying the rest of that path. `Workflow` implements `Step`, so a
- * nested workflow is a legal branch target. A node reachable from two branches
- * is therefore compiled once per path, under a per-path workflow id.
+ * The node map is a directed graph whose only cycles are declared `loop`
+ * nodes; Mastra's builder is a linear chain of combinators. The bridge is the
+ * continuation: a chain runs until it reaches a branch, and each edge of that
+ * branch compiles to a NESTED workflow carrying the rest of that path.
+ * `Workflow` implements `Step`, so a nested workflow is a legal branch target,
+ * a legal `.dountil()` body, and a legal `.parallel()` member. A node
+ * reachable from two branches is compiled once per path, under a path-unique
+ * workflow id.
  *
- * Cycles are out of scope for this cut: `graphDefects` rejects a back edge and
- * the compiler refuses to build the graph, rather than mis-compiling it.
+ * Raw back edges stay refused: `graphDefects` names them and the compiler will
+ * not build the graph. Repetition goes through `loop`, whose bound keeps the
+ * path space finite.
  *
  * The mapping, one line each:
  *
@@ -19,6 +22,8 @@
  *   branch    -> an entry step (trace + edge guard), .branch() with one
  *                predicate per edge key, then a .map() that unwraps the
  *                single executed target's output
+ *   loop      -> .dountil(body, until || iterationCount >= max) then an exit
+ *                step that hands { iterations, exhausted } to `absorb`
  *   suspend   -> createStep with suspendSchema/resumeSchema; suspend() on the
  *                first pass, absorb the person's answer on resume
  *   terminal  -> createStep returning the Terminal; `rejected` goes through
@@ -43,15 +48,22 @@ export const SuspensionPayload = z.object({
 export type SuspensionPayload = z.infer<typeof SuspensionPayload>;
 
 /**
- * The compiled workflow's Mastra state. It carries the trace and nothing else:
- * state survives suspend/resume, which is exactly the lifetime the provenance
- * record needs. The caller's `S` flows as step input/output, not as state.
+ * The compiled workflow's Mastra state. It carries the provenance record and
+ * the live loop counters, and nothing else: state survives suspend/resume,
+ * which is exactly the lifetime both need. A run that parks inside a loop body
+ * and is answered three days later resumes into the same iteration, with the
+ * same count. The caller's `S` flows as step input/output, not as state.
  */
-const TraceState = z.object({ trace: z.array(z.string()) });
+const RunState = z.object({
+  trace: z.array(z.string()),
+  /** Iterations of each live loop. The loop's own exit step resets its entry. */
+  loops: z.record(z.string(), z.number()).optional(),
+});
+type RunState = z.infer<typeof RunState>;
 
 /** Recover the trace from a Mastra run result's `state`. */
 export const readTrace = (state: unknown): NodeId[] =>
-  TraceState.safeParse(state).data?.trace ?? [];
+  RunState.safeParse(state).data?.trace ?? [];
 
 /**
  * `S` is caller-defined, so every schema the compiler hands Mastra is
@@ -79,12 +91,14 @@ export const changedKeys = <S>(before: S, after: S): Partial<S> => {
   return patch as Partial<S>;
 };
 
+type SetState = (s: RunState) => Promise<void> | void;
+
 const appendTrace = async (
-  state: { trace: string[] } | undefined,
-  setState: (s: { trace: string[] }) => Promise<void> | void,
+  state: RunState | undefined,
+  setState: SetState,
   ...ids: NodeId[]
 ): Promise<void> => {
-  await setState({ trace: [...(state?.trace ?? []), ...ids] });
+  await setState({ trace: [...(state?.trace ?? []), ...ids], loops: state?.loops ?? {} });
 };
 
 /** Snapshots live here, so a parked run can be resumed from a fresh compile. */
@@ -95,6 +109,7 @@ export const workflowRuntime = (): Mastra => {
 };
 
 type StepNode<S> = Extract<Node<S>, { type: "step" }>;
+type LoopNode<S> = Extract<Node<S>, { type: "loop" }>;
 
 /**
  * Mastra's builder threads the flowing schema through its generics to check
@@ -110,8 +125,17 @@ type Chain = {
   parallel: (steps: unknown[]) => Chain;
   map: (fn: unknown) => Chain;
   branch: (entries: unknown[]) => Chain;
+  dountil: (step: unknown, condition: unknown) => Chain;
   commit: () => MastraWorkflow;
 };
+
+const segment = <S>(id: string): Chain =>
+  createWorkflow({
+    id,
+    inputSchema: opaque<S>(),
+    outputSchema: opaque<unknown>(),
+    stateSchema: RunState,
+  }) as unknown as Chain;
 
 /** A `step` node: run it, execute what it asked for, absorb the results. */
 const stepFor = <S>(
@@ -124,7 +148,7 @@ const stepFor = <S>(
     id,
     inputSchema: opaque<S>(),
     outputSchema: opaque<S>(),
-    stateSchema: TraceState,
+    stateSchema: RunState,
     execute: async ({ inputData, state, setState }) => {
       // Fanout sub-steps run concurrently, and concurrent setState calls clobber
       // one another, so they do not trace themselves: the fanout merge appends
@@ -147,14 +171,7 @@ const fanoutFor = <S>(
   wf: Workflow<S>,
   execute: EffectExecutor,
 ): MastraWorkflow =>
-  (
-    createWorkflow({
-      id: `fanout:${id}`,
-      inputSchema: opaque<S>(),
-      outputSchema: opaque<S>(),
-      stateSchema: TraceState,
-    }) as unknown as Chain
-  )
+  segment<S>(`fanout:${id}`)
     .parallel(
       steps.map((sub) => stepFor(sub, wf.nodes[sub] as StepNode<S>, execute, { traced: false })),
     )
@@ -167,8 +184,8 @@ const fanoutFor = <S>(
       }: {
         inputData: Record<NodeId, Partial<S>>;
         getInitData: <T>() => T;
-        state: { trace: string[] } | undefined;
-        setState: (s: { trace: string[] }) => Promise<void>;
+        state: RunState | undefined;
+        setState: SetState;
       }) => {
         await appendTrace(state, setState, id, ...steps);
         return steps.reduce<S>((acc, sub) => ({ ...acc, ...inputData[sub] }), getInitData<S>());
@@ -182,7 +199,7 @@ const suspendFor = <S>(id: NodeId, node: Extract<Node<S>, { type: "suspend" }>) 
     id,
     inputSchema: opaque<S>(),
     outputSchema: opaque<S>(),
-    stateSchema: TraceState,
+    stateSchema: RunState,
     suspendSchema: SuspensionPayload,
     resumeSchema: node.resumeSchema,
     execute: async ({ inputData, resumeData, suspend, state, setState }) => {
@@ -200,7 +217,7 @@ const terminalFor = <S>(id: NodeId, node: Extract<Node<S>, { type: "terminal" }>
     id,
     inputSchema: opaque<S>(),
     outputSchema: opaque<Terminal<S>>(),
-    stateSchema: TraceState,
+    stateSchema: RunState,
     execute: async ({ inputData, state, setState, bail }) => {
       await appendTrace(state, setState, id);
       const terminal = node.done(inputData);
@@ -217,7 +234,7 @@ const branchEntryFor = <S>(id: NodeId, node: Extract<Node<S>, { type: "branch" }
     id,
     inputSchema: opaque<S>(),
     outputSchema: opaque<S>(),
-    stateSchema: TraceState,
+    stateSchema: RunState,
     execute: async ({ inputData, state, setState }) => {
       const key = node.on(inputData);
       if (!node.edges[key]) throw new Error(`graph bug: ${id} has no edge for ${key}`);
@@ -227,39 +244,131 @@ const branchEntryFor = <S>(id: NodeId, node: Extract<Node<S>, { type: "branch" }
   });
 
 /**
+ * The head of a loop body: count this iteration and mark it in the trace, so a
+ * loop's id appears once per pass and `visitCount(trace, loopId)` is the number
+ * of iterations run.
+ */
+const loopIterationFor = (id: NodeId) =>
+  createStep({
+    id: `${id}#iteration`,
+    inputSchema: opaque<unknown>(),
+    outputSchema: opaque<unknown>(),
+    stateSchema: RunState,
+    execute: async ({ inputData, state, setState }) => {
+      const loops = state?.loops ?? {};
+      await setState({
+        trace: [...(state?.trace ?? []), id],
+        loops: { ...loops, [id]: (loops[id] ?? 0) + 1 },
+      });
+      return inputData;
+    },
+  });
+
+/**
+ * The step after the loop: hand the exit facts to `absorb`.
+ *
+ * `exhausted` needs no counter. The loop leaves for exactly two reasons —
+ * `until` held, or the bound was reached with `until` still false — so
+ * `!until(final)` is the second one, exactly. The counter is read for
+ * `iterations` and then reset, so a loop nested inside another loop counts
+ * from zero on every re-entry rather than accumulating across the outer pass.
+ */
+const loopExitFor = <S>(id: NodeId, node: LoopNode<S>) =>
+  createStep({
+    id: `${id}#exit`,
+    inputSchema: opaque<S>(),
+    outputSchema: opaque<S>(),
+    stateSchema: RunState,
+    execute: async ({ inputData, state, setState }) => {
+      const loops = state?.loops ?? {};
+      const iterations = loops[id] ?? 0;
+      await setState({ trace: state?.trace ?? [], loops: { ...loops, [id]: 0 } });
+      return node.absorb(inputData, { iterations, exhausted: !node.until(inputData) });
+    },
+  });
+
+/**
+ * A body path that reaches the loop's own id with nothing in between — a
+ * branch edge that means "iterate now". Mastra needs a step there; this one
+ * passes the state through untouched and does not trace.
+ */
+const continueFor = (segmentId: string) =>
+  createStep({
+    id: `${segmentId}#continue`,
+    inputSchema: opaque<unknown>(),
+    outputSchema: opaque<unknown>(),
+    stateSchema: RunState,
+    execute: async ({ inputData }) => inputData,
+  });
+
+/**
+ * One iteration of a loop: the counter, then the body sub-graph compiled with
+ * the loop's own id as its stop edge.
+ */
+const loopBodyFor = <S>(
+  id: NodeId,
+  node: LoopNode<S>,
+  wf: Workflow<S>,
+  execute: EffectExecutor,
+  segmentId: string,
+): MastraWorkflow =>
+  segment<S>(`${segmentId}>loop:${id}`)
+    .then(loopIterationFor(id))
+    .then(compileSegment(wf, node.body, `${segmentId}>loop:${id}:body`, execute, id))
+    .commit();
+
+/**
  * Compile one segment: the chain from `start` up to and including the first
- * branch or terminal it reaches. `segmentId` makes the nested workflow ids
- * unique per path, so two edges of one branch pointing at the same node
- * compile to two distinct workflows rather than colliding.
+ * branch or terminal it reaches, or up to `stopAt` when compiling a loop body.
+ *
+ * `segmentId` is the path taken to get here, so every nested workflow id is
+ * unique. Two edges of one branch pointing at the same node compile to two
+ * distinct workflows, and a node reachable by two different paths does too.
  */
 const compileSegment = <S>(
   wf: Workflow<S>,
   start: NodeId,
   segmentId: string,
   execute: EffectExecutor,
+  /** The loop id whose continue edge ends this segment, when inside a body. */
+  stopAt?: NodeId,
 ): MastraWorkflow => {
-  let builder = createWorkflow({
-    id: segmentId,
-    inputSchema: opaque<S>(),
-    outputSchema: opaque<Terminal<S>>(),
-    stateSchema: TraceState,
-  }) as unknown as Chain;
+  let builder = segment<S>(segmentId);
+  let emitted = 0;
+  const push = (step: unknown): void => {
+    builder = builder.then(step);
+    emitted += 1;
+  };
 
   let cursor = start;
   for (;;) {
+    if (cursor === stopAt) {
+      // The loop's iteration boundary. An empty segment still needs a step.
+      if (emitted === 0) push(continueFor(segmentId));
+      return builder.commit();
+    }
     const id = cursor;
     const node = wf.nodes[id] as Node<S>;
     switch (node.type) {
       case "step":
-        builder = builder.then(stepFor(id, node, execute, { traced: true }));
+        push(stepFor(id, node, execute, { traced: true }));
         cursor = node.next;
         break;
       case "fanout":
-        builder = builder.then(fanoutFor(id, node.steps, wf, execute));
+        push(fanoutFor(id, node.steps, wf, execute));
         cursor = node.join;
         break;
       case "suspend":
-        builder = builder.then(suspendFor(id, node));
+        push(suspendFor(id, node));
+        cursor = node.next;
+        break;
+      case "loop":
+        builder = builder.dountil(
+          loopBodyFor(id, node, wf, execute, segmentId),
+          async ({ inputData, iterationCount }: { inputData: S; iterationCount: number }) =>
+            node.until(inputData) || iterationCount >= node.max,
+        );
+        push(loopExitFor(id, node));
         cursor = node.next;
         break;
       case "branch": {
@@ -269,7 +378,13 @@ const compileSegment = <S>(
           .branch(
             keys.map((key) => [
               async ({ inputData }: { inputData: S }) => node.on(inputData) === key,
-              compileSegment(wf, node.edges[key] as NodeId, `${id}=${key}`, execute),
+              compileSegment(
+                wf,
+                node.edges[key] as NodeId,
+                `${segmentId}>${id}=${key}`,
+                execute,
+                stopAt,
+              ),
             ]),
           )
           // Exactly one target ran; its output is keyed by that target's id.
@@ -279,7 +394,7 @@ const compileSegment = <S>(
         return builder.commit();
       }
       case "terminal":
-        builder = builder.then(terminalFor(id, node));
+        push(terminalFor(id, node));
         return builder.commit();
     }
   }

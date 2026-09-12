@@ -27,7 +27,7 @@ const BANNED = ["Date.now", "Math.random", "new Date("] as const;
  */
 const scanned = async (): Promise<string[]> => {
   const files = new Set<string>([join(SRC, "core/workflow.ts"), join(SRC, "core/compile.ts")]);
-  for (const pattern of ["examples/**/graph.ts", "examples/**/classify.ts"]) {
+  for (const pattern of ["examples/**/graph.ts", "examples/**/classify.ts", "examples/**/steps.ts"]) {
     for await (const match of new Glob(pattern).scan({ cwd: SRC, absolute: true })) {
       files.add(match);
     }
@@ -45,7 +45,8 @@ describe("no nondeterminism inside the graph", () => {
     expect(files).toContain("core/workflow.ts");
     expect(files).toContain("core/compile.ts");
     expect(files).toContain("examples/distill/graph.ts");
-    expect(files.length).toBeGreaterThanOrEqual(4);
+    expect(files).toContain("examples/deliver/graph.ts");
+    expect(files.length).toBeGreaterThanOrEqual(6);
   });
 
   test("no scanned file reads a clock or an RNG", async () => {
