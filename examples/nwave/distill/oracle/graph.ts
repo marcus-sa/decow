@@ -1,7 +1,7 @@
 /**
  * DISTILL, second half: the oracle is authored, and SOFTWARE measures it.
  *
- * `des oracle --value N` is two things and one step. Between authoring and
+ * Authoring and measuring are two things and one step. Between authoring and
  * measuring RED the caller has no decision to make, and between MEASURED and
  * JUDGED it deliberately buys no pre-craft judge: that would be a fourth model
  * boundary, and the incident that would justify one — a judge approving a
@@ -31,12 +31,14 @@
  *                   +- blocked -> human -> human.route -> rejected
  *
  * THE MEASUREMENT IS NOT A LEAF, and that is the load-bearing shape rather
- * than an optimisation. The two roles that hold an oracle — its author and its
- * reviewer — cannot run it: the author declares `Read, Edit` and the reviewer
- * an enforced empty tool set. So "this oracle fails on its assertion and not on
- * its scaffolding" is a property the SOFTWARE owns and measures, and observing
- * an execution is a fixed floor rather than a rigor knob. A leaf asked the same
- * question would be a second source of truth for a fact the runner produced.
+ * than an optimisation. The author cannot run its own oracle: `author-oracle`
+ * holds no tools and returns file bodies, and what executes them is the
+ * consumer's declared `commands.oracle`, read back through the JUnit reader as
+ * `green | red | broken | indeterminate`. So "this oracle fails on its
+ * assertion and not on its scaffolding" is a property the SOFTWARE owns and
+ * measures, and observing an execution is a fixed floor rather than a rigor
+ * knob. A leaf asked the same question would be a second source of truth for a
+ * fact the runner produced. It is `des oracle`'s software-measures rule.
  *
  * `green` is a person's, not a pass. An oracle that passes before any
  * production code exists proves nothing; it is the vacuous-oracle signal, and

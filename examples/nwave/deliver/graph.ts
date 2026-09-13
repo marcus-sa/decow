@@ -18,12 +18,12 @@
  * edge would make the path space the size of the suite.
  *
  * THE CYCLE STARTS AT `implement`, and there is no RED node ahead of it. RED is
- * a fact this graph READS rather than one it establishes: `des oracle` authored
- * the oracle, software executed it, and the recorded verdict was `red` before
- * this step was ever ready (`examples/nwave/distill/oracle/`). A step with no
- * recorded red oracle never becomes ready, so "no edge bypasses RED" is a
- * readiness precondition here rather than a node — see `../distill/README` in
- * the nwave example's own README.
+ * a fact this graph READS rather than one it establishes: the oracle graph
+ * authored the oracle, software executed it, and the recorded verdict was
+ * `red` before this step was ever ready (`examples/nwave/distill/oracle/`).
+ * A step with no recorded red oracle never becomes ready, so "no edge
+ * bypasses RED" is a readiness precondition here rather than a node — see
+ * `../distill/README` in the nwave example's own README.
  *
  * `gates` is NOT a leaf either, and for the same reason `run-tests` is not:
  * whether the quality gate found anything is what RUNNING it answers. The node

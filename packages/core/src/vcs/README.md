@@ -248,11 +248,12 @@ What changes:
 One oracle, executed, with a verdict read off it. It takes no lease, changes
 nothing, and its interesting answer is a FAILURE.
 
-The reason it is here rather than in a leaf is the rule the shipped nwave
-runner names `boundary:software-measures-model-decides`: the two roles that
-hold an oracle — its author, `Read, Edit`, and its reviewer, an enforced empty
-tool set — cannot run it. So "this oracle fails on its assertion and not on its
-scaffolding" is a property this module owns and measures.
+The reason it is here rather than in a leaf is that an oracle's author must not
+be the thing that decides it is red. The author holds no tools and returns file
+bodies; what executes them is the consumer's declared `commands.oracle`. So
+"this oracle fails on its assertion and not on its scaffolding" is a property
+this module owns and measures. It mirrors the rule nwave names
+`boundary:software-measures-model-decides`.
 
 Exit status alone cannot answer it, because a runner exits non-zero for both a
 genuine assertion failure and an oracle that errored in its own scaffolding.

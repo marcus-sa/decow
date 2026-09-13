@@ -30,10 +30,11 @@
  * output sees it in order to FIX it, which is judgement and stays a leaf.
  *
  * There is no leaf for RED either, for the same reason one layer further out.
- * `des oracle` authored the oracle and SOFTWARE executed it: the two roles that
- * hold an oracle cannot run it, so "this oracle fails on its assertion and not
- * on its scaffolding" is a property the runner owns and measures. The verdict
- * is a row this cycle reads, never a judgement it makes.
+ * The oracle graph authored the oracle and SOFTWARE executed it: the author
+ * holds no tools and the consumer's declared `commands.oracle` is what ran it,
+ * so "this oracle fails on its assertion and not on its scaffolding" is a
+ * property the runner owns and measures. The verdict is a row this cycle
+ * reads, never a judgement it makes.
  *
  * Nothing else here runs a test, writes a symbol, or shells out. The leaves
  * are classifications over evidence the state carries, and `implement`'s

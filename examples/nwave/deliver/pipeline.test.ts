@@ -77,9 +77,10 @@ const source = (name: string, value: number) =>
   `export function ${name}(): number {\n  return ${value};\n}\n`;
 
 /**
- * The step's oracle, as `des oracle` left it: authored, ACTIVE, and measured
- * red before the step was ever ready. It asserts a value the production symbol
- * does not return yet, so it is genuinely red until `implement` writes one.
+ * The step's oracle, as the oracle graph left it: authored, ACTIVE, and
+ * measured red before the step was ever ready. It asserts a value the
+ * production symbol does not return yet, so it is genuinely red until
+ * `implement` writes one.
  */
 const oracleFor = (name: string, value: number) =>
   `import { expect, test } from "bun:test";\nimport { ${name} } from "./${name}.ts";\n\n` +

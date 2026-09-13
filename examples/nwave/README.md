@@ -164,21 +164,32 @@ and it is therefore the only route to the gate's own `invalid` edge.
 Mirrors nwave's `des oracle --value N` step. Same note as above: nothing here
 depends on `des`, and the shipped step is what the graph is modelled on.
 
-Two things and one step. `author-oracle` runs on the acceptance designer's
-binding and returns `authored | cannot-express`; then a `write-file` per
-declared path lands the oracle and its supports under a path-scope lease; then
+Two things and one step. `author-oracle` **holds no tools** — the todo target
+binds it to the structured-output binding, so the prompt carries the
+observation, the obligations, the oracle locator, the supports and the design,
+and the file bodies come back as payload. Then a `write-file` per declared path
+lands the oracle and its supports under a path-scope lease covering the
+target's declared test paths — `_designer_owns` as a lease rather than as a
+tool grant, so a byte outside the scope is `rejected { by: "contract" }`. Then
 **software executes the oracle** and reads a verdict off it.
+
+The `claudeCode` binding is the other way to fill that leaf: a subagent reads
+and edits a scratch copy, the diff afterwards becomes the effects, and they
+arrive on `payload.proposal` instead of on `files`. `smoke.ts` fills it that
+way; the todo target does not. The node reads whichever arrived, so both shapes
+reach the write with the same meaning.
 
 What executes it is the consumer's declared `commands.oracle` — the framework
 knows the job and the target names the runner — and the verdict is read off the
 JUnit report that command was told to write. See
 [Declared commands](../../README.md#declared-commands).
 
-That last part is the whole arrangement. The two roles that hold an oracle —
-its author, `Read, Edit`, and its reviewer, an enforced empty tool set —
-*cannot run it*, so "this oracle fails on its assertion and not on its
-scaffolding" is a property the runner owns and measures. The shipped code names
-it `boundary:software-measures-model-decides`. There is no pre-craft oracle
+That last part is the whole arrangement. The author of an oracle must not be
+the thing that decides it is red, and here it cannot be: the leaf holds no
+tools, and the declared command is what runs the test. So "this oracle fails on
+its assertion and not on its scaffolding" is a property the runner owns and
+measures. It is `des oracle`'s software-measures rule, which nwave names
+`boundary:software-measures-model-decides`. There is no pre-craft oracle
 reviewer between authoring and judging: that is a fourth model boundary, and
 the incident that would justify one — a judge approving a broken oracle in 27
 seconds — is answered by a measurement that is free.

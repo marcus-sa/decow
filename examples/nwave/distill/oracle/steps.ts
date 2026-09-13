@@ -1,18 +1,31 @@
 /**
  * The oracle graph, leaf side. One leaf, and it is the acceptance designer.
  *
- * `des oracle --value N` dispatches `nw-acceptance-designer` with tools
- * `Read, Edit` only, scoped so it may write nothing outside the subject's test
- * paths. It returns a typed `accepted | rejected` outcome, and `rejected` has
- * a precise meaning rather than "I could not": the constructive chain cannot
- * be expressed through the declared public port WITHOUT INVENTING a field, an
- * operation, a fixture fact or an expected result. That is a finding about the
- * DESIGN, and the runner routes it to the design's owner.
+ * THE LEAF HOLDS NO TOOLS. `targets/todo/.des/models.ts` binds `author-oracle`
+ * to the structured-output binding (`src/bindings/mastra.ts`), so the turn is
+ * one call: the prompt below carries the observation, the obligations, the
+ * oracle locator, the supports and the design source, and what comes back is
+ * the oracle's body and each support's body as payload. `write-oracle` turns
+ * those bodies into `write-file` effects, and the VCS lands them under a
+ * PATH-SCOPE LEASE covering the target's declared test paths — `_designer_owns`
+ * as a lease rather than as a tool grant, so a byte outside the scope is
+ * `rejected { by: "contract" }` whatever the turn believed it was allowed
+ * (`src/vcs/writes.ts`).
  *
- * So the decision space is two words, and `cannot-express` is the interesting
- * one. A leaf that could only say "authored" would have to invent surface
- * whenever the design left a gap, which is the failure this whole arrangement
- * exists to prevent.
+ * `src/bindings/claude-code.ts` is the OTHER way to fill this leaf: in its
+ * proposal shape a subagent reads and edits a scratch copy of the run
+ * directory, the diff afterwards becomes the effects, and they arrive on
+ * `AuthorOutput.proposal` instead of on `files`. `../smoke.ts` fills the leaf
+ * that way; the todo target does not. The node reads whichever arrived, so the
+ * two shapes reach `write-oracle` with the same meaning.
+ *
+ * The decision space is two words, and `cannot-express` is the interesting
+ * one: the constructive chain cannot be expressed through the declared public
+ * port WITHOUT INVENTING a field, an operation, a fixture fact or an expected
+ * result. That is a finding about the DESIGN, and the graph routes it to the
+ * design's owner. A leaf that could only say "authored" would have to invent
+ * surface whenever the design left a gap, which is the failure this whole
+ * arrangement exists to prevent.
  *
  * THE OBLIGATIONS REACH THIS LEAF. That is a defect in nwave-experimental
  * closed here rather than copied: `_derive` builds its `AuthorityFacts` with
@@ -41,11 +54,11 @@ export const leafStepId = (leaf: OracleLeafId): string => `distill.${leaf}`;
 /**
  * The two answers, and the second is the one that earns the enum.
  *
- * `cannot-express` is not "I gave up". It is the finding
- * `nw-acceptance-designer` is required to return BEFORE changing any oracle
- * byte when the constructive chain cannot be expressed through the declared
- * public port without inventing a field, an operation, a fixture fact or an
- * expected result. The runner returns it to the design owner.
+ * `cannot-express` is not "I gave up". It is the finding the author returns
+ * INSTEAD OF a body when the constructive chain cannot be expressed through
+ * the declared public port without inventing a field, an operation, a fixture
+ * fact or an expected result. It carries no files, a mechanical check enforces
+ * that, and `author.route` sends it to the design owner.
  */
 export const AUTHOR_OUTCOMES = ["authored", "cannot-express"] as const;
 export type AuthorOutcome = (typeof AUTHOR_OUTCOMES)[number];

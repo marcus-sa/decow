@@ -217,9 +217,9 @@ export type SuiteRun = { output: string; exitCode: number };
  *
  * This is the honest source of the `evidence` string every classifying leaf
  * quotes: the runner's own output, both channels, verbatim. There is nothing
- * to strip and nothing to reconstruct — the oracles are ACTIVE as `des oracle`
- * authored them, so what the suite prints against the stub bodies IS the red
- * the crafter is looking at.
+ * to strip and nothing to reconstruct — the oracles are ACTIVE as the oracle
+ * graph authored them, so what the suite prints against the stub bodies IS the
+ * red the crafter is looking at.
  */
 export const runSuite = (project: string): SuiteRun => {
   const run = Bun.spawnSync(["bun", "test"], { cwd: project });

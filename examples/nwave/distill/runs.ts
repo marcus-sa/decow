@@ -1,6 +1,6 @@
 /**
- * The oracle-runs projection: what `des oracle` left behind, and what DELIVER
- * reads before it will run anything.
+ * The oracle-runs projection: what the oracle graph left behind, and what
+ * DELIVER reads before it will run anything.
  *
  * Its own module rather than a section of `./pipeline.ts`, because two
  * consumers need it and they sit on opposite sides of one arrow. DISTILL's

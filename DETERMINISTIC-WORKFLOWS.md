@@ -465,24 +465,31 @@ this is not that. Every reason this step can refuse is a named defect a
 proposal can be re-driven against, so a review gate would be a person re-reading
 what a total function already decided.
 
-### `des oracle --value N` is the step that writes the test
+### The oracle graph is the half that writes the test
 
-The second step dispatches the acceptance designer with tools `Read, Edit` and
-nothing else, scoped so it may write only under the subject's test paths. It
-returns a typed `accepted | rejected` outcome, and `rejected` has a precise
-meaning rather than "I could not": *the constructive chain cannot be expressed
-through the declared public port without inventing a field, an operation, a
-fixture fact or an expected result.* That is a finding about the **design**, and
-the runner routes it to the design's owner.
+The second step is one leaf, and it **holds no tools**. It is bound to the
+structured-output binding; its prompt carries the observation, the obligations,
+the oracle locator, the supports and the design source, and it returns the
+oracle's body and each support's body as payload. A `write-file` per declared
+path lands them under a **path-scope lease** covering the target's declared test
+paths — `_designer_owns` as a lease rather than as a tool grant, so a byte
+outside the scope is `rejected { by: "contract" }` whatever the turn believed it
+was allowed.
+
+The outcome is `authored | cannot-express`, and the second has a precise meaning
+rather than "I could not": *the constructive chain cannot be expressed through
+the declared public port without inventing a field, an operation, a fixture fact
+or an expected result.* That is a finding about the **design**, and the graph
+routes it to the design's owner, carrying no files.
 
 Then **software executes the oracle** and reads a JUnit-style verdict off it.
-This is the rule the shipped code names
-`boundary:software-measures-model-decides`, and it is the load-bearing shape
-rather than an optimisation: the two roles that hold an oracle — its author,
-`Read, Edit`, and its reviewer, an enforced empty tool set — *cannot run it*.
-So "this oracle fails on its assertion and not on its scaffolding" is a
-property the software owns, and observing an execution is a fixed floor rather
-than a rigor knob.
+That is the load-bearing shape rather than an optimisation: the author of an
+oracle must not be the thing that decides it is red, and here it cannot be — the
+leaf has no tools, and what runs the test is the consumer's declared
+`commands.oracle`. So "this oracle fails on its assertion and not on its
+scaffolding" is a property the software owns, and observing an execution is a
+fixed floor rather than a rigor knob. It is `des oracle`'s software-measures
+rule, which nwave names `boundary:software-measures-model-decides`.
 
 ```
 author = loop(body: author-oracle, until: red or blocked, max: 2)
