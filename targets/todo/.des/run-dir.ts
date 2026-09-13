@@ -29,15 +29,15 @@
  */
 
 import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { openArtifacts, type ArtifactStore } from "../../../artifacts/store.ts";
-import type { Commands } from "../../../core/commands.ts";
-import { openWorkflowRuntime, type WorkflowRuntime } from "../../../core/compile.ts";
-import { sqliteJournal, type Journal } from "../../../core/journal.ts";
-import { openVcs, type Vcs } from "../../../vcs/index.ts";
+import { basename, dirname, join, resolve } from "node:path";
+import { openArtifacts, type ArtifactStore } from "../../../src/artifacts/store.ts";
+import type { Commands } from "../../../src/core/commands.ts";
+import { openWorkflowRuntime, type WorkflowRuntime } from "../../../src/core/compile.ts";
+import { sqliteJournal, type Journal } from "../../../src/core/journal.ts";
+import { openVcs, type Vcs } from "../../../src/vcs/index.ts";
 
-/** This file is `<repo>/src/examples/nwave/todo/run-dir.ts`. */
-export const REPO = dirname(dirname(dirname(dirname(dirname(import.meta.path)))));
+/** This file is `<repo>/targets/todo/.des/run-dir.ts`. */
+export const REPO = dirname(dirname(dirname(dirname(import.meta.path))));
 
 /** The template every run copies. Committed; never written to. */
 export const TARGET = join(REPO, "targets", "todo");
@@ -162,7 +162,7 @@ export const createRunDir = (name: string): string => {
     throw new Error(`run "${name}" already exists at ${path}. Pick another name, or delete it.`);
   }
   mkdirSync(path, { recursive: true });
-  cpSync(TARGET, join(path, "todo"), { recursive: true });
+  cpSync(TARGET, join(path, "todo"), { recursive: true, filter: (source) => basename(source) !== ".des" });
   // The copied project typechecks with `tsc` and runs with `bun test`, both of
   // which need `@types/bun`. One symlink beats one `bun install` per run.
   symlinkSync(join(REPO, "node_modules"), join(path, "todo", "node_modules"));

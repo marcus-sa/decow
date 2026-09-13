@@ -35,8 +35,8 @@
  */
 
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
-import type { StepAttempt, StepObserver } from "../../../core/step.ts";
-import type { Violation } from "../../../core/requirement.ts";
+import type { StepAttempt, StepObserver } from "../../../src/core/step.ts";
+import type { Violation } from "../../../src/core/requirement.ts";
 
 /** Input and output token counts, when the provider layer reported them. */
 export type Tokens = { input?: number; output?: number };

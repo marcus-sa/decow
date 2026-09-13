@@ -37,7 +37,7 @@ export type MastraAgentOptions = {
    * `LanguageModelUsage` nests (`inputTokens.total` / `outputTokens.total`).
    * A binding that picked one would report zero tokens against the other and
    * say nothing about it. The reader is the consumer's — see
-   * `src/examples/nwave/todo/report.ts`.
+   * `targets/todo/.des/report.ts`.
    *
    * Absent by default: nothing in a step reads usage, so the seam costs
    * nothing when nobody is measuring.

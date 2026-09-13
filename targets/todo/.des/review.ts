@@ -20,8 +20,8 @@
  */
 
 import { join } from "node:path";
-import { resume } from "../../../core/workflow.ts";
-import { vcsExecutor } from "../../../vcs/executor.ts";
+import { resume } from "../../../src/core/workflow.ts";
+import { vcsExecutor } from "../../../src/vcs/executor.ts";
 import {
   REVIEW_DECISIONS,
   REVIEW_REASONS,
@@ -30,7 +30,7 @@ import {
   roadmapGraph,
   type ReviewDecision,
   type State,
-} from "../roadmap/graph.ts";
+} from "../../../src/examples/nwave/roadmap/graph.ts";
 import { todoRoadmapDefs } from "./models.ts";
 import { heading, renderReviewTrail, renderTrace } from "./render.ts";
 import { openReport } from "./report.ts";

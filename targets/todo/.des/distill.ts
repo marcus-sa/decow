@@ -30,10 +30,10 @@
  */
 
 import { join } from "node:path";
-import { openOracles, runObligations, testPathScope } from "../distill/pipeline.ts";
-import type { State as OracleState } from "../distill/oracle/graph.ts";
-import type { RecordedVerdict } from "../distill/runs.ts";
-import type { RunOutcome } from "../../../core/workflow.ts";
+import { openOracles, runObligations, testPathScope } from "../../../src/examples/nwave/distill/pipeline.ts";
+import type { State as OracleState } from "../../../src/examples/nwave/distill/oracle/graph.ts";
+import type { RecordedVerdict } from "../../../src/examples/nwave/distill/runs.ts";
+import type { RunOutcome } from "../../../src/core/workflow.ts";
 import { describeModels, todoObligationsDefs, todoOracleDefs } from "./models.ts";
 import { heading, renderDeliverTrail, renderTrace } from "./render.ts";
 import { openReport } from "./report.ts";

@@ -34,7 +34,7 @@ import { run } from "../../../core/workflow.ts";
 import { describeTrace } from "../../../harness/matchers.ts";
 import { vcsExecutor } from "../../../vcs/executor.ts";
 import { openVcs } from "../../../vcs/index.ts";
-import { loadCommands } from "../todo/run-dir.ts";
+import { loadCommands } from "../../../../targets/todo/.des/run-dir.ts";
 import { oracleGraph, seed, type State } from "./oracle/graph.ts";
 import { oracleDefs, type ValueUnderOracle } from "./oracle/steps.ts";
 

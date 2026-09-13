@@ -11,7 +11,7 @@
  * ends up approving a roadmap they did not read.
  */
 
-import type { Roadmap, RoadmapStep } from "../roadmap/schema.ts";
+import type { Roadmap, RoadmapStep } from "../../../src/examples/nwave/roadmap/schema.ts";
 
 /** One row of the trail, by the key it carries. */
 const rowOf = <T>(trail: readonly unknown[], key: string): T | undefined => {

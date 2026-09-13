@@ -72,7 +72,7 @@ See [The todo target](#the-todo-target).
 | `src/examples/nwave/distill/` | § DISTILL is two graphs. `manifest.ts` is `des distill`'s closed rule set as a pure function; `obligations/` is the graph around it; `oracle/` is `des oracle --value N`, where the acceptance designer authors and software measures. Bootstrap steps 2 and 3. |
 | `src/examples/nwave/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops, starting at `implement` because RED is a row it reads. `pipeline.ts` is bootstrap step 7's second half: the scheduler composed over one roadmap. |
 | `src/examples/nwave/roadmap/` | § DELIVER is two graphs → the roadmap half, and § Framework versus consumer → the authoring workflow. Bootstrap step 7's first half — the roadmap as rows, with two pure decision functions and no generator. |
-| `src/examples/nwave/todo/` | The composition that points the roadmap workflow and the step cycle at a real project, plus the run report. Not a wave: the consumer's own commands. |
+| `targets/todo/.des/` | The composition that points the roadmap workflow and the step cycle at a real project, plus the run report. Not a wave: the consumer's own commands. |
 | `targets/todo/` | The delivery target. A template project with two stubbed methods and no test file, copied into a run directory and never mutated in place. The oracle is authored into it, not shipped with it. |
 | `src/vcs/` | § The agent-native VCS is the effect executor and mechanical verifier, and the whole of [`ai-vcs.md`](./ai-vcs.md) phases 2 to 4. See [`src/vcs/README.md`](./src/vcs/README.md). |
 
@@ -788,7 +788,7 @@ Full detail in [`src/examples/nwave/README.md`](./src/examples/nwave/README.md#t
 
 ### The stubbed end-to-end
 
-`src/examples/nwave/todo/todo.test.ts` is the same path with the inference removed, and it is the one test that covers all three waves:
+`targets/todo/.des/todo.test.ts` is the same path with the inference removed, and it is the one test that covers all three waves:
 
 - the target copied to a temp directory, its own `commands.ts` loaded out of the copy exactly as a run directory loads it, and tracked with the **default** verifier over those commands — a real `bunx tsc --noEmit`, a real `bunx biome check`, a real impact-scoped `bun test`, a real oracle measurement;
 - the roadmap authored through the roadmap workflow's own graph and persisted by its own `persist`, with all three of DISTILL's fields empty;

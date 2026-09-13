@@ -1,11 +1,12 @@
 # nWave as a consumer of the framework
 
-The four directories here are one consumer's waves, plus the target they are
-pointed at. The framework lives in `src/core`, `src/harness`, `src/bindings`,
-`src/vcs`, and `src/artifacts`; this directory holds what a consumer owns: the
-graphs, the requirement rows, the prompts, the model bindings, and the
-fixtures. nWave is the consumer, and Overdrive is the first project it
-delivers.
+The three directories here are one consumer's waves. The target they are
+pointed at, and the composition that drives it, live under `targets/todo/` and
+`targets/todo/.des/`. The framework lives in `src/core`, `src/harness`,
+`src/bindings`, `src/vcs`, and `src/artifacts`; this directory holds what a
+consumer owns: the graphs, the requirement rows, the prompts, the model
+bindings, and the fixtures. nWave is the consumer, and Overdrive is the first
+project it delivers.
 
 They connect through data, not through each other's code:
 
@@ -23,8 +24,9 @@ deliver/   the scheduler reads the rows, refuses any value whose oracle is not r
            fixed step cycle once per ready row — with that row's oracle file PROTECTED, so RED to
            GREEN is bought by production. Each outcome is a step_runs row.
                                         │
-todo/      the composition that points all of it at a real project — `targets/todo`, copied into a
-           run directory — and five commands that drive it against real models, with a run report.
+targets/todo/.des/  the composition that points all of it at a real project — `targets/todo`, copied
+                    into a run directory — and five commands that drive it against real models, with
+                    a run report.
 ```
 
 An agent never writes a workflow. It fills in leaves. The graphs below are
@@ -281,7 +283,7 @@ What is a model call and what is not:
 at over 7,000 paths and 544 s when the cycle could still iterate; it cannot
 now, so the bound is inert until a mutation command is declared.
 
-## `todo/` — the three waves pointed at a real project
+## `targets/todo/.des/` — the three waves pointed at a real project
 
 Files: `request.ts`, `run-dir.ts` (the run directory, the design source and the
 suite runner), `models.ts` (which model runs which leaf), `report.ts` (the run

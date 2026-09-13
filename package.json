@@ -4,17 +4,17 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "test": "bun test",
+    "test": "bun test ./src ./targets/todo/.des",
     "typecheck": "tsc --noEmit",
-    "check": "bun run typecheck && bun test",
+    "check": "bun run typecheck && bun run test",
     "smoke:deliver": "bun run src/examples/nwave/deliver/smoke.ts",
     "smoke:oracle": "bun run src/examples/nwave/distill/smoke.ts",
-    "todo:roadmap": "bun run src/examples/nwave/todo/roadmap.ts",
-    "todo:review": "bun run src/examples/nwave/todo/review.ts",
-    "todo:distill": "bun run src/examples/nwave/todo/distill.ts",
-    "todo:deliver": "bun run src/examples/nwave/todo/deliver.ts",
-    "todo:resume": "bun run src/examples/nwave/todo/resume.ts",
-    "todo:report": "bun run src/examples/nwave/todo/summary.ts"
+    "todo:roadmap": "bun run targets/todo/.des/roadmap.ts",
+    "todo:review": "bun run targets/todo/.des/review.ts",
+    "todo:distill": "bun run targets/todo/.des/distill.ts",
+    "todo:deliver": "bun run targets/todo/.des/deliver.ts",
+    "todo:resume": "bun run targets/todo/.des/resume.ts",
+    "todo:report": "bun run targets/todo/.des/summary.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.13",
