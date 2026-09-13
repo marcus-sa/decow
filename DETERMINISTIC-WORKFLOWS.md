@@ -794,14 +794,23 @@ Two properties fall out of the split. Generated graphs are source, committed and
 
 ### Package layout
 
+Three packages in one workspace, and a consumer's own directories beside them.
+
 ```
-core/       workflow.ts  step.ts  requirement.ts  journal.ts  effects.ts
-checks/     verbatim.ts  enum-member.ts  id-in-set.ts  symbol-diff.ts
-harness/    stub-journal.ts  enumerate-paths.ts  matchers.ts
-codemod/    author.graph.ts
+packages/core/     workflow.ts  step.ts  requirement.ts  journal.ts  effects.ts
+                   commands.ts  scheduler.ts  compile.ts
+                   checks/     verbatim.ts  enum-member.ts  id-in-set.ts  symbol-diff.ts
+                   harness/    stub-journal.ts  enumerate-paths.ts  matchers.ts
+                   artifacts/  vcs/  bindings/
+packages/server/   registration.ts  projection.ts  runner.ts  router.ts  runs.ts  events.ts
+packages/ui/       routes/  graph.tsx  layout.ts  suspension.tsx  serve.ts
+examples/          one consumer's waves
+targets/           one project to deliver to, plus the composition under `.des/`
 ```
 
-A consumer depends on `core`, `checks`, and `harness`, runs `codemod` from CI on requirement changes, and commits what comes out.
+A consumer depends on `@des/core` for the contract, the checks and the
+harness, and on `@des/server` to serve what it registered. The UI is a client
+of the server and depends on nothing else.
 
 ### Bootstrap order
 
@@ -815,6 +824,76 @@ Each piece is what validates the next.
 6. **The oracle graph, then the DELIVER step-cycle graph.** Both fixed, hand-written once, the same for every consumer. In that order, because the step cycle reads a verdict the oracle graph records and a cycle with nothing to read has no RED.
 7. **Roadmap authoring and the scheduler.** The last piece, and the one that keeps frontier judgment in the loop. By now everything downstream of a roadmap diff is a graph.
 
+## The server and the UI are the entrypoint
+
+A consumer's entrypoint is not a command per wave. It is a server, and a UI
+over it. A target declares what it can run and calls `serve`:
+
+```ts
+import { serve } from "@des/server";
+await serve({ workflows: [...], pipelines: [...] });
+```
+
+Four things are decided by that, and each one is a position rather than a
+convenience.
+
+**The UI draws the AUTHORED graph, never the compiled one.** The compiler emits
+nested workflows with per-path ids, and a node reachable from two branch edges
+is compiled twice under two names, neither of which its author wrote. Drawing
+that would draw the compile. So the projection reads the node map — the same
+walk the compiler admits a graph with — and reports the ids in the source: a
+branch with its whole edge table, a loop with its bound and the nodes inside
+its body, a suspend node with the closed enum a person will choose from. The
+trace already carries authored node ids, and so do the events a run publishes
+while it runs.
+
+**Mastra's runtime sits under the server rather than beside it.** Runs,
+snapshots, suspend and resume stay the engine's. What the server adds is the
+half the engine has no opinion about: which graph a person authored, which of
+its nodes a run is on, what each leaf attempt decided and what it cost, which
+artifact rows a run wrote, and which rows of a pipeline are still waiting on
+which.
+
+**A pipeline is a registered composition rather than a second kind of graph.**
+The roadmap is rows, the step cycle is one fixed graph, and the scheduler
+instantiates it once per row. So a pipeline registers as data — its rows, their
+dependencies, the status each one projects — and is shown as a run tree. What a
+row's run drills into is a run of the same fixed graph.
+
+**A suspension is answered in the UI.** A parked run raises a notification and
+a dialog whose BUTTONS are the suspend node's own closed enum, read off its
+`resumeSchema` rather than off a second declaration. A person cannot answer
+with something the node would refuse, because nothing else is offered; the
+answer goes back through the same `resume` a second process used to call, and
+the same run continues to a terminal.
+
+A registration is what a target writes:
+
+```ts
+type WorkflowRegistration<S, I> = {
+  id: string;
+  title: string;
+  input: z.ZodType<I>;                          // what a person supplies
+  graph: (ctx: GraphContext) => Workflow<S>;    // built over the journal and the observer
+  seed: (input: I) => S;
+  executor: (ctx: { runId: string; input: I }) => EffectExecutor;
+  journal: Journal;
+  runtime?: WorkflowRuntime;
+  observe?: StepObserver;
+};
+```
+
+The graph is a factory because a `Workflow<S>` has its journal and its observer
+already closed over, and "what did each attempt cost" is exactly what a person
+watching wants. The executor sees the run's input because its two ownership
+options — which oracle this row's crafter is walled off from, which failing
+tests it did not cause — are facts about what the run is ABOUT.
+
+One thing the server deliberately does not claim: a suspend node's REASON is
+`(s: S) => string`, a function of state, so the closed set it draws from is not
+readable from the graph. The answer space is, because `resumeSchema` is a
+value, and that is the half a person has to choose from.
+
 ## Open questions
 
 These are the places where the design is a hypothesis, not a finding.
@@ -825,4 +904,4 @@ These are the places where the design is a hypothesis, not a finding.
 - **Derived dependency edges assume declared symbol touches.** An AC or step that under-declares produces a false independence. The failure is bounded (a conflict or a wrong-reason `still-red`), but how often it happens in practice determines whether the scheduler's parallelism is real or nominal.
 - **The authoring workflow's validator is the compiler and the enumeration test.** That proves the graph is well-formed. It does not prove the graph encodes the rule correctly. The known-good hand-written graph is the only oracle for that, and there is one of it.
 - **Whether an oracle authored by a model is an oracle worth measuring.** The framework can prove a test was executed, that it failed on its assertion rather than on its scaffolding, and that the crafter never touched it. It cannot prove the test asserts the *right* thing. The rules bound to that leaf — a total relation in both directions, the declared public port, no invented expected result — are prose refuted by a small model, which is exactly the class this design is least confident about elsewhere.
-- **None of it has been run against a real model.** Every graph is enumerated, every gate is real, and the worked example is delivered end to end — with the inference removed. As of this cut no Anthropic credential was available in the environment: `ANTHROPIC_API_KEY` is unset and there is no `ant` CLI to check, so the `todo:*` commands refuse by name rather than proceeding, and nothing here fabricates a transcript. Every number in this document is a path count, a test count or a wall clock. None of them is a token count, an acceptance rate, or a cost, and none of the three questions above can be answered until one is.
+- **None of it has been run against a real model.** Every graph is enumerated, every gate is real, and the worked example is delivered end to end — with the inference removed. As of this cut no Anthropic credential was available in the environment: `ANTHROPIC_API_KEY` is unset and there is no `ant` CLI to check, so every leaf that would call a model refuses by name rather than proceeding, and nothing here fabricates a transcript. Every number in this document is a path count, a test count or a wall clock. None of them is a token count, an acceptance rate, or a cost, and none of the three questions above can be answered until one is.

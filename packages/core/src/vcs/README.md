@@ -1,6 +1,6 @@
 # src/vcs — the agent-native VCS
 
-An implementation of [`ai-vcs.md`](../../ai-vcs.md) as a TypeScript library on
+An implementation of [`ai-vcs.md`](../../../../ai-vcs.md) as a TypeScript library on
 `bun:sqlite`, wired to the workflow framework through one seam: an
 `EffectExecutor` that executes `replace-symbol`, `write-file`, `run-tests`,
 `measure-oracle` and `run-command` for real.

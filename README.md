@@ -2,7 +2,7 @@
 
 A prototype of the framework described in [`DETERMINISTIC-WORKFLOWS.md`](./DETERMINISTIC-WORKFLOWS.md): a finite graph owns control flow, small models own one decision each, and the whole path space is enumerable before anything runs.
 
-The property the rest of the design rests on is testable in this repo right now, on four graphs: **169 paths through the roadmap authoring workflow, 55 through DISTILL's obligations graph, 421 through its oracle graph, and 347 through the DELIVER step cycle — zero model calls, no API key, no network.** The whole suite — 451 tests, including all 992 of those walked paths through the real Mastra engine — takes **about 9.9 s**.
+The property the rest of the design rests on is testable in this repo right now, on four graphs: **169 paths through the roadmap authoring workflow, 55 through DISTILL's obligations graph, 421 through its oracle graph, and 347 through the DELIVER step cycle — zero model calls, no API key, no network.** The whole suite — 495 tests, including all 992 of those walked paths through the real Mastra engine — takes **about 9.6 s**.
 
 All four have cycles in them. Their path spaces are two and three figures rather than infinite because every repetition is a `loop` node with a required bound.
 
@@ -14,20 +14,34 @@ Every process the framework runs is a **declared command**. The consumer says ho
 
 The second half of the repo is the [VCS module](#vcs-module): `replace-symbol`, `write-file`, `run-tests` and `measure-oracle` execute for real, under a lease, through a verification gate, into an append-only event log. `run-tests` is a **union**: the VCS owns the impact floor and the workflow owns selection above it, so a leaf may add a test and can never subtract one. Artifact rows have [a real database](#artifact-rows) behind them, so a roadmap outlives the process that authored it.
 
-There is something to deliver *to*: [`targets/todo/`](#the-todo-target), a small TypeScript project with two stubbed methods and **no test file at all**, plus [five commands](#the-commands) that point all three waves at a copy of it and [a run report](#the-run-report) that records what every leaf call decided and cost. Suspensions are [durable](#durable-snapshots), so the human-review gate is one command parking a run and a second command answering it. **No real-model run has been performed yet** — see [The real run](#the-real-run).
+There is something to deliver *to*: [`targets/todo/`](#the-todo-target), a small TypeScript project with two stubbed methods and **no test file at all**, plus [one server](#the-server-and-the-ui) that registers all four graphs against a copy of it and [a run report](#the-run-report) that records what every leaf call decided and cost. A suspension is answered in the UI, from the closed enum the node itself declares; suspensions are also [durable](#durable-snapshots), so a run parked by one process can be answered by another. **No real-model run has been performed yet** — see [The real run](#the-real-run).
 
 ## Install, test, run
 
 ```bash
 bun install
-bun test          # 451 tests, no network, no key, no model, ~9.9 s
-bun run typecheck # tsc --noEmit
+bun run test      # 495 tests, no network, no key, no model, ~9.6 s
+bun run typecheck # tsc --noEmit, over every package at once
 bun run check     # both
+bun run ui:build  # the UI the server serves
+bun run todo      # the todo target, served: http://localhost:3000
 ```
 
-`bunfig.toml` scopes `bun test` to `src/`. `targets/` is a template project a run copies and `runs/` holds those copies; neither is this repository's own suite.
+Three packages in one bun workspace, and a consumer's own directories beside them:
 
-Nothing in the test suite talks to a model. The two smoke scripts and the five `todo:*` commands do, and every one of them refuses to run without a key:
+```
+packages/core/     @des/core    the framework: the contract, the compiler, the VCS, the harness
+packages/server/   @des/server  one HTTP surface over the graphs a target registers
+packages/ui/       @des/ui      the authored graph, drawn, with a live trace and a place to answer
+examples/nwave/    one consumer's four waves
+targets/todo/      one project to deliver to, plus the composition under `.des/`
+```
+
+`targets/todo` is deliberately NOT a workspace member: it is a template a run COPIES, and a workspace member is a thing bun links. Its `.des/` composition resolves `@des/*` by walking up to the root `node_modules`, which is also what a copy under `runs/` does.
+
+The test script names its roots — `packages`, `examples`, `targets/todo/.des` — rather than scanning the tree: a target's own project files and the run copies under `runs/` are not this repository's suite.
+
+Nothing in the test suite talks to a model. The two smoke scripts do, and the todo server refuses at the leaf rather than at the door:
 
 ```bash
 # One oracle, authored by a real Claude Code subagent in the PROPOSAL shape,
@@ -41,42 +55,41 @@ ANTHROPIC_API_KEY=... DW_WORKSPACE=/path/to/repo bun run smoke:deliver
 
 `smoke:oracle` is the one to read first: it builds a temp project with a stubbed method, dispatches the acceptance designer in a scratch copy, turns what it changed into `write-file` effects, commits them through the write path, and prints the verdict software read off the result. `smoke:deliver` pushes one roadmap step through the step cycle — see [Bindings](#bindings).
 
-The `todo:*` commands are the end-to-end path, against a real project rather than a literal:
+The todo target is the end-to-end path, against a real project rather than a literal, and it is one process:
 
 ```bash
-ANTHROPIC_API_KEY=... bun run todo:roadmap first          # author, park at human-review
-ANTHROPIC_API_KEY=... bun run todo:review  first approve  # a SECOND process resumes it
-ANTHROPIC_API_KEY=... bun run todo:distill first          # the facts, then the oracle, measured
-ANTHROPIC_API_KEY=... bun run todo:deliver first          # the step cycle, once per red-oracled row
-                      bun run todo:report  first          # the table. No key: it reads a file
+bun run ui:build                                   # once, so there is a UI to serve
+ANTHROPIC_API_KEY=... bun run todo                 # http://localhost:3000, run directory `first`
 ```
 
-See [The todo target](#the-todo-target).
+It starts **without a key**: the graphs, the projections, the artifact rows and the event stream are all readable, and what needs a key is a leaf — which refuses there, by name, on the attempt, with the server still up. See [The todo target](#the-todo-target) and [The server and the UI](#the-server-and-the-ui).
 
 ## Map to the design document
 
 | Path | Implements |
 |---|---|
-| `src/core/requirement.ts` | § Primitives → Requirement. The rule as a row: verbatim text, FK to its source, closed decision space, optional mechanical check. |
-| `src/core/step.ts` | § Step: a worker paired with a validator, always. `stepOutput`, `StepDef`, `Attempt`, `StepResult`, `journalKey`, `runStep` and its six guardrails. |
-| `src/core/workflow.ts` | § Workflow graph and runner. The contract: `NodeId`, `Terminal`, `Node`, `Workflow`, `branch`, `suspend`, `run`, `resume`. |
-| `src/core/compile.ts` | § Workflow graph and runner. The compiler from the node map to a Mastra workflow. |
-| `src/core/effects.ts` | § Effects with typed results. The `Effect` / `EffectResult` unions plus an in-memory executor with optimistic concurrency. |
-| `src/core/commands.ts` | § Effects with typed results → `run-command`. The consumer's `Commands` contract, and the one process runner behind every command the framework runs. |
-| `src/core/journal.ts` | § Journal. The interface, an in-memory implementation, and a persistent one on `bun:sqlite`. |
-| `src/core/scheduler.ts` | § DELIVER runs in parallel. The frontier, the concurrency limit, resource leases, and termination. Generic in rows; the composition is the consumer's. |
-| `src/artifacts/` | § Artifacts are typed rows, not documents. The store: one version column, one append-only event log, one time-travel read. |
-| `src/bindings/` | § Framework versus consumer → "model bindings: which small models, which validator family". `mastra.ts` is one model call; `claude-code.ts` is a Claude Code subagent. |
-| `src/checks/` | § Framework versus consumer → "a library of mechanical checks": `verbatim.ts`, `enum-member.ts`, `id-in-set.ts`. |
-| `src/harness/` | § Framework versus consumer → "test harness": `stub-journal.ts`, `enumerate-paths.ts` (the graph inspector, the reachable-path walker, and the effect-outcome axis), `matchers.ts`. |
+| `packages/core/src/core/requirement.ts` | § Primitives → Requirement. The rule as a row: verbatim text, FK to its source, closed decision space, optional mechanical check. |
+| `packages/core/src/core/step.ts` | § Step: a worker paired with a validator, always. `stepOutput`, `StepDef`, `Attempt`, `StepResult`, `journalKey`, `runStep` and its six guardrails. |
+| `packages/core/src/core/workflow.ts` | § Workflow graph and runner. The contract: `NodeId`, `Terminal`, `Node`, `Workflow`, `branch`, `suspend`, `run`, `resume`. |
+| `packages/core/src/core/compile.ts` | § Workflow graph and runner. The compiler from the node map to a Mastra workflow. |
+| `packages/core/src/core/effects.ts` | § Effects with typed results. The `Effect` / `EffectResult` unions plus an in-memory executor with optimistic concurrency. |
+| `packages/core/src/core/commands.ts` | § Effects with typed results → `run-command`. The consumer's `Commands` contract, and the one process runner behind every command the framework runs. |
+| `packages/core/src/core/journal.ts` | § Journal. The interface, an in-memory implementation, and a persistent one on `bun:sqlite`. |
+| `packages/core/src/core/scheduler.ts` | § DELIVER runs in parallel. The frontier, the concurrency limit, resource leases, and termination. Generic in rows; the composition is the consumer's. |
+| `packages/core/src/artifacts/` | § Artifacts are typed rows, not documents. The store: one version column, one append-only event log, one time-travel read. |
+| `packages/core/src/bindings/` | § Framework versus consumer → "model bindings: which small models, which validator family". `mastra.ts` is one model call; `claude-code.ts` is a Claude Code subagent. |
+| `packages/core/src/checks/` | § Framework versus consumer → "a library of mechanical checks": `verbatim.ts`, `enum-member.ts`, `id-in-set.ts`. |
+| `packages/core/src/harness/` | § Framework versus consumer → "test harness": `stub-journal.ts`, `enumerate-paths.ts` (the graph inspector, the reachable-path walker, and the effect-outcome axis), `matchers.ts`. |
 | `examples/nwave/distill/` | § DISTILL is two graphs. `manifest.ts` is `des distill`'s closed rule set as a pure function; `obligations/` is the graph around it; `oracle/` is `des oracle --value N`, where the acceptance designer authors and software measures. Bootstrap steps 2 and 3. |
 | `examples/nwave/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops, starting at `implement` because RED is a row it reads. `pipeline.ts` is bootstrap step 7's second half: the scheduler composed over one roadmap. |
 | `examples/nwave/roadmap/` | § DELIVER is two graphs → the roadmap half, and § Framework versus consumer → the authoring workflow. Bootstrap step 7's first half — the roadmap as rows, with two pure decision functions and no generator. |
-| `targets/todo/.des/` | The composition that points the roadmap workflow and the step cycle at a real project, plus the run report. Not a wave: the consumer's own commands. |
+| `targets/todo/.des/` | The composition that points all four graphs at a real project: `registrations.ts` declares them, `main.ts` serves them, and the run report records what every leaf call decided and cost. Not a wave: the consumer's own composition. |
 | `targets/todo/` | The delivery target. A template project with two stubbed methods and no test file, copied into a run directory and never mutated in place. The oracle is authored into it, not shipped with it. |
-| `src/vcs/` | § The agent-native VCS is the effect executor and mechanical verifier, and the whole of [`ai-vcs.md`](./ai-vcs.md) phases 2 to 4. See [`src/vcs/README.md`](./src/vcs/README.md). |
+| `packages/core/src/vcs/` | § The agent-native VCS is the effect executor and mechanical verifier, and the whole of [`ai-vcs.md`](./ai-vcs.md) phases 2 to 4. See [`packages/core/src/vcs/README.md`](./packages/core/src/vcs/README.md). |
+| `packages/server/` | § The server and the UI are the entrypoint. `registration.ts` is what a target declares; `projection.ts` reads the AUTHORED graph off the node map; `runner.ts` drives one and watches it; `router.ts` is the surface. |
+| `packages/ui/` | § The server and the UI are the entrypoint → the drawing and the place a suspension is answered. `layout.ts` is dagre, `graph.tsx` is JointJS, `suspension.tsx` is the dialog whose buttons are a node's closed enum. |
 
-The model bindings live under `src/bindings/` and nothing in `core/` imports them: the design's framework/consumer table puts "which small models, which validator family" on the consumer side, and the smoke scripts are where a consumer picks.
+The model bindings live under `packages/core/src/bindings/` and nothing in `core/` imports them: the design's framework/consumer table puts "which small models, which validator family" on the consumer side, and the smoke scripts are where a consumer picks.
 
 ## Substrate: Mastra Workflows, all the way down
 
@@ -224,9 +237,9 @@ Re-running a workflow against a warm journal is byte-identical and spends nothin
 `@mastra/core`, `zod`, and `@anthropic-ai/claude-agent-sdk`.
 
 - **`zod`** is Mastra's only peer dependency and the schema language for step outputs, requirement decision spaces, and resume payloads.
-- **`@anthropic-ai/claude-agent-sdk`** is what `src/bindings/claude-code.ts` dispatches a subagent through. It is a runtime dependency because the binding ships in `src/`, but it is imported lazily — `bun test` never loads it, and nothing outside that one file references it.
-- **`tree-sitter`** and **`tree-sitter-typescript`** are the structural layer of the VCS module. The native Node bindings, not `web-tree-sitter` plus wasm grammars, which do not load under bun; see [`src/vcs/README.md`](./src/vcs/README.md#the-parser-native-tree-sitter-not-wasm). Prebuilt binaries ship for every supported platform, so nothing compiles at install time, and the whole surface sits behind a three-method `Parser` interface.
-- **`@mastra/core`** supplies the workflow engine, the `Agent` used by the smoke scripts and the `todo:*` commands, and `InMemoryStore` from `@mastra/core/storage`, which is where a snapshot goes by default.
+- **`@anthropic-ai/claude-agent-sdk`** is what `packages/core/src/bindings/claude-code.ts` dispatches a subagent through. It is a runtime dependency because the binding ships in `@des/core`, but it is imported lazily — `bun test` never loads it, and nothing outside that one file references it.
+- **`tree-sitter`** and **`tree-sitter-typescript`** are the structural layer of the VCS module. The native Node bindings, not `web-tree-sitter` plus wasm grammars, which do not load under bun; see [`packages/core/src/vcs/README.md`](./packages/core/src/vcs/README.md#the-parser-native-tree-sitter-not-wasm). Prebuilt binaries ship for every supported platform, so nothing compiles at install time, and the whole surface sits behind a three-method `Parser` interface.
+- **`@mastra/core`** supplies the workflow engine, the `Agent` the smoke scripts and the todo target's leaves run on, and `InMemoryStore` from `@mastra/core/storage`, which is where a snapshot goes by default.
 - **`@mastra/libsql`** is where a snapshot goes when a run directory is given. See [Durable snapshots](#durable-snapshots) for the measurement behind using two adapters rather than one.
 
 Mastra's model router takes a `provider/model` string (`anthropic/claude-haiku-4-5`), resolves `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from the environment itself, and needs no provider package — so `ai`, `@ai-sdk/anthropic`, and `@ai-sdk/openai` are not here. The `@ai-sdk/provider*` packages still under `node_modules` are Mastra's own transitive dependencies, not ours.
@@ -272,7 +285,7 @@ Two options are about ownership rather than plumbing. **`protected`** refuses an
 ### What `claudeCode` does with the SDK
 
 - **Structured output is native.** `options.outputFormat = { type: "json_schema", schema }` makes the SDK validate the agent's final answer and re-prompt on mismatch; the validated object arrives on the result message as `structured_output`. No prompt-engineered JSON extraction was needed.
-- **The zod schema is still the guarantee.** `z.toJSONSchema(schema, { target: "draft-07" })` is a projection, not a translation: a refinement zod can express and draft-07 cannot is widened rather than carried across. So the SDK's validation is necessary and not sufficient, and the binding re-parses the returned object with the step's own zod schema. That re-parse is what the binding's small retry bound (default 2) exists for, alongside the two failures the SDK documents: `error_max_structured_output_retries`, and a `success` result carrying no `structured_output` at all. After the bound it throws, and `runStep` turns the throw into a trail entry — the path that is asserted end-to-end in `src/bindings/claude-code.test.ts`.
+- **The zod schema is still the guarantee.** `z.toJSONSchema(schema, { target: "draft-07" })` is a projection, not a translation: a refinement zod can express and draft-07 cannot is widened rather than carried across. So the SDK's validation is necessary and not sufficient, and the binding re-parses the returned object with the step's own zod schema. That re-parse is what the binding's small retry bound (default 2) exists for, alongside the two failures the SDK documents: `error_max_structured_output_retries`, and a `success` result carrying no `structured_output` at all. After the bound it throws, and `runStep` turns the throw into a trail entry — the path that is asserted end-to-end in `packages/core/src/bindings/claude-code.test.ts`.
 - **The subagent is selected by name.** `options.agent` names the agent for the main thread, and the agent must exist in the settings the run loads, which is what `settingSources` controls — `"project"` loads `.claude/agents` from `cwd`. The default is `["user", "project"]`.
 - **The step's `system` leads the turn.** The subagent's own prompt *is* its system prompt, so passing `systemPrompt` would replace it. The step's `system` is prepended to the user turn instead, and a retry appends what the previous attempt got wrong, which is the same feedback shape `runStep` uses one level up.
 
@@ -282,19 +295,19 @@ Two options are about ownership rather than plumbing. **`protected`** refuses an
 
 ## VCS module
 
-[`src/vcs/`](./src/vcs/README.md) implements [`ai-vcs.md`](./ai-vcs.md) as a library on `bun:sqlite`: a tree-sitter symbol inventory, an identity registry with opaque ids that survive declared renames, an append-only event log, a lease manager with atomic multi-acquire over **symbols and path scopes**, a verification pipeline that runs inside the write path and rolls the file back byte for byte when a stage refuses, and an oracle measurement that is not a gate at all — it executes one test and reads `green | red | broken | indeterminate` off it, because the two roles that hold an oracle cannot run it.
+[`packages/core/src/vcs/`](./packages/core/src/vcs/README.md) implements [`ai-vcs.md`](./ai-vcs.md) as a library on `bun:sqlite`: a tree-sitter symbol inventory, an identity registry with opaque ids that survive declared renames, an append-only event log, a lease manager with atomic multi-acquire over **symbols and path scopes**, a verification pipeline that runs inside the write path and rolls the file back byte for byte when a stage refuses, and an oracle measurement that is not a gate at all — it executes one test and reads `green | red | broken | indeterminate` off it, because the two roles that hold an oracle cannot run it.
 
-**The four stages are structural, typecheck, lint and tests**, and every one after the first is a [declared command](#declared-commands) composed into a `run-command` effect and handed to an injected executor. Nothing under `src/vcs/` spawns anything. Lint replaced the `policy` stage, which was a stub that returned "passed"; the tests stage and the measurement read their verdict off a [JUnit report](#the-junit-rule) rather than off a runner's stdout.
+**The four stages are structural, typecheck, lint and tests**, and every one after the first is a [declared command](#declared-commands) composed into a `run-command` effect and handed to an injected executor. Nothing under `packages/core/src/vcs/` spawns anything. Lint replaced the `policy` stage, which was a stub that returned "passed"; the tests stage and the measurement read their verdict off a [JUnit report](#the-junit-rule) rather than off a runner's stdout.
 
-**The dependency runs one way.** `src/core` imports nothing from `src/vcs`. What `src/vcs` imports back is the `Effect` / `EffectResult` types and `src/core/commands.ts`, and nothing else from the framework. The framework is the control plane; the VCS is the data plane for code.
+**The dependency runs one way.** `core` imports nothing from `vcs`. What `vcs` imports back is the `Effect` / `EffectResult` types and `packages/core/src/core/commands.ts`, and nothing else from the framework. The framework is the control plane; the VCS is the data plane for code.
 
-The design document's own test for whether the seam works is one path: "the runner executes an `Effect[]` through the VCS with lease, verify, and log, and gets back a typed result a branch can route on." That path is `src/vcs/executor.test.ts`, driven through the real Mastra runner on a temp TypeScript project: a `leaf` emits a `replace-symbol`, the branch after it routes `committed`, and a second run with a stale `expectedVersion` routes `conflict` to a rebase node instead.
+The design document's own test for whether the seam works is one path: "the runner executes an `Effect[]` through the VCS with lease, verify, and log, and gets back a typed result a branch can route on." That path is `packages/core/src/vcs/executor.test.ts`, driven through the real Mastra runner on a temp TypeScript project: a `leaf` emits a `replace-symbol`, the branch after it routes `committed`, and a second run with a stale `expectedVersion` routes `conflict` to a rebase node instead.
 
-**174 tests, 2.3 s.** Full detail, the storage schema, the write path step by step, the deviations and what is still missing: [`src/vcs/README.md`](./src/vcs/README.md).
+**174 tests, 2.3 s.** Full detail, the storage schema, the write path step by step, the deviations and what is still missing: [`packages/core/src/vcs/README.md`](./packages/core/src/vcs/README.md).
 
 ## Artifact rows
 
-[`src/artifacts/`](./src/artifacts/store.ts) is the other half of the design's state layer: `bun:sqlite`, a version column on every row, an append-only `artifact_events` log of every accepted upsert, and `at(table, id, version)` reading history back out of that log. `upsert-artifact` used to land in a `Map` under `memoryEffects` and come back `infra-failed` under `vcsExecutor`, so a roadmap died with the process it was authored in.
+[`packages/core/src/artifacts/`](./packages/core/src/artifacts/store.ts) is the other half of the design's state layer: `bun:sqlite`, a version column on every row, an append-only `artifact_events` log of every accepted upsert, and `at(table, id, version)` reading history back out of that log. `upsert-artifact` used to land in a `Map` under `memoryEffects` and come back `infra-failed` under `vcsExecutor`, so a roadmap died with the process it was authored in.
 
 **One generic table, keyed by `(table, id)`**, not one SQL table per artifact table name. The name is *data*: it arrives on the effect at run time, so a table per name means running DDL built from a string the graph supplied, on every first write to a name nobody had used yet. That is a migration per artifact kind and an injection surface bought for nothing, because the bodies are opaque JSON with a version and no query here reads inside one. A composite primary key gives the same isolation with no DDL after `open`.
 
@@ -313,7 +326,7 @@ Both executors route to it, with the same optimistic version check `replace-symb
 
 Every process this framework ran used to be hardcoded to bun. The verifier spawned `bunx tsc --noEmit`; the tests stage spawned `bun test <file> -t <name>`; an oracle locator derived a `bun test` argv, with an `argv` override bolted on for a project whose runner was not the default; and **lint did not exist**, because the `policy` stage was a stub that returned "passed". A consumer had no way to say how its own project is checked.
 
-[`src/core/commands.ts`](./src/core/commands.ts) is that way. Four functions, from typed arguments to a command:
+[`packages/core/src/core/commands.ts`](./packages/core/src/core/commands.ts) is that way. Four functions, from typed arguments to a command:
 
 ```ts
 export type CommandArgs = {
@@ -357,7 +370,7 @@ Both effect executors run it, because a command needs no VCS behind it and an ex
 
 ### The JUnit rule
 
-The verdict a test run produces used to come from scraping bun's own summary lines. That worked, and it was wrong in one specific way: it made the verdict a function of one runner's human output, so a consumer with any other runner could not be measured at all. Now the declared command is told **where to write a JUnit report**, and [`src/vcs/junit.ts`](./src/vcs/junit.ts) is the one place in the repository that reads one.
+The verdict a test run produces used to come from scraping bun's own summary lines. That worked, and it was wrong in one specific way: it made the verdict a function of one runner's human output, so a consumer with any other runner could not be measured at all. Now the declared command is told **where to write a JUnit report**, and [`packages/core/src/vcs/junit.ts`](./packages/core/src/vcs/junit.ts) is the one place in the repository that reads one.
 
 The flags in `targets/todo/commands.ts` were **measured against bun 1.3.12**, not assumed: `bun test <file> -t <name> --reporter=junit --reporter-outfile=<path>` writes a `<testsuites>` document with `tests`, `failures` and `skipped` counts and one `<testcase>` per test. It does **not** create the report's parent directory, so the stage mints a temp one. A run whose file does not parse, or whose import does not resolve, writes **no document at all**.
 
@@ -530,7 +543,7 @@ The DELIVER step cycle is the design's fixed graph: implement until green, refac
 
 **The cycle starts at `implement`, and nothing precedes it.** There is no oracle node and no RED node, because neither has anything left to do: the oracle was authored and executed in [its own graph](#the-oracle-graph-the-model-decides-and-software-measures), and this one reads the recorded verdict. So "no edge bypasses RED" is a **readiness precondition** rather than a topology claim — a row whose oracle has no `red` in `oracle_runs` never becomes ready — which mirrors the shipped runner's own rule that with no recorded oracle the next step for a value is `des oracle`, never `des craft`.
 
-That is a stronger guarantee than an edge, not a weaker one. An edge could be reached with a fabricated observation; a row that is not ready has no run at all. `todo:deliver` refuses such a row **by name** rather than skipping it.
+That is a stronger guarantee than an edge, not a weaker one. An edge could be reached with a fabricated observation; a row that is not ready has no run at all. Both front doors refuse such a row **by name** rather than skipping it: the scheduler through `eligible`, and a run started by hand in its seed.
 
 Three nodes are **not** leaves: [`run-tests`](#run-tests-is-effect-driven) and [`gates`](#gates-is-effect-driven-too) read an effect's result, and `test-loop.head` is a pure branch. A node whose answer a cheaper thing already produces does not get a model, and "cheaper" now includes "a command's exit status" and "a measurement another wave already took".
 
@@ -574,7 +587,7 @@ An effect type the space does **not** declare is refused rather than answered `c
 
 The oracle adds a third thing the DELIVER walk has to vary, and it is neither a decision nor an effect: `oracle.route` reads the *inventory*. That is the same shape the roadmap walk already has, where two branches read pure functions of the roadmap, so the walk chooses between an inventory that locates and one that does not, exactly as the roadmap walk chooses between proposals.
 
-**One `human` node, outside all three loops.** A loop body leaves only through the loop's own id, so an outcome that needs a person does not jump out of the cycle. It sets a block in state, every enclosing `until` goes true, the run unwinds, and `cycle.verdict` routes it. Reaching a bound arrives the same way with its own reason (`test-loop-exhausted`, `gates-loop-exhausted`), so a person is told which budget was spent and how many times it ran. The cycle has no such reason, because nothing inside it can ask for a second pass: every way its body can end either leaves cleanly or sets a block. Because DELIVER's person sits outside the loops, the "a suspension inside a loop body resumes into the same iteration" guarantee is tested in `src/core/workflow.test.ts` against a hand-built graph, where the assertion can be exact: the trace reads `spin, ask, apply, spin, ask` rather than `spin, ask, spin, ask`.
+**One `human` node, outside all three loops.** A loop body leaves only through the loop's own id, so an outcome that needs a person does not jump out of the cycle. It sets a block in state, every enclosing `until` goes true, the run unwinds, and `cycle.verdict` routes it. Reaching a bound arrives the same way with its own reason (`test-loop-exhausted`, `gates-loop-exhausted`), so a person is told which budget was spent and how many times it ran. The cycle has no such reason, because nothing inside it can ask for a second pass: every way its body can end either leaves cleanly or sets a block. Because DELIVER's person sits outside the loops, the "a suspension inside a loop body resumes into the same iteration" guarantee is tested in `packages/core/src/core/workflow.test.ts` against a hand-built graph, where the assertion can be exact: the trace reads `spin, ask, apply, spin, ask` rather than `spin, ask, spin, ask`.
 
 ### ROADMAP: the roadmap is data, and this is the graph that writes it
 
@@ -672,7 +685,7 @@ That is a position rather than an omission. Every route into `human` is a block 
 
 The roadmap is rows. The step cycle is one fixed graph. The scheduler instantiates the graph once per row and runs the ready set concurrently. Two waves use it now: DISTILL runs one oracle turn per value in dependency order, and DELIVER runs the step cycle per row.
 
-**[`src/core/scheduler.ts`](./src/core/scheduler.ts) is generic.** A row is `{ id, dependencies }` and nothing else; what a row means, where it is read from, and what its run does are the consumer's.
+**[`packages/core/src/core/scheduler.ts`](./packages/core/src/core/scheduler.ts) is generic.** A row is `{ id, dependencies }` and nothing else; what a row means, where it is read from, and what its run does are the consumer's.
 
 ```ts
 openScheduler<S>({
@@ -727,9 +740,69 @@ run(wf, state, execute, runtime?)
 resume(wf, runId, answer, execute, runtime?)
 ```
 
-`:memory:` is the default and is what the whole suite runs on. A `file:` URL opens libSQL, and that is what makes the roadmap workflow's human-review gate two commands instead of one: `todo:roadmap` parks a run and exits, a person reads it, `todo:review` opens a new runtime over the same file and continues the same run. `src/core/durable-snapshots.test.ts` proves it the only way that means anything — two runtime instances over one file, the first dropped before the second is built — and pairs it with the negative, a second runtime on a *different* file that cannot see the parked run.
+`:memory:` is the default and is what the whole suite runs on. A `file:` URL opens libSQL, which is what lets a parked run outlive the process that parked it: the todo target's runtime is a file in its run directory, so a server restarted against the same run directory can still answer a suspension its predecessor produced. `packages/core/src/core/durable-snapshots.test.ts` proves it the only way that means anything — two runtime instances over one file, the first dropped before the second is built — and pairs it with the negative, a second runtime on a *different* file that cannot see the parked run.
 
 **Two adapters rather than one, and the split is measured.** Running the whole suite on `LibSQLStore({ url: ":memory:" })` also works, and took **20.6 s** against **4.6 s** on `InMemoryStore` when it was measured: the enumerated paths — 992 of them now — write a snapshot per step, and a SQL round trip per write is 4.5× the cost of a map write. The durable path needs a database; the in-memory one needs a map.
+
+## The server and the UI
+
+**The entrypoint is a server, and a UI over it.** A target declares what it can run and calls `serve`; `targets/todo/.des/main.ts` is that file, and it is a list of registrations and one call.
+
+```ts
+import { serve } from "@des/server";
+await serve({ workflows: [...], pipelines: [...], artifacts, fallback: ui() });
+```
+
+Four things are decided by that, and each is a position rather than a convenience.
+
+**The UI draws the AUTHORED graph, never the compiled one.** The compiler emits nested workflows with per-path ids — `wf:cycle>test.verdict=green.implement` — and a node reachable from two branch edges is compiled twice under two names, neither of which its author wrote. Drawing that would draw the compile. So `project()` reads the node map through the harness's own `inspectGraph` and `loopBody` — the same walk `compileWorkflow` admits a graph with — and reports the ids in the source. A branch arrives with its whole edge table; a loop with its bound and the nodes inside its body; a suspend node with the closed enum a person will choose from, read off its own `resumeSchema`.
+
+**Mastra's runtime sits under the server rather than beside it.** Runs, snapshots, suspend and resume stay the engine's; `run` and `resume` are still `@des/core`'s. What the server adds is the half neither has an opinion about: which graph a person authored, which of its nodes a run is on, what each leaf attempt decided and cost, and which rows of a pipeline are waiting on which. Live node events come from the engine's own stream, projected back onto authored ids by the compiler that minted the compiled ones.
+
+**A pipeline is a registered composition.** The roadmap is rows, the step cycle is one fixed graph, and the scheduler instantiates it once per row — so a pipeline registers as data (its rows, their dependencies, the status each projects) and is shown as a run tree. Its state is a projection, so watching one means re-reading it: there is no hook to subscribe to, and inventing one would ask every consumer to report what its own projection already says.
+
+**A suspension is answered in the UI.** A parked run raises a notification and a dialog whose buttons are the node's own closed enum. A person cannot answer with something the node would refuse, because nothing else is offered; an answer that somehow is refused comes back a 400 naming the enum, and the run stays parked.
+
+### The registration
+
+```ts
+type WorkflowRegistration<S, I> = {
+  id: string;
+  title: string;
+  input: z.ZodType<I>;                          // what a person supplies, and the POST body's parser
+  graph: (ctx: GraphContext) => Workflow<S>;    // built over the journal and the observer
+  seed: (input: I) => S;
+  executor: (ctx: { runId: string; input: I }) => EffectExecutor;
+  journal: Journal;
+  runtime?: WorkflowRuntime;
+  observe?: StepObserver;                       // the target's own sink, called before the server's
+};
+```
+
+Two of those shapes are worth defending. **The graph is a factory** because a `Workflow<S>` has its journal and its observer already closed over, and "what did each attempt cost" is exactly what a person watching wants — so the server supplies both, which is the signature every graph builder in this repository already has. **The executor sees the run's input** because its two ownership options are facts about what the run is ABOUT: which oracle this row's crafter is walled off from, and which failing tests it did not cause.
+
+### The surface
+
+| Route | What it answers |
+|---|---|
+| `GET /api/workflows` | Every registration: its title, its authored graph, and the JSON Schema of its input. |
+| `POST /api/workflows/:id/runs` | Start a run. The run executes asynchronously and the id comes back at once. |
+| `GET /api/runs` · `GET /api/runs/:runId` | Status, the trace with iteration counters, the suspension and its answer space, the terminal, and every leaf attempt. |
+| `POST /api/runs/:runId/resume` | Answer a suspension. Outside the enum is a 400 naming it. |
+| `GET /api/events` | SSE: `run-started`, `node-entered`, `node-left`, `leaf-attempt`, `suspended`, `resumed`, `terminal`, `pipeline-row`. |
+| `GET /api/artifacts/:table` · `/:id?version=` | The rows, now or at a past version. |
+| `GET /api/pipelines` · `/:id` | The compositions, and one's run tree with the error that stopped its last run. |
+| `POST /api/pipelines/:id/run` · `/rows/:rowId/resume` | Run the ready set; answer a parked row. |
+
+**The run id is the server's, and the engine's is recorded beside it.** `run` mints its own and hands it back when it stops, so a POST that must answer with an id before the run has done anything has nothing to answer with.
+
+### The drawing
+
+JointJS paints and dagre lays out. Every id on the canvas is one the author wrote. A branch's edges carry the key they are taken on. A loop's body is a dagre **cluster** and comes out as a dashed box with the bound written on it — which is what makes a bounded loop legible as a bound rather than as an arrow that goes backwards — and the loop node sits outside that box, because it is the thing that decides whether there is another iteration rather than part of one. A run paints itself over the same drawing: every node it entered, the one it is on, and the iteration counter on anything it entered twice.
+
+**One process.** The app builds as a SPA — a prerendered shell plus a client — so `serve({ fallback: ui() })` serves it from disk beside the API it is a client of: hashed assets by path, the shell for every route the client owns. No proxy and no second origin, which is what makes `/api` a relative URL in the client and a relative URL the right thing for it to be. Development is the other way round and says so: `bun run ui:dev` serves the app with hot reload and proxies `/api` back to a running server. `dist/` is not committed, and a server whose UI is not built answers 503 with the command that builds it.
+
+**No browser has rendered it.** There is no browser automation here. What is tested is the projection (all four graphs, every node under the id its author wrote), the layout (a loop's body lands inside its own box), the HTTP surface end to end on a real port through a suspension and back, and the mount (the shell and its assets on the same origin as `/api`).
 
 ## The todo target
 
@@ -766,25 +839,26 @@ It imports the `Commands` type and nothing else, so the import is erased before 
 
 **The template is never mutated.** Every run copies it to `runs/<name>/todo/` and works there.
 
-### The commands
+### The server
 
-```
-ANTHROPIC_API_KEY=... bun run todo:roadmap first          # author, park at human-review
-ANTHROPIC_API_KEY=... bun run todo:review  first approve  # resume in a second process
-ANTHROPIC_API_KEY=... bun run todo:distill first          # the facts, then the oracle, measured
-ANTHROPIC_API_KEY=... bun run todo:deliver first          # the step cycle, once per red-oracled row
-                      bun run todo:report  first          # the table. No key: it reads a file
+```bash
+bun run ui:build                    # once, so there is a UI to serve
+bun run todo [run-name]             # http://localhost:3000, run directory `first`
 ```
 
-and `todo:resume <name> <row> <commit|abandon>` for a DELIVER row that parked. A run directory holds the copied project plus five files — `vcs.sqlite`, `artifacts.sqlite`, `journal.sqlite`, `mastra.sqlite`, `report.jsonl` — and `run.json`, because the commands are separate processes and nothing is held between them. `runs/` is gitignored. `test/` is tracked only once it exists, because the oracle is what creates it.
+`targets/todo/.des/main.ts` is a list of registrations and a call to `serve`. It replaced six commands, which were six processes over one run directory, each holding nothing and reading everything back out of five files — because a suspension had to survive the exit of the process that produced it. A server stays up, so a suspension is answered where it is read.
 
-`todo:distill` prints each value's obligations, its oracle and its supports, then the **measured verdict** per value. `todo:deliver` refuses a value with no red oracle by name rather than skipping it.
+It registers **four graphs** — `roadmap`, `obligations`, `oracle`, `deliver` — and **two pipelines**: `oracles` (one oracle per value, in dependency order) and `delivery` (the step cycle, once per red-oracled row). A graph and a pipeline are two front doors onto the same fixed graph, and neither escapes what the other enforces: starting one DELIVER row by hand refuses a row whose oracle has not been measured red, by name, exactly as the scheduler's `eligible` does.
+
+A run directory holds the copied project plus four stores and the report — `vcs.sqlite`, `artifacts.sqlite`, `journal.sqlite`, `mastra.sqlite`, `report.jsonl` — all of them files, so a restarted server continues rather than beginning again. `runs/` is gitignored. `test/` is tracked only once it exists, because the oracle is what creates it.
+
+**It starts without a key**, and that is a position rather than a convenience. The graphs, the projections, the artifact rows and the event stream are all readable without one, so refusing at the door would make every one of them unreadable to say one thing about a leaf. The refusal is where the need is: a leaf with no key throws by name, `runStep` records it as a trail entry the way it records any provider error, and the graph routes the exhausted leaf where it routes one. Measured rather than assumed — starting a roadmap run with no key parks it at `human` under `validator-exhausted`, with the credential message on both attempts and in the trail, and the server still up.
 
 Models: `decompose` on `anthropic/claude-opus-5`, `author-oracle` and `implement` on `anthropic/claude-sonnet-5`, every other leaf and every validator on `anthropic/claude-haiku-4-5`. `author-oracle` sits on the open-output class for the same reason `implement` does — writing an executable oracle that falsifies every obligation through a declared port is code generation, and what makes it safe is narrow validation plus a measurement, not a smaller model. No escalation is wired, deliberately: `escalateTo` unset is what makes the report's exhaustion count the number of decisions the *small* models could not get past their own validators.
 
 **The design source is `design.md` plus the VCS symbol inventory**, and the addition is load-bearing: `predictedTouches` and `implement`'s `symbolId` are opaque VCS ids assigned at track time, so a model that has never seen the inventory names one that does not exist and every write it proposes comes back `rejected: contract`.
 
-Full detail in [`examples/nwave/README.md`](./examples/nwave/README.md#targetstododes--the-three-waves-pointed-at-a-real-project).
+Full detail in [`examples/nwave/README.md`](./examples/nwave/README.md#targetstododes--the-waves-pointed-at-a-real-project).
 
 ### The stubbed end-to-end
 
@@ -811,15 +885,15 @@ Every leaf call appends one JSON line to `runs/<name>/report.jsonl`:
  "workerTokens":{"input":2104,"output":312},"validatorTokens":{"input":1580,"output":44}}
 ```
 
-`bun run todo:report <name>` turns those into a table: per leaf, how many model calls it made, how many decisions those calls produced, how many were accepted first try, how many exhausted, how many attempts a validator or a mechanical check refused, and the tokens. **The gap between `calls` and `decided` is the number worth reading** — it is what the validator and the mechanical checks cost, in inference, to keep the graph honest, and it is the open question the design says should be measured before the legibility argument is used to justify the approach.
+**The gap between the calls a leaf made and the decisions it produced is the number worth reading** — it is what the validator and the mechanical checks cost, in inference, to keep the graph honest, and it is the open question the design says should be measured before the legibility argument is used to justify the approach. It is in the file, one line per call, and the same facts are on each run in the UI. The table that used to render it went with the command that printed it.
 
 A journal HIT writes no line, because no model was called; counting a replay as a call would make every rate a fiction.
 
-Three facts join into a line from three places: the attempt from `runStep`'s observer seam, the row from the per-row observer the pipeline builds, and the tokens from `mastraAgent`'s `onUsage`. Token attribution is **order-based** — inside one `runStep` the calls are worker, then validator, and the observer fires after both — so it holds only while one leaf is in flight, which is why `todo:deliver` runs at concurrency 1 and why a line written at a higher concurrency carries `concurrent: true`.
+Three facts join into a line from three places: the attempt from `runStep`'s observer seam, the row from the per-row observer a pipeline builds (or the graph's own id, for a run started by hand), and the tokens from `mastraAgent`'s `onUsage`. Token attribution is **order-based** — inside one `runStep` the calls are worker, then validator, and the observer fires after both — so it holds only while one leaf is in flight. A server does not serialise its runs, so every line it writes carries `concurrent: true`: the decision columns are exact and the token columns are not attributable.
 
 ## The real run
 
-**Not performed.** At the time of this cut no Anthropic credential was available in the environment: `ANTHROPIC_API_KEY` is unset and there is no `ant` CLI to check. Every `todo:*` command that calls a model refuses by name rather than proceeding, and nothing in this repository fabricates a transcript.
+**Not performed.** At the time of this cut no Anthropic credential was available in the environment: `ANTHROPIC_API_KEY` is unset and there is no `ant` CLI to check. Every leaf that would call a model refuses by name rather than proceeding, and nothing in this repository fabricates a transcript.
 
 Everything except the inference is exercised without it. What the real run would answer, and nothing else can:
 
@@ -832,13 +906,11 @@ Everything except the inference is exercised without it. What the real run would
 To perform it:
 
 ```bash
-ANTHROPIC_API_KEY=... bun run todo:roadmap first
-#   read the printed roadmap, then
-ANTHROPIC_API_KEY=... bun run todo:review first approve
-ANTHROPIC_API_KEY=... bun run todo:distill first
-ANTHROPIC_API_KEY=... bun run todo:deliver first
-                      bun run todo:report first
+bun run ui:build
+ANTHROPIC_API_KEY=... bun run todo
 ```
+
+then, in the UI: run `roadmap`, read the roadmap it parks with and answer `approve`; run `obligations`; run the `oracles` pipeline; run the `delivery` pipeline. The report lands in `runs/first/report.jsonl`.
 
 Or, for the smallest real thing — one oracle, one subagent, one measurement, no run directory:
 
@@ -876,7 +948,7 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 13. **The graph is recompiled per `run` and per `resume`.** Compilation is a pure function of the graph and costs about 0.2 ms, so `run` builds the Mastra workflow each time rather than caching it. That is what lets `resume` take a `Workflow<S>` rather than a live handle: it rebuilds the identical workflow and reattaches by `runId`.
 
-14. **Tests beyond the two in the document.** The document shows two tests. This repo ships 240 outside the VCS module (95 more inside it), including the compiler's graph-bug rejections, six malformed-loop rejections, the snapshot assertions behind suspend/resume, a cross-process resume over a libSQL file, a `Run.restart()` exercise, the `runStep` unit tests, the `leaf` constructor's ownership of the exhaustion trail, the Claude Code binding against a scripted `query`, the three mechanical checks, the effect executor's optimistic concurrency, the path walker's own arithmetic, the observer seam's view of a refused attempt, the todo target delivered end to end against a real gate, and a source scanner that fails the build if `Date.now`, `Math.random`, or `new Date(` appears in the contract, the compiler, or any decision-function file. That scanner was verified by planting a violation in `compile.ts` and watching it fail.
+14. **Tests beyond the two in the document.** The document shows two tests. This repo ships 495, including the compiler's graph-bug rejections, six malformed-loop rejections, the snapshot assertions behind suspend/resume, a cross-process resume over a libSQL file, a `Run.restart()` exercise, the `runStep` unit tests, the `leaf` constructor's ownership of the exhaustion trail, the Claude Code binding against a scripted `query`, the three mechanical checks, the effect executor's optimistic concurrency, the path walker's own arithmetic, the observer seam's view of a refused attempt, the todo target delivered end to end against a real gate, the four graphs projected as a drawing reads them, the HTTP surface driven through a suspension and back on a real port, and a source scanner that fails the build if `Date.now`, `Math.random`, or `new Date(` appears in the contract, the compiler, or any decision-function file. That scanner was verified by planting a violation in `compile.ts` and watching it fail.
 
 15. **Nested workflow ids carry the path that reached them.** The previous cut named a branch tail `${branchId}=${key}`, which collides once a node is reachable by two different paths and has a branch of its own. DELIVER has exactly that shape: `commit` is reached from `cycle.verdict` and from `human.route`. Ids are now `${parentSegmentId}>${branchId}=${key}`, unique by construction. The top-level id is unchanged (`wf:${wf.start}`), so `resume` still reattaches.
 
@@ -894,9 +966,9 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 22. **The DISTILL exhaustion trail line changed shape.** It was `{"kind":"benchmark",…}`, written by hand; it is `{"leaf":"benchmark",…}`, written by the constructor, because one line format for both graphs is the point of moving it there. That is the one existing assertion this cut changed.
 
-23. **`EffectResult`'s `rejected.by` gained `contract` and `structural`.** It was `typecheck | tests | schema`, which cannot express the contract-violation category the VCS distinguishes from a verification failure — "you declared one thing and did another" is not the same answer as "your change broke a test", and § 5.4 of `ai-vcs.md` is explicit that the responses differ. It is now `typecheck | tests | schema | contract | structural`, and `structural` is the narrower case of "the edit does not parse". This is the only change to `src/core` this cut made. `memoryEffects` needed no edit, because it never produced a `rejected` outcome. The `Effect` union did **not** need extending: `replace-symbol` already carries `symbolId`, `expectedVersion` and `body`, and the lease and the intent belong to the executor rather than to the graph.
+23. **`EffectResult`'s `rejected.by` gained `contract` and `structural`.** It was `typecheck | tests | schema`, which cannot express the contract-violation category the VCS distinguishes from a verification failure — "you declared one thing and did another" is not the same answer as "your change broke a test", and § 5.4 of `ai-vcs.md` is explicit that the responses differ. It is now `typecheck | tests | schema | contract | structural`, and `structural` is the narrower case of "the edit does not parse". This was the only change to the framework's own core that cut made. `memoryEffects` needed no edit, because it never produced a `rejected` outcome. The `Effect` union did **not** need extending: `replace-symbol` already carries `symbolId`, `expectedVersion` and `body`, and the lease and the intent belong to the executor rather than to the graph.
 
-24. **The no-nondeterminism scanner covers `src/vcs/**` and gained `randomUUID`.** The VCS takes its clock and its id generator as constructor arguments so that a lease TTL is a function call rather than a wait; `src/vcs/defaults.ts` is the one file allowed to supply the real ones, and it is the one file excluded. A fourth test asserts that the exemption has something behind it, because a defaults file that read no clock would mean the injection seam is decorative.
+24. **The no-nondeterminism scanner covers `packages/core/src/vcs/**` and gained `randomUUID`.** The VCS takes its clock and its id generator as constructor arguments so that a lease TTL is a function call rather than a wait; `packages/core/src/vcs/defaults.ts` is the one file allowed to supply the real ones, and it is the one file excluded. A fourth test asserts that the exemption has something behind it, because a defaults file that read no clock would mean the injection seam is decorative.
 
 25. **`Effect`'s `run-tests` gained `extra`, and the floor moved into the VCS.** The design's union has one field, `impacted`, which makes test selection the workflow's in both directions. `extra?: string[]` splits it: the VCS recomputes the floor from the symbols the batch wrote and refuses a union that misses one of its tests. The shape that forced is a signature the design does not name — `WritePath.runTests` takes `extra` and `wrote` beside `symbolIds`, and `ImpactGraph` gained `testsById` so a test id is runnable at all. Three named sets rather than one, because "the floor is computed by the VCS, not trusted from the effect" needs the written symbols to reach the place that computes it, and the design specifies the rule without specifying the call. See [The `run-tests` union](#the-run-tests-union).
 
@@ -939,7 +1011,7 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 44. **The tests stage excludes every test the BATCH is rewriting, not just the write in hand.** Deviation 34 established the exclusion and scoped it per write. The todo target broke it: a value with TWO acceptance tests writes both as two writes under one lease, and the per-write filter leaves the first in the second's impacted set — where it fails, by design, because the production code it asserts is still a stub. The lease is what names the batch, so the lease is what the filter is over. A defect found by pointing the framework at a real project, which is what the target is for.
 
-45. **`bun test` is scoped to `src/` by `bunfig.toml`.** `targets/` is a template project and `runs/` holds copies of it, including the oracles DISTILL writes into them; both would otherwise be collected by a bare `bun test` at the root. The root `tsconfig.json` excludes the same two directories, because the target has its own and the copies are typechecked by the write path's own `tsc` stage, inside the run.
+45. **`bun test` names its roots rather than scanning the tree.** `bun test ./packages ./examples ./targets/todo/.des`. A target's own project files and the run copies under `runs/` — including the oracles DISTILL writes into them — would otherwise be collected by a bare `bun test` at the root. The root `tsconfig.json` excludes the same two, because the target has its own and the copies are typechecked by the write path's own `tsc` stage, inside the run.
 
 46. **`run-tests.red`, `oracle` and `activate-at` are deleted, and RED moved a layer out.** The previous cut had DELIVER locate a pre-authored acceptance test behind a `test.skip(` marker, strip the marker, and classify the first run. All three were built on a model of DISTILL that the shipped nwave runner does not have: nothing there pre-authors a body behind a marker, and `des oracle` is a separate step that WRITES the test and has software measure it. So the step cycle starts at `implement`, and "no edge bypasses RED" is a readiness precondition — `oracleIsRed` on the `oracle_runs` projection, `eligible` on the scheduler — which is stronger than an edge rather than weaker, because an edge can be reached with a fabricated observation and a row that is not ready has no run at all.
 
@@ -963,11 +1035,11 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 56. **`support-ignored` is answered by an injected predicate, not by the VCS.** `git check-ignore` is the only thing that can say whether a repository ignores a path, and the VCS has no opinion: its registry tracks what it was told to track. A repository with no git in it answers `false`, because an unanswered ignore question is not a defect and refusing every support in a checkout without git would be inventing one.
 
-57. **`Commands` is new public surface, and it is `src/core`'s.** The design document's effect union has no `run-command` and no notion of a declared command; every process was hardcoded to bun, and `measure-oracle` carried an `argv` override as the escape hatch. `src/core/commands.ts` replaces that with a contract: `CommandArgs`, `Command`, `Commands`, `normalizeCommand`, and the one `runCommand` behind every process the framework runs. `measure-oracle`'s `argv` is **deleted** rather than kept beside it, because two ways to name the runner is one more than "there is one declaration" allows. See [Declared commands](#declared-commands).
+57. **`Commands` is new public surface, and it is the framework core's.** The design document's effect union has no `run-command` and no notion of a declared command; every process was hardcoded to bun, and `measure-oracle` carried an `argv` override as the escape hatch. `packages/core/src/core/commands.ts` replaces that with a contract: `CommandArgs`, `Command`, `Commands`, `normalizeCommand`, and the one `runCommand` behind every process the framework runs. `measure-oracle`'s `argv` is **deleted** rather than kept beside it, because two ways to name the runner is one more than "there is one declaration" allows. See [Declared commands](#declared-commands).
 
-58. **`src/vcs` now imports `src/core/commands.ts` as well as the two effect types.** The stated boundary was "`executor.ts` imports `Effect` and `EffectResult` and nothing else from the framework". The verifier is constructed with `Commands` and emits `run-command` effects through an injected executor, which is what makes "typecheck, lint, tests and the oracle are compositions of one effect" structurally true rather than a claim; that needs three types and one function across the seam. The direction is unchanged: `src/core` still imports nothing from `src/vcs`.
+58. **The VCS module now imports `core/commands.ts` as well as the two effect types.** The stated boundary was "`executor.ts` imports `Effect` and `EffectResult` and nothing else from the framework". The verifier is constructed with `Commands` and emits `run-command` effects through an injected executor, which is what makes "typecheck, lint, tests and the oracle are compositions of one effect" structurally true rather than a claim; that needs three types and one function across the seam. The direction is unchanged: `core` still imports nothing from `vcs`.
 
-59. **`commandOf`, `commandOutput`, `commandEffect` and `executeCommand` sit beside `measurementOf` in `src/core/effects.ts`.** None is named by the design. `commandOf` is the narrowing `measurementOf` already established, one field over; `commandEffect` is the one place a normalised command becomes an effect, so a stage never has to remember which fields are optional; `executeCommand` is shared by both executors, because a command means the same thing to both and duplicating a spawn across the core/VCS boundary is the drift this repo spends its comments avoiding.
+59. **`commandOf`, `commandOutput`, `commandEffect` and `executeCommand` sit beside `measurementOf` in `packages/core/src/core/effects.ts`.** None is named by the design. `commandOf` is the narrowing `measurementOf` already established, one field over; `commandEffect` is the one place a normalised command becomes an effect, so a stage never has to remember which fields are optional; `executeCommand` is shared by both executors, because a command means the same thing to both and duplicating a spawn across the core/VCS boundary is the drift this repo spends its comments avoiding.
 
 60. **The `policy` stage is deleted, not renamed.** It was a stub that returned "passed", justified by neither of `ai-vcs.md` § 6.1's policy mechanisms being built. `lint` is not that stage with a new name: it takes the paths a write touched, runs a command a consumer declared, and rejects with `by: "lint"`. `RejectedBy` gained `lint` for it and `command` for an exit nothing has interpreted yet. `STAGE_NAMES` is `structural | typecheck | lint | tests`.
 
@@ -983,12 +1055,34 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 66. **The repo's `tsconfig.json` gained an `include`.** It excluded `targets` wholesale. `targets/*/commands.ts` is the one file in a target that declares conformance to a framework type, so it is typechecked here; everything else in a target is that target's own project, checked by the target's own declared typecheck command inside a run.
 
-Source is ~25,340 lines: ~14,950 of implementation and ~10,390 of tests. The VCS module is ~7,410 of that, split ~4,010 implementation and ~3,390 tests; DISTILL is ~3,160, split ~2,320 and ~840; DELIVER is ~3,660, split ~2,050 and ~1,610; the roadmap example is ~2,450, split ~1,730 and ~720; the todo composition is ~2,370, split ~1,500 and ~880; the artifact store is ~420, split ~190 and ~230.
+67. **The repository is a bun workspace, and the framework is `@des/core`.** `src/` became `packages/core/src`, with `@des/server` and `@des/ui` beside it. Consumers import subpaths — `@des/core/workflow` — resolved through the package's own `exports` map rather than a `paths` alias, because `moduleResolution: "bundler"` reads exports and bun resolves the same way at run time: one resolution story rather than two, and no relative path into a package. The map points at the TypeScript sources; bun runs `.ts` directly, so there is no build step and no compiled copy between a stack trace and its source. `targets/todo` is deliberately not a member: it is a template a run COPIES, and a workspace member is a thing bun links.
+
+68. **`run` and `resume` take an optional watcher, and it reports AUTHORED node ids.** `trace` is only readable once a run has stopped, and a person watching one wants to see where it is. A run with no watcher takes the path it always took, through the same `start` call; a watched one goes through the engine's streaming entry point, which resolves the identical `WorkflowResult` — `success`, `suspended` and `failed` all arrive through `.result` rather than as a rejection. The two stay separate because an event stream nobody reads is a queue that fills. The projection back onto authored ids lives in `compile.ts` because that is the file that minted the compiled ones: a nested workflow's prefix is stripped, a loop's `#iteration` is the loop entering and its `#exit` is the loop leaving, and everything else the compiler minted is dropped.
+
+69. **A `step` node gained an optional `leaf`, set by the `leaf` constructor.** The compiler does not read it — a leaf IS a step, and telling them apart would buy the compiler nothing. What reads it is whatever has to say which nodes are model calls: a drawing of the graph, a report over what each leaf decided. It carries the `StepDef` id, which is the same id `StepAttempt.stepId` carries, so the two join. The alternative was a hand-maintained list beside the graph, which drifts.
+
+70. **The server's run id is its own, and the engine's is recorded beside it.** `run` mints a run id and hands it back when the run stops, so a `POST` that must answer with an id before the run has done anything has nothing to answer with. The API's id is the server's; the engine's is on the record, and is what a resume reattaches to.
+
+71. **A registration's `graph` is a factory and its `executor` sees the input.** The obvious shapes — a `Workflow<S>` value and an `executor(runId)` — cannot do their jobs: a graph handed over has its observer already closed over, so the server cannot see what its leaves decided, and an executor that cannot see what the run is ABOUT cannot wall off that row's oracle or excuse the red tests it did not cause.
+
+72. **A pipeline is watched by re-reading it, and its refusal is held.** Its state is a projection — the scheduler persists nothing of its own — so there is no hook to subscribe to and inventing one would ask every consumer to report what its own projection already says. The rows are re-read on a period while a run is in flight and every status that moved is published. A refusal (DELIVER's "no oracle measured red") lands on `GET /api/pipelines/:id` as `error`, because the run is asynchronous and the POST that started it answered long ago.
+
+73. **A suspend node's REASON is not projected, and its answer space is.** `reason` is `(s: S) => string`, a function of state, so the closed set it draws from lives in the consumer's own enum and not in the node; `resumeSchema` is a value, so the answers are readable. The half a person has to choose from is the half that travels, and the reason arrives with the suspension itself.
+
+74. **The credential is refused at the leaf, not at the door.** The six `todo:*` commands checked for a key and exited. A server cannot: the graphs, the projections, the rows and the event stream are all readable without one. So the binding throws by name when it is asked to generate, `runStep` records it as a trail entry the way it records any provider error, and the graph routes the exhausted leaf where it routes one — which for the roadmap graph is a park at `human` under `validator-exhausted`, with the message on both attempts and in the trail.
+
+75. **The run report kept its writer and lost its table.** `summarize` and `renderTable` had one reader, `todo:report`, and that command went with the other five. The lines are still written per run directory, one per model call; the same facts are on each run in the UI. A renderer nothing renders is dead code, and the deletion took its tests with it.
+
+Source is ~28,800 lines: ~17,530 of implementation and ~11,280 of tests. The VCS module is ~7,410 of that, split ~4,010 implementation and ~3,400 tests; DISTILL is ~3,160, split ~2,320 and ~840; DELIVER is ~3,690, split ~2,080 and ~1,610; the roadmap example is ~2,450, split ~1,730 and ~720; the server is ~1,910, split ~1,390 and ~510; the UI is ~1,620, split ~1,410 and ~210; the todo composition is ~1,910, split ~1,040 and ~870; the artifact store is ~420, split ~190 and ~230.
 
 ## Not built yet
 
 - **Emitting a Mastra dynamic-workflow JSON definition from a `Workflow<S>`.** Mastra's dynamic workflows (beta) are the design's "graph topology as data" already built: a JSON graph over registered agents, tools, and nested workflows, validated and persisted by `addDynamicWorkflow()`. The compiler currently emits live `createStep` closures; emitting the JSON definition instead is what would let the authoring workflow write a graph without writing source.
-- **A real-model run.** Every command exists and every one of them refuses without a key. None has been run against a model. See [The real run](#the-real-run).
+- **A real-model run.** The server exists, every graph is registered, and a leaf refuses by name without a key. None has been run against a model. See [The real run](#the-real-run).
+
+- **Browser automation for the UI.** What is tested is the projection, the layout, the HTTP surface end to end, and the mount. What is not tested is that a browser renders any of it: there is no headless browser here, nothing asserts on a rendered node, and no screenshot has been taken. The claim "the graph is drawn" rests on the code and on nobody's eyes.
+
+- **OpenAI-compatible endpoints in the Mastra binding.** `mastraAgent` takes a `provider/model` string and lets Mastra's model router resolve the key from the environment, which covers the providers the router knows. A consumer whose model sits behind an OpenAI-compatible URL of its own — a gateway, a proxy, a local server — has no way to say so through the binding, and would have to write a second `ModelBinding`. The seam is one method, so that is a small thing to write and a real thing to be missing.
 - **A declared MUTATION command.** The design's quality gate is clippy plus a mutation kill rate. Lint is a declared command now; mutation is not, so `commands` has four keys and not five, the `gates` step emits one effect rather than two, and the `mutation-below-gate` verdict and the `add-test` leaf it reached are deleted rather than left with no producer. The consequence is that the outer cycle cannot iterate — see deviation 63. Adding the key is additive: a fifth `CommandArgs` member, a second effect from the same node, and a fourth gate verdict.
 
 - **A declared command per LANGUAGE, or per part of a project.** `Commands` is one set per target. A repository whose frontend and backend are checked by different tools has to say so inside one `lint` function, by branching on the paths it is handed. That works and it is not modelled; what is missing is a way to declare more than one toolchain and have the framework pick.
@@ -999,8 +1093,8 @@ Source is ~25,340 lines: ~14,950 of implementation and ~10,390 of tests. The VCS
 - **A resume path for a parked ORACLE run.** Its block node takes one answer, `abandon`, and the composition does not offer it: a parked oracle run is read from the trail and the roadmap or the design is changed instead. The projection therefore reads every non-red run as `suspended`, which is exact — every block in that graph *is* a suspension, and the only route to its `reject` terminal is a person answering.
 - **A support that is itself a value.** The manifest admits whole-file supports and refuses a support that names the oracle, but nothing stops two values declaring the same support file, and nothing sequences who writes it first. In a roadmap where that happened the second author's write would land on the first's bytes and the `wholeFileStage` identity check would be the only thing standing between them.
 - **Derived `step_edges`.** The scheduler reads the `dependencies` the roadmap row declares, and the roadmap workflow's disjointness measurement is what adds the ones the author missed. The design's stronger version derives the DAG from symbol overlap *instead of* hand-authored edges, which would remove the highest-error part of roadmap authoring from the model. The measurement exists; the replacement does not.
-- **`src/vcs`'s own remaining items**, in full in [`src/vcs/README.md`](./src/vcs/README.md#not-built-yet). The ones that matter to the framework: the **ast-grep pattern layer** (the lint stage is a declared command now, so the stubbed `policy` stage is gone, but an ast-grep layer inside the VCS is still unbuilt); the **LSP layer**, so there is no cross-file reference resolution and the declared typecheck command runs over the whole project; **coverage-refined impact**, so the test-impact graph is the static import graph alone; **per-case impact**, so the tests stage runs one declared command per impacted test rather than one command covering several; the **asynchronous verification tier**, so a slow test blocks a write rather than committing it `pending`; **wait-die** and **queued acquires**, so an acquire is fail-fast and hold-and-request has no fallback; **lease-level rollback**, so a lease whose second write fails leaves the first committed; **git export**; **cross-repository coordination**; and **authorization**, because a session is a string and any session may lease anything.
-- **The symbol-set-difference check.** `deliver.implement-to-the-design` carries no mechanical check, only a model refuting against the rule text. The symbol inventory that would make it a set difference over exported symbols now exists in `src/vcs/structural`; the check that consumes it does not.
+- **the VCS module's own remaining items**, in full in [`packages/core/src/vcs/README.md`](./packages/core/src/vcs/README.md#not-built-yet). The ones that matter to the framework: the **ast-grep pattern layer** (the lint stage is a declared command now, so the stubbed `policy` stage is gone, but an ast-grep layer inside the VCS is still unbuilt); the **LSP layer**, so there is no cross-file reference resolution and the declared typecheck command runs over the whole project; **coverage-refined impact**, so the test-impact graph is the static import graph alone; **per-case impact**, so the tests stage runs one declared command per impacted test rather than one command covering several; the **asynchronous verification tier**, so a slow test blocks a write rather than committing it `pending`; **wait-die** and **queued acquires**, so an acquire is fail-fast and hold-and-request has no fallback; **lease-level rollback**, so a lease whose second write fails leaves the first committed; **git export**; **cross-repository coordination**; and **authorization**, because a session is a string and any session may lease anything.
+- **The symbol-set-difference check.** `deliver.implement-to-the-design` carries no mechanical check, only a model refuting against the rule text. The symbol inventory that would make it a set difference over exported symbols now exists in `packages/core/src/vcs/structural`; the check that consumes it does not.
 - **The authoring workflow that writes GRAPH rows.** Bootstrap step 4: requirement rows in, graph rows out, diffed against the hand-written graph. Nothing generates a graph; all four here are hand-written, which is what makes them the oracle. The roadmap-authoring workflow is a different thing that the design's table lists on the same line: it writes *roadmap* rows, not graph rows, and it is built.
 - **Graph topology as data.** Nodes and edges are TypeScript, not rows. Exhaustiveness is the compiler's red squiggle, not a constraint query. The design takes the middle path; this prototype takes the typed end of it.
 - **`symbol-diff.ts`.** The fourth mechanical check in the design's `checks/` listing. Its input, the symbol inventory, is now built; the check is not. See the symbol-set-difference item above.

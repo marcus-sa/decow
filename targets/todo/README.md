@@ -9,7 +9,8 @@ the two stubbed method bodies in `src/todo.ts` until that oracle is green.
 **This is a template. It is never mutated in place.** Every run copies it to a
 fresh directory under `runs/<name>/todo/` (gitignored) and works there, so the
 repository stays clean and each run is a fresh checkout. See [`.des/`](.des) for
-the three commands that drive it.
+the composition that registers the four graphs against a copy of it, and
+`bun run todo` for the server that serves them.
 
 | File | What it is |
 |---|---|

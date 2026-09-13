@@ -2,8 +2,8 @@
 
 The three directories here are one consumer's waves. The target they are
 pointed at, and the composition that drives it, live under `targets/todo/` and
-`targets/todo/.des/`. The framework lives in `src/core`, `src/harness`,
-`src/bindings`, `src/vcs`, and `src/artifacts`; this directory holds what a
+`targets/todo/.des/`. The framework is `@des/core`, the server over it is
+`@des/server`, and the UI over that is `@des/ui`; this directory holds what a
 consumer owns: the graphs, the requirement rows, the prompts, the model
 bindings, and the fixtures. nWave is the consumer, and Overdrive is the first
 project it delivers.
@@ -25,8 +25,7 @@ deliver/   the scheduler reads the rows, refuses any value whose oracle is not r
            GREEN is bought by production. Each outcome is a step_runs row.
                                         │
 targets/todo/.des/  the composition that points all of it at a real project — `targets/todo`, copied
-                    into a run directory — and five commands that drive it against real models, with
-                    a run report.
+                    into a run directory — registered with one server, with a run report.
 ```
 
 An agent never writes a workflow. It fills in leaves. The graphs below are
@@ -34,7 +33,7 @@ fixed; the roadmap is the only thing authored per feature, and it is rows.
 
 ## Reading the graphs
 
-Every graph is built from the four constructors in `src/core/workflow.ts`.
+Every graph is built from the four constructors in `@des/core/workflow`.
 Three kinds of node matter when reading one:
 
 - **A leaf** is one model call through `runStep`: a worker, a validator,
@@ -283,13 +282,12 @@ What is a model call and what is not:
 at over 7,000 paths and 544 s when the cycle could still iterate; it cannot
 now, so the bound is inert until a mutation command is declared.
 
-## `targets/todo/.des/` — the three waves pointed at a real project
+## `targets/todo/.des/` — the waves pointed at a real project
 
 Files: `request.ts`, `run-dir.ts` (the run directory, the design source and the
 suite runner), `models.ts` (which model runs which leaf), `report.ts` (the run
-report), `render.ts`, the command scripts `roadmap.ts` / `review.ts` /
-`distill.ts` / `deliver.ts` / `resume.ts`, the report command `summary.ts`, and
-`todo.test.ts`.
+report), `registrations.ts` (the four graphs and the two pipelines, as the
+server holds them), `main.ts` (the server), and `todo.test.ts`.
 
 ### The target
 
@@ -327,12 +325,12 @@ runs/<name>/
   journal.sqlite     what each step decided, keyed by content
   mastra.sqlite      engine snapshots, so a parked run survives exit
   report.jsonl       one line per leaf call
-  run.json           the manifest: which roadmap, which parked run
 ```
 
-Five stores, all files rather than `:memory:`, because the commands are
-separate PROCESSES. `runs/` is gitignored. `test/` is tracked only once it
-exists, because the oracle is what creates it.
+Four stores, all files rather than `:memory:`, so a server restarted against
+the same run directory continues rather than beginning again. `runs/` is
+gitignored. `test/` is tracked only once it exists, because the oracle is what
+creates it.
 
 Every command the framework runs against the copy comes from that copy's own
 `commands.ts`, loaded by `loadCommands` and refused BY NAME when absent. The
@@ -345,36 +343,45 @@ inventory, and the addition is load-bearing: `predictedTouches` and
 that has never seen the inventory names one that does not exist and every write
 it proposes comes back `rejected: contract`.
 
-### The commands
+### The server
 
-```
-ANTHROPIC_API_KEY=... bun run todo:roadmap first          # author, park at human-review
-ANTHROPIC_API_KEY=... bun run todo:review  first approve  # resume in a second process, persist the rows
-ANTHROPIC_API_KEY=... bun run todo:distill first          # the facts, then one oracle per value, measured
-ANTHROPIC_API_KEY=... bun run todo:deliver first          # the step cycle, once per red-oracled row
-                      bun run todo:report  first          # the table. No key: it reads a file
+```bash
+bun run ui:build                      # once, so there is a UI to serve
+bun run todo [run-name]               # http://localhost:3000, run directory `first`
 ```
 
-and `todo:resume <name> <row> <commit|abandon>` for a DELIVER row that parked.
+`main.ts` opens the run directory, builds the registrations, and serves them.
+There is no command per wave any more: six of them were six processes over one
+run directory, each holding nothing, because a suspension had to survive the
+exit of the process that produced it. A server stays up, so a suspension is
+answered where it is read — in the UI, from the closed enum the node declares.
 
-- **`todo:roadmap`** copies the target, tracks it, and runs the roadmap
-  authoring workflow to the `human-review` suspension. Nothing is persisted,
-  because `persist` sits after the review.
-- **`todo:review <approve|revise|abandon> [notes]`** resumes that run **in a
-  second process**, from `run.json` plus `mastra.sqlite`, with the graph
-  recompiled from source.
-- **`todo:distill`** runs the obligations graph once, prints every value's
-  obligations, oracle and supports, then runs the oracle graph per value in
-  dependency order and prints each **measured verdict**. `author-oracle` is
-  Sonnet; the obligations leaf and every validator are Haiku;
-  `validate-manifest` and the measurement are not models at all.
-- **`todo:deliver`** reads the rows and runs the step cycle once per row at
-  concurrency 1. A value with no red oracle is refused **by name** rather than
-  skipped. `implement` is Sonnet; every other leaf is Haiku.
-- **`todo:resume <row> <commit|abandon>`** answers a parked DELIVER row, also in
-  a fresh process: `record` persisted the run id on the row's `step_runs` row.
+**Four graphs**, each startable on its own and each drawn as its author wrote
+it:
 
-No escalation is wired, deliberately: `escalateTo` is unset, so the report's
+- **`roadmap`** runs the authoring workflow to the `human-review` suspension.
+  Nothing is persisted until a person answers, because `persist` sits after the
+  review. `decompose` is Opus; `validate-slices` and its validator are Haiku;
+  `validate-shape` and `measure-disjointness` have no model in them at all.
+- **`obligations`** runs DISTILL's first half once over the roadmap. The leaf is
+  Haiku and `validate-manifest` is a total function.
+- **`oracle`** writes one value's oracle and lets software measure it.
+  `author-oracle` is Sonnet, for the same reason `implement` is.
+- **`deliver`** runs the step cycle over one row. `implement` is Sonnet; every
+  other leaf is Haiku. It refuses a row with no red oracle **by name**.
+
+**Two pipelines**, which are the same graphs under the scheduler: `oracles`
+(one per value, in dependency order) and `delivery` (the step cycle, once per
+red-oracled row, with each row's own oracle protected and every sibling's
+excused as known-red).
+
+A graph and a pipeline are two front doors onto the same fixed graph, and
+neither escapes what the other enforces: the readiness precondition is in the
+scheduler's `eligible` AND in the standalone seed.
+
+**It starts without a key.** Everything is readable; a leaf refuses by name on
+the attempt, the message lands in the run's trail, and the server stays up. No
+escalation is wired, deliberately: `escalateTo` is unset, so the report's
 exhaustion count is the number of decisions the *small* models could not get
 past their own validators.
 
@@ -383,26 +390,29 @@ past their own validators.
 Every leaf call appends one line to `report.jsonl` — run, row, step, attempt,
 model, decision, whether it was accepted, the validator's verdict and
 violations, the mechanical-check failures, and the token counts. A journal HIT
-writes nothing, because no model was called. `bun run todo:report <name>` prints
-one row per leaf.
+writes nothing, because no model was called.
 
-The gap between `calls` and `decided` is the number worth reading: it is what
-the validator and the mechanical checks cost, in inference, to keep the graph
-honest.
+The gap between the calls a leaf made and the decisions it produced is the
+number worth reading: it is what the validator and the mechanical checks cost,
+in inference, to keep the graph honest. Every line a server writes carries
+`concurrent: true`, because a server does not serialise its runs: the decision
+columns are exact and the token columns are not attributable.
 
 ## Running things
 
 ```
 bun test ./examples/nwave       # all four waves, no network, no key
-bun run smoke:oracle                 # one oracle, authored by a real subagent in the PROPOSAL shape
-bun run smoke:deliver                # DELIVER against Haiku plus three Claude Code subagents
+bun run smoke:oracle            # one oracle, authored by a real subagent in the PROPOSAL shape
+bun run smoke:deliver           # DELIVER against Haiku plus three Claude Code subagents
+bun run todo                    # the four waves, served, against a copy of the todo target
 ```
 
-Every script that calls a model refuses to run without `ANTHROPIC_API_KEY`.
+The smoke scripts refuse to run without `ANTHROPIC_API_KEY`. The server does
+not: it starts, everything is readable, and the refusal is at the leaf.
 
-**Nothing in this directory has been run against a real model.** The commands
-exist and every one of them refuses without a key. `todo.test.ts` drives all
-three waves against a real checkout, through the target's own declared commands
+**Nothing in this directory has been run against a real model.** The server
+exists and a leaf refuses without a key. `todo.test.ts` drives all three waves
+against a real checkout, through the target's own declared commands
 — a real `write-file`, a real measurement, a real `bunx tsc --noEmit`, a real
 `bunx biome check` and a real impact-scoped `bun test` at every write gate, and
 a real `bunx biome check` at the quality gate — in about 2.2 s with zero model
