@@ -5,7 +5,7 @@
  * Runs, traces, attempts and events in maps would cost more than a reader's
  * scroll position, twice over: a restarted server would show no prior run at
  * all, and a pipeline step whose run had settled would read `pending` again,
- * so a second drive would deliver it a second time. The facts are on disk in
+ * so a second drive would run it a second time. The facts are on disk in
  * four other stores, and this is the one thing that joins them.
  *
  * A SIBLING FILE, not the artifact store's. `runs.sqlite` sits beside

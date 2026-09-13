@@ -138,8 +138,8 @@ describe("the real runner", () => {
 
   test("an oracle whose import does not resolve is broken, not red", async () => {
     // The incident this whole measurement exists for: same exit status as a
-    // real failure, and charging it to the crafter would burn a paid turn on
-    // an oracle nobody could satisfy.
+    // real failure, and charging it to the step would burn a paid turn on an
+    // oracle nobody could satisfy.
     //
     // bun writes NO JUnit report for a file it could not load, so the axis is
     // `no-summary`: there is no report at all, which is evidence it ran

@@ -48,8 +48,8 @@ describe("enumeratePaths", () => {
 
   test("never walks a choice a shorter path did not reach", async () => {
     // The second choice only exists on one branch of the first, so the space
-    // is 3, not 6. This is the whole reason the DELIVER walk is four figures
-    // rather than six: unreachable combinations are never run.
+    // is 3, not 6. This is the whole reason a real graph's walk is four
+    // figures rather than six: unreachable combinations are never run.
     const paths = await enumeratePaths(async (choose) => {
       const first = choose("first", ["stop", "go"] as const);
       if (first === "stop") return "stop";

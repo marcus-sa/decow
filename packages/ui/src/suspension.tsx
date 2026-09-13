@@ -8,8 +8,8 @@
  * off the node's own `resumeSchema` by the server. A person cannot answer with
  * something the node would refuse, because nothing else is offered.
  *
- * The free-text half, when a node has one, sits under the buttons: `notes` on
- * the roadmap's review is read by the next proposal and never branched on.
+ * The free-text half, when a node has one, sits under the buttons: a `notes`
+ * field is read by whatever runs next and never branched on.
  */
 
 import { useEffect, useState } from "react";

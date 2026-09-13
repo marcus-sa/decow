@@ -7,8 +7,8 @@
  * stops — parked for a person, or on one of its two declared terminals.
  *
  * A run executes asynchronously and the caller gets an id back immediately,
- * because a DELIVER cycle is minutes of real work and nothing should wait on
- * it to learn the run's name. Everything that happens afterwards arrives on
+ * because a run is minutes of real work and nothing should wait on it to learn
+ * the run's name. Everything that happens afterwards arrives on
  * the event bus, and the run's record is what a client that missed it reads.
  *
  * The id comes back BESIDE a promise of the outcome, and the pipeline

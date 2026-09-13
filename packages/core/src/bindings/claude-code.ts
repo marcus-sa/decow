@@ -30,7 +30,7 @@
  * ## How the proposal shape gets writes it can lease
  *
  * The agent still edits files, because `Read, Edit` is the tool set that makes
- * it an acceptance designer rather than a chat. What changes is WHERE: the
+ * it an author rather than a chat. What changes is WHERE: the
  * turn runs in a SCRATCH COPY of the source tree, and afterwards the copy is
  * diffed against the original. Every changed file under the allowed paths
  * becomes an effect; a byte moved outside them is a contract failure raised

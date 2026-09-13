@@ -2,10 +2,10 @@
  * The scheduler, against fake steps and a fake `runOne`.
  *
  * Generic on purpose, so its own arithmetic is testable without a workflow, a
- * VCS or a roadmap: what has to hold is the frontier rule, the concurrency
- * limit, the blast radius of a step that did not succeed, the resource leases,
- * and termination. The composition over real roadmap steps is
- * `examples/nwave/deliver/pipeline.test.ts`.
+ * VCS or a real step set: what has to hold is the frontier rule, the
+ * concurrency limit, the blast radius of a step that did not succeed, the
+ * resource leases, and termination. A consumer's own tests are where the
+ * composition over real steps is driven.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -102,8 +102,8 @@ describe("the frontier", () => {
     });
 
     await scheduler.run();
-    // State is a projection: a scheduler that restarted mid-feature picks up
-    // where the recorded facts say it got to.
+    // State is a projection: a scheduler that restarted part-way through
+    // picks up where the recorded facts say it got to.
     expect(ran.sort()).toEqual(["B", "C", "D"]);
   });
 
@@ -154,7 +154,7 @@ describe("the blast radius of a step that did not succeed", () => {
     const statuses = await scheduler.run();
 
     // The independent branch kept going, which is the whole point: a person's
-    // queue is a list of independent blocked subtrees, not a stalled feature.
+    // queue is a list of independent blocked subtrees, not one stalled set.
     expect(ran.sort()).toEqual(["A", "B", "B-child"]);
     expect(statuses.get("A")).toBe("rejected");
     expect(statuses.get("A-child")).toBe("pending");
@@ -187,7 +187,7 @@ describe("the blast radius of a step that did not succeed", () => {
     expect(scheduler.parked().get("A")).toBe("run-A");
 
     // The resume re-evaluates the frontier in the same call, so answering one
-    // step continues the FEATURE rather than the step.
+    // step continues the WHOLE SET rather than the one step.
     const statuses = await scheduler.resume("A", { decision: "commit" });
     expect(ran.sort()).toEqual(["A", "B", "C", "D"]);
     expect([...statuses.values()].every((s) => s === "accepted")).toBe(true);
@@ -442,7 +442,7 @@ describe("inMemoryLeases", () => {
 });
 
 describe("termination", () => {
-  test("an empty roadmap terminates at once", async () => {
+  test("an empty step set terminates at once", async () => {
     const store = projection();
     const scheduler = openScheduler<S>({
       steps: [],
@@ -454,7 +454,7 @@ describe("termination", () => {
     expect([...(await scheduler.run())]).toEqual([]);
   });
 
-  test("a roadmap whose steps all block terminates rather than spinning", async () => {
+  test("a step set whose steps all block terminates rather than spinning", async () => {
     const store = projection();
     const scheduler = openScheduler<S>({
       steps: [
@@ -472,10 +472,10 @@ describe("termination", () => {
     expect(statuses.get("B")).toBe("pending");
   });
 
-  test("a dependency on a step the roadmap does not hold never becomes ready", async () => {
-    // The scheduler does not adjudicate a dangling dependency; the roadmap
-    // workflow's `validate-shape` refuses one as a named defect before
-    // anything is dispatched.
+  test("a dependency on a step the set does not hold never becomes ready", async () => {
+    // The scheduler does not adjudicate a dangling dependency: the consumer
+    // that authored the step set is where a dangling id is refused as a named
+    // defect, before anything is dispatched.
     const store = projection();
     const ran: string[] = [];
     const scheduler = openScheduler<S>({
@@ -498,7 +498,7 @@ describe("eligibility, beyond the frontier", () => {
   test("an ineligible step never runs, and blocks its dependents exactly like a rejected one", async () => {
     // The frontier rule answers "is everything this step waits on done". It
     // does not answer "may this step start at all", and a consumer with a
-    // precondition of its own — DELIVER's "the oracle was measured red" —
+    // precondition of its own — "this step's oracle was measured red", say —
     // has nowhere else to put it.
     const ran: string[] = [];
     const statuses = new Map<string, StepStatus>([

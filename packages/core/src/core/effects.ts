@@ -24,10 +24,9 @@ export type Effect =
    * Write a whole file, which may or may not already exist.
    *
    * `replace-symbol` names a symbol id, so it can only ever rewrite something
-   * the registry already holds. That is the right shape for a crafter working
-   * inside a declared surface, and the wrong shape for an author whose whole
-   * job is to produce a file that is not there yet — an oracle, and the
-   * supports beside it.
+   * the registry already holds. That is the right shape for a step working
+   * inside a surface that already exists, and the wrong shape for one whose
+   * whole job is to produce a file that is not there yet.
    *
    * The concurrency model is the path scope of the lease rather than a
    * version: a file has no version to be optimistic about before it exists.
@@ -59,12 +58,13 @@ export type Effect =
    * and a failure is a refusal. This asks "what does this one test do, on its
    * own, right now", and a failure — `red` — is the DESIRED answer.
    *
-   * The reason it is software rather than a leaf is the rule nwave-experimental
-   * names `boundary:software-measures-model-decides`: the two roles that hold
-   * an oracle, the author and its reviewer, cannot run it. "This oracle fails
-   * on its assertion and not on its scaffolding" is therefore a property the
-   * runner owns and measures, and an observation is a fixed floor rather than
-   * a rigor knob.
+   * The reason it is software rather than a leaf is the boundary between
+   * measuring and deciding: software measures, the model decides. The two
+   * roles that hold an oracle — the leaf that authored it and the leaf that
+   * reviewed it — cannot be the thing that runs it. "This oracle fails on its
+   * assertion and not on its scaffolding" is therefore a property the runner
+   * owns and measures, and an observation is a fixed floor rather than a rigor
+   * knob.
    *
    * `oracle` is a locator: `path::selector`, or a bare path for the whole file.
    * The COMMAND that executes it is the consumer's declared `commands.oracle`,

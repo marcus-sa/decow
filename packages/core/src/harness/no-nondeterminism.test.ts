@@ -48,18 +48,16 @@ const EXEMPT = new Set([join(SRC, "vcs/defaults.ts")]);
  * the whole of the VCS module, whose determinism rests on the same rule one
  * layer down.
  *
- * The roadmap example puts two decision functions in their own files, because
- * `validate-shape` and `measure-disjointness` are pure functions rather than
- * leaves. A clock read in either would make the shape of a roadmap depend on
- * when it was authored, so they are scanned like any branch's `on`. Its
- * schemas and its hand-written fixtures are scanned too: a fixture that read a
- * clock would make the oracle a different roadmap on every run. DISTILL's
- * `manifest.ts` is the same shape one wave over: `validate-manifest` is a pure
- * function of the proposal and the roadmap.
+ * A graph may put a decision function in its own file rather than inside a
+ * leaf — a pure function a branch's `on` observes — and those are scanned like
+ * any branch, because a clock read in one would make the route a graph takes
+ * depend on when it ran. Schemas and hand-written fixtures are scanned for the
+ * same reason: a fixture that read a clock would be a different value on every
+ * run, and a graph seeded from it would be a different graph.
  *
  * The scheduler is scanned for the same reason the compiler is: it decides
  * which steps run, and a frontier that depended on when it was computed would
- * make a feature's delivery order a function of the clock.
+ * make the order steps run in a function of the clock.
  *
  * A TARGET composition's `commands.ts` is scanned too, and it is the one
  * scanned file that is not this repository's. It is consumer code rather than
@@ -73,11 +71,10 @@ const EXEMPT = new Set([join(SRC, "vcs/defaults.ts")]);
  *
  * The examples are a second root rather than a subdirectory of the first:
  * `examples/` sits beside `packages/` at the repository root, because a
- * consumer's waves are not the framework. The globs are relative to that root,
- * and they
- * are deliberately NOT narrowed to `nwave/**`: a second consumer's example set
- * must be scanned the day it lands, not the day somebody remembers to add a
- * glob for it.
+ * consumer's graphs are not the framework. The globs are relative to that root,
+ * and they are deliberately NOT narrowed to one consumer's directory: a second
+ * consumer's example set must be scanned the day it lands, not the day
+ * somebody remembers to add a glob for it.
  */
 const scanned = async (): Promise<string[]> => {
   const files = new Set<string>([

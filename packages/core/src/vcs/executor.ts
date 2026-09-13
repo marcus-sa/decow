@@ -20,8 +20,8 @@
  * more is refused: the executor never needs to.
  *
  * Ahead of all of it sits the PROTECTED scope. A write landing under one is
- * refused before a lease is asked for, because the oracle is not the crafter's
- * and RED to GREEN is bought by production.
+ * refused before a lease is asked for: a step that could rewrite the oracle
+ * measuring it could buy RED to GREEN without writing any production code.
  *
  * The session and the task intent are fixed per executor instance, because
  * `EffectExecutor` is `(effects) => Promise<EffectResult[]>` and extending
@@ -104,11 +104,11 @@ export type VcsExecutorOptions = {
    * Repository-relative scopes this executor may not write, at all, in any
    * shape. `rejected { by: "contract" }` before a lease is asked for.
    *
-   * This is `_crafter_owns` as an executor rule. Every path a task declares is
-   * the crafter's EXCEPT the oracle: RED to GREEN must be bought by production,
-   * never by editing the test that measures it. Expressing it here rather than
-   * in the graph is what makes it hold for every write the graph could emit,
-   * including one a model proposed that the graph merely passed along.
+   * Every path a task declares is the step's to write EXCEPT the oracle: RED
+   * to GREEN must be bought by production, never by editing the test that
+   * measures it. Expressing it here rather than in the graph is what makes it
+   * hold for every write the graph could emit, including one a model proposed
+   * that the graph merely passed along.
    */
   protected?: readonly string[];
   /**
@@ -179,8 +179,8 @@ export const vcsExecutor = (
     // The wall, before the lease. A write into a protected scope is refused
     // whatever else is true of it — a lease it could have held, a version it
     // got right, a body that would have typechecked. The oracle is not the
-    // crafter's, and the refusal says so rather than letting the write race a
-    // stage that might have passed it.
+    // step's to write, and the refusal says so rather than letting the write
+    // race a stage that might have passed it.
     const refuseProtected = (effect: ReplaceSymbol | WriteFile): boolean => {
       const scope = protectedBy(effect);
       if (scope === undefined) return false;

@@ -56,9 +56,8 @@ export type GenerateRequest<T> = {
 
 /**
  * The seam between a step and a model. Production binds this to a Mastra
- * Agent (see examples/nwave/deliver/smoke.ts); tests bind `scriptedBinding`,
- * so the test suite never constructs an agent, reads an API key, or opens a
- * socket.
+ * Agent; tests bind `scriptedBinding`, so the test suite never constructs an
+ * agent, reads an API key, or opens a socket.
  *
  * Replaces the design's `LanguageModel` slot from the Vercel AI SDK.
  */

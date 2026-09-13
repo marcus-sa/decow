@@ -74,8 +74,8 @@ export const runIdOf = (registry: Registry, pipelineId: string, stepId: string):
  *
  * It finds the event that said `attached`, rather than the last thing said
  * about the run, because that is the one carrying the input — which is what
- * keeps a step parked under one roadmap from being continued under whichever
- * roadmap the pipeline happened to be driven with most recently.
+ * keeps a step parked under one input from being continued under whichever
+ * input the pipeline happened to be driven with most recently.
  */
 export const ownerOf = (registry: Registry, runId: string): StepOwner | undefined => {
   for (const event of [...registry.runs.db.events.byKind("pipeline-step")].reverse()) {
@@ -184,9 +184,9 @@ export const tree = async (
  * Run the frontier to quiescence.
  *
  * The scheduler is built per drive rather than held, because the steps are
- * re-read per drive: a roadmap this same server authored may have grown since
- * the last one, and a scheduler over a stale step set would schedule a roadmap
- * nobody has.
+ * re-read per drive: the data a consumer derives its steps from may have grown
+ * since the last drive, and a scheduler over a stale step set would schedule
+ * steps nobody declared.
  */
 const driveOnce = async (
   registry: Registry,

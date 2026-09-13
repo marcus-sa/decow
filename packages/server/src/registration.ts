@@ -23,10 +23,11 @@
  * in.
  *
  * A pipeline takes an INPUT for the same reason a workflow does: a composition
- * over a roadmap is a composition over ONE roadmap, and which one is a thing a
- * person supplies rather than a thing the composition was built holding. It is
- * parsed by the registration's own schema before anything is scheduled, so a
- * value the steps could not be derived from never becomes a drive.
+ * whose steps are derived from something is a composition over ONE of them, and
+ * which one is a thing a person supplies rather than a thing the composition
+ * was built holding. It is parsed by the registration's own schema before
+ * anything is scheduled, so a value the steps could not be derived from never
+ * becomes a drive.
  */
 
 import type { Journal } from "@des/core/journal";
@@ -64,7 +65,7 @@ export type WorkflowRegistration<S = unknown, I = unknown> = {
    *
    * The validated input travels with the run id because an executor's two
    * ownership options are facts about what the run is ABOUT rather than about
-   * the run: which oracle this step's crafter is walled off from, and which
+   * the run: which oracle this step's writes are walled off from, and which
    * failing tests it did not cause. An executor that could not see them could
    * not wall anything off.
    */
@@ -81,11 +82,11 @@ export type WorkflowRegistration<S = unknown, I = unknown> = {
  * One step of a pipeline, as the consumer declares it.
  *
  * A step names a registered WORKFLOW and the input one run of it is started
- * with, and nothing else. There is no second way to run a step: `deliver` the
- * pipeline step and `deliver` the graph a person started by hand are the same
- * registration, seeded by the same `seed`, executed by the same `executor` —
- * which is what makes "starting one step by hand does not escape the
- * precondition the scheduler enforces" structural rather than duplicated.
+ * with, and nothing else. There is no second way to run a step: the pipeline's
+ * step and the graph a person started by hand are the same registration,
+ * seeded by the same `seed`, executed by the same `executor` — which is what
+ * makes "starting one step by hand does not escape the precondition the
+ * scheduler enforces" structural rather than duplicated.
  */
 export type PipelineStep = {
   id: string;
@@ -108,10 +109,9 @@ export type PipelineStep = {
  * answer: whether a step may run at all, and what to persist when one finishes.
  *
  * Every hook is handed the validated input, because what a composition is a
- * composition OF is an argument rather than a constant. The todo pipelines
- * name a roadmap with theirs and derive their steps from the roadmap that id
- * names; a pipeline whose steps are fixed declares `z.object({})` and ignores
- * it.
+ * composition OF is an argument rather than a constant. A pipeline whose steps
+ * are derived names the data they are derived from with its input; a pipeline
+ * whose steps are fixed declares `z.object({})` and ignores it.
  */
 export type PipelineRegistration<I = unknown> = {
   id: string;
@@ -123,10 +123,10 @@ export type PipelineRegistration<I = unknown> = {
   /**
    * May this step run at all, beyond its dependencies being accepted?
    *
-   * DELIVER's is "this value's oracle has been measured red". The frontier
-   * rule cannot express it: a step that has not run is pending whether or not
-   * it may. An ineligible step blocks its dependents exactly as a rejected one
-   * does. Absent: every step is eligible.
+   * A consumer's might be "this step's oracle has been measured red". The
+   * frontier rule cannot express it: a step that has not run is pending
+   * whether or not it may. An ineligible step blocks its dependents exactly as
+   * a rejected one does. Absent: every step is eligible.
    */
   readiness?: (stepId: string, input: I) => Promise<boolean> | boolean;
   /**

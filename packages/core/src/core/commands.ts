@@ -10,9 +10,9 @@
  * `Commands` is where a consumer says. It is four functions from typed
  * arguments to a command, declared in the consumer's own source and read by
  * the framework.
- * The framework knows the four JOBS; the consumer knows the four COMMANDS. The
- * shape is nwave-experimental's, where the design declares the argv forms and
- * the runner uses them rather than baking in what they declare.
+ * The framework knows the four JOBS; the consumer knows the four COMMANDS —
+ * the consumer declares the argv forms and the framework runs them, rather
+ * than the framework baking in what they declare.
  *
  * A bare `string[]` is the common case and normalises to `{ argv }` with this
  * module's default timeout. The object form is for a command that needs an

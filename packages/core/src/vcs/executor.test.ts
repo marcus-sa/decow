@@ -6,9 +6,9 @@
  * `Effect[]` through the VCS with lease, verify, and log, and gets back a
  * typed result a branch can route on. That one path exercises every seam."
  *
- * So the graph here is deliberately the smallest one that has the shape of
- * DELIVER's `implement`: one leaf that emits a `replace-symbol`, and a branch
- * that routes the write outcome. The leaf's model is a scripted binding, so no
+ * So the graph here is deliberately the smallest one with the shape a writing
+ * step has: one leaf that emits a `replace-symbol`, and a branch that routes
+ * the write outcome. The leaf's model is a scripted binding, so no
  * model is called; the verifier's stages are injected, so no compiler runs.
  * Everything between the effect and the file on disk is real.
  */
@@ -525,8 +525,8 @@ describe("the executor: whole files, and protected paths", () => {
   });
 
   test("a replace-symbol whose file is protected is refused too", async () => {
-    // The crafter's own effect shape, pointed at the oracle. `_crafter_owns`
-    // is about the PATH, so the wall does not care which effect names it.
+    // A writing step's own effect shape, pointed at the oracle. A protected
+    // scope is about the PATH, so the wall does not care which effect names it.
     const root = tempProject({ "a.ts": SOURCE, "test/a.test.ts": ORACLE });
     const vcs = openVcs({
       root,
@@ -548,7 +548,7 @@ describe("the executor: whole files, and protected paths", () => {
   });
 
   test("a protected refusal does not stop the rest of the batch", async () => {
-    // The crafter's production write still lands; only the oracle is walled.
+    // The step's production write still lands; only the oracle is walled.
     const root = tempProject({ "a.ts": SOURCE, "test/a.test.ts": ORACLE });
     const vcs = openVcs({
       root,

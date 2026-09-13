@@ -88,7 +88,7 @@ export const listPipelines = createServerFn({ method: "GET" }).handler(() =>
 );
 
 /**
- * One pipeline's steps, for the roadmap its input names.
+ * One pipeline's steps, for the input it names them under.
  *
  * Like `startRun`, the validator here only says "an id and something arrived":
  * the pipeline registration's own schema is what decides whether the value

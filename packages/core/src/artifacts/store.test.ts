@@ -4,8 +4,8 @@
  *
  * Plus the two executors' routing, which is the reason the store exists: an
  * `upsert-artifact` effect that landed in a `Map` under one executor and came
- * back `infra-failed` under the other would leave a roadmap dying with the
- * process that authored it.
+ * back `infra-failed` under the other would leave a consumer's rows dying with
+ * the process that wrote them.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -126,7 +126,7 @@ describe("the artifact store", () => {
   });
 
   test("rows outlive the process when the store has a path", () => {
-    // The whole point: a roadmap that dies with the process is not a roadmap.
+    // The whole point: a row that dies with the process is not persisted.
     const path = join(mkdtempSync(join(tmpdir(), "dw-artifacts-")), "artifacts.sqlite");
     const first = openArtifacts({ path });
     first.upsert({ table: TABLE, id: "01-01", expectedVersion: 0, row: ROW });
@@ -188,7 +188,7 @@ describe("both effect executors route upsert-artifact to the store", () => {
     const execute = vcsExecutor({
       vcs,
       session: "session-artifacts",
-      intent: { taskId: "01-01", description: "persist the roadmap" },
+      intent: { taskId: "01-01", description: "persist the row" },
       artifacts: store,
     });
 
@@ -214,7 +214,7 @@ describe("both effect executors route upsert-artifact to the store", () => {
     const execute = vcsExecutor({
       vcs,
       session: "session-artifacts",
-      intent: { taskId: "01-01", description: "persist the roadmap" },
+      intent: { taskId: "01-01", description: "persist the row" },
     });
 
     // An executor that cannot write must not report that it did.

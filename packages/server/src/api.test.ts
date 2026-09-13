@@ -315,7 +315,7 @@ const twoSteps = (options: {
   // another — which is what the hooks being handed the input is for.
   const registered = pipeline({
     id: "two-steps",
-    title: "A roadmap of two",
+    title: "A pipeline of two",
     input: z.object({ tag: z.string().optional() }),
     steps: () => steps,
     ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
@@ -354,7 +354,7 @@ const twoSteps = (options: {
 describe("a registered pipeline", () => {
   test("its steps are declarations, and its tree is those steps plus what the server knows", async () => {
     const { registry } = twoSteps();
-    expect(listPipelines(registry)).toEqual([{ id: "two-steps", title: "A roadmap of two" }]);
+    expect(listPipelines(registry)).toEqual([{ id: "two-steps", title: "A pipeline of two" }]);
 
     const before = await getPipeline(registry, "two-steps", {});
     expect(before.steps.map((r) => [r.id, r.status])).toEqual([
@@ -491,9 +491,10 @@ describe("a registered pipeline", () => {
   });
 
   test("an ineligible step never becomes ready, and it blocks its dependents", async () => {
-    // The precondition the frontier rule cannot express. DELIVER's is "this
-    // value's oracle has been measured red"; here it is a flag, and the shape
-    // is the same: nothing downstream of a step that may not run becomes ready.
+    // The precondition the frontier rule cannot express. A consumer's might be
+    // "this step's oracle has been measured red"; here it is a flag, and the
+    // shape is the same: nothing downstream of a step that may not run becomes
+    // ready.
     const { registry } = twoSteps({ readiness: (stepId) => stepId !== "a" });
     runPipeline(registry, "two-steps", {});
     await registry.idle();

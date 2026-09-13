@@ -301,10 +301,10 @@ export type EffectOutcomeSpace = Partial<Record<Effect["type"], readonly EffectO
  * be walked, and nothing would say so. So a graph that grows an effect grows
  * its space in the same commit, or its own walk fails by name.
  *
- * One outcome per effect, not per batch. A graph whose batch is atomic — the
- * roadmap example's `persist`, where a partial write is not a smaller success
- * — needs its own executor, because forking per effect there would enumerate
- * combinations the executor could never produce.
+ * One outcome per effect, not per batch. A graph whose batch is atomic — one
+ * where a partial write is not a smaller success — needs its own executor,
+ * because forking per effect there would enumerate combinations the executor
+ * could never produce.
  */
 export const scriptedExecutor = (choose: Choose, space: EffectOutcomeSpace): EffectExecutor =>
   async (effects) =>
@@ -333,8 +333,8 @@ export const scriptedExecutor = (choose: Choose, space: EffectOutcomeSpace): Eff
  *
  * Two kinds of thing are choices: what a leaf decided, and what came back from
  * the effects a step asked for. `scriptedExecutor` above is the second, and it
- * is not optional garnish — half of DELIVER's edge tables route an
- * `EffectResult`.
+ * is not optional garnish — a graph whose edges route an `EffectResult` keeps
+ * half its tree behind an effect outcome.
  *
  * The one requirement: the order of choice points must be a function of the
  * choices already made. A `fanout` breaks that, because its sub-steps race, so

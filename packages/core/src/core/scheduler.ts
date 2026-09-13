@@ -1,23 +1,23 @@
 /**
  * The scheduler. Steps in, the frontier runs, the statuses come back.
  *
- * DELIVER is sequential today because one big model holds one context and one
- * linear log. Sequencing is a property of the executor, not of the work: once
- * the roadmap is a DAG in steps, the frontier is every step whose dependencies
- * are all `accepted`, and the frontier runs concurrently.
+ * The steps are a DAG: each one names the ids it depends on. The FRONTIER is
+ * every step whose dependencies all read `accepted`, and the frontier runs
+ * concurrently up to the declared limit. A step that names nothing is on the
+ * first frontier; a step that names two is on one only once both are accepted.
  *
  * Generic on purpose. A step is `{ id, dependencies }` and nothing else; what a
- * step MEANS, where it is read from, and what its run does are the consumer's
- * (`examples/nwave/deliver/pipeline.ts`). This file owns the frontier, the
- * concurrency limit, the resource leases, and termination.
+ * step MEANS, where it is read from, and what its run does are the consumer's.
+ * This file owns the frontier, the concurrency limit, the resource leases, and
+ * termination.
  *
  * STATE IS A PROJECTION. The scheduler persists nothing of its own: it asks
  * `statusOf` for every step's status, reports each finished run through
- * `record`, and re-reads. That is nwave-experimental's `delivery_state.py`
- * stance — the next step is DERIVED from persisted facts and never decided —
- * and the consequence is the useful part: a scheduler that died mid-feature
- * restarts by reading rather than by remembering, and a step in flight has
- * nothing persisted so it simply reads `pending` and is run again.
+ * `record`, and re-reads. The next step is DERIVED from persisted facts and
+ * never decided, and the consequence is the useful part: a scheduler that died
+ * part-way through restarts by reading rather than by remembering, and a step
+ * in flight has nothing persisted so it simply reads `pending` and is run
+ * again.
  *
  * A `rejected` or `suspended` step blocks only its dependents, and that falls
  * out of the frontier rule rather than being enforced: a dependent of a step
