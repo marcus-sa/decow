@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { memoryEffects, type Effect } from "./effects.ts";
+import { DEFAULT_COMMAND_TIMEOUT_MS } from "./commands.ts";
+import { commandEffect, commandOf, memoryEffects, type Effect } from "./effects.ts";
+
+/** A `run-command` effect at the framework default budget. */
+const command = (argv: readonly string[]): Extract<Effect, { type: "run-command" }> => ({
+  type: "run-command",
+  argv,
+  timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
+});
 
 const upsert = (id: string, expectedVersion: number, row: unknown): Effect => ({
   type: "upsert-artifact",
@@ -54,6 +62,81 @@ describe("memoryEffects", () => {
       { type: "run-tests", impacted: ["a"] },
     ]);
     expect(results.map((r) => r.outcome)).toEqual(["infra-failed", "infra-failed"]);
+  });
+
+  test("a command that exits zero commits, and its output rides on the result", async () => {
+    // `run-command` is NOT in the unwired list, deliberately: a command needs
+    // no VCS behind it, and an executor that refused one would be pretending
+    // it could not do a thing it can.
+    const { execute } = memoryEffects();
+    const [result] = await execute([command(["bash", "-c", "echo hello"])]);
+
+    expect(result).toMatchObject({ outcome: "committed", version: 1 });
+    expect(commandOf(result)?.stdout.trim()).toBe("hello");
+    expect(commandOf(result)?.exitCode).toBe(0);
+  });
+
+  test("a non-zero exit is rejected BY COMMAND, with the output still attached", async () => {
+    const { execute } = memoryEffects();
+    const [result] = await execute([command(["bash", "-c", "echo bad >&2; exit 2"])]);
+
+    expect(result).toMatchObject({ outcome: "rejected", by: "command" });
+    expect(commandOf(result)?.exitCode).toBe(2);
+    expect(commandOf(result)?.stderr.trim()).toBe("bad");
+  });
+
+  test("a command that cannot be spawned is infra-failed and carries nothing", async () => {
+    // Nothing about it was observed, so nothing about it is claimed.
+    const { execute } = memoryEffects();
+    const [result] = await execute([command(["a-binary-that-does-not-exist-anywhere"])]);
+
+    expect(result).toMatchObject({ outcome: "infra-failed" });
+    expect(commandOf(result)).toBeUndefined();
+  });
+
+  test("a command killed at its budget is infra-failed and DOES carry what it printed", async () => {
+    // It ran. The exit is absent because there is none to read, and the two
+    // absences are different facts.
+    const { execute } = memoryEffects();
+    const [result] = await execute([
+      { ...command(["bash", "-c", "echo started; sleep 30"]), timeoutMs: 150 },
+    ]);
+
+    expect(result).toMatchObject({ outcome: "infra-failed" });
+    expect(commandOf(result)).toMatchObject({ timedOut: true, exitCode: null });
+    expect(commandOf(result)?.stdout).toContain("started");
+  });
+
+  test("the version of a committed command is its ordinal, because a command claims none", async () => {
+    const { execute } = memoryEffects();
+    const results = await execute([command(["true"]), command(["true"])]);
+    expect(results.map((r) => (r.outcome === "committed" ? r.version : -1))).toEqual([1, 2]);
+  });
+
+  test("a relative cwd resolves against the executor's base", async () => {
+    const { execute } = memoryEffects({ cwd: "/" });
+    const [result] = await execute([{ ...command(["pwd"]), cwd: "tmp" }]);
+    expect(commandOf(result)?.stdout.trim()).toContain("tmp");
+  });
+});
+
+describe("a declared command as an effect", () => {
+  test("commandEffect carries only the fields the declaration named", () => {
+    expect(commandEffect({ argv: ["a"], timeoutMs: 5 })).toEqual({
+      type: "run-command",
+      argv: ["a"],
+      timeoutMs: 5,
+    });
+    expect(
+      commandEffect({ argv: ["a"], timeoutMs: 5, env: { X: "1" }, resources: ["db"] }, "sub/dir"),
+    ).toEqual({
+      type: "run-command",
+      argv: ["a"],
+      cwd: "sub/dir",
+      env: { X: "1" },
+      resources: ["db"],
+      timeoutMs: 5,
+    });
   });
 
   test("a run-tests effect carrying `extra` is unchanged here: there is no impact graph", async () => {

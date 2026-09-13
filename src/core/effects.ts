@@ -11,6 +11,12 @@
  */
 
 import { openArtifacts, type ArtifactStore } from "../artifacts/store.ts";
+import {
+  runCommand,
+  type CommandResult,
+  type NormalizedCommand,
+} from "./commands.ts";
+import { resolve } from "node:path";
 
 export type Effect =
   | { type: "replace-symbol"; symbolId: string; expectedVersion: number; body: string }
@@ -61,10 +67,45 @@ export type Effect =
    * a rigor knob.
    *
    * `oracle` is a locator: `path::selector`, or a bare path for the whole file.
-   * `argv` overrides the command the locator would derive, for a project whose
-   * runner is not the default.
+   * The COMMAND that executes it is the consumer's declared `commands.oracle`,
+   * so this effect names the oracle and never the runner.
    */
-  | { type: "measure-oracle"; oracle: string; argv?: string[] }
+  | { type: "measure-oracle"; oracle: string }
+  /**
+   * Run one declared command and read what it did.
+   *
+   * The primitive every other process the framework runs is built out of.
+   * Typecheck, lint, the tests stage and the oracle measurement are all
+   * compositions of this over a consumer's `Commands` (`./commands.ts`);
+   * nothing in the framework spawns anything else.
+   *
+   * The mapping is deliberately coarse, because a branch should read a verdict
+   * and not a transcript:
+   *
+   *   could not be spawned, or was killed at its timeout  -> infra-failed
+   *   exit 0                                              -> committed
+   *   any other exit                                      -> rejected: command
+   *
+   * The output is PAYLOAD. It rides on the result as `command` for a person, a
+   * correction turn, and the event log to read; the exit and the outcome are
+   * the only things a branch reads. Both channels are capped
+   * (`COMMAND_OUTPUT_CAP`), because an unbounded string crossing an effect
+   * result is a memory bug waiting for a verbose compiler.
+   *
+   * `resources` names shared infrastructure the command needs exclusively. The
+   * scheduler takes the names as a lease before a row runs, so two rows whose
+   * commands declare the same resource serialise on it.
+   */
+  | {
+      type: "run-command";
+      argv: readonly string[];
+      /** Resolved against the executor's own base directory. */
+      cwd?: string;
+      /** Overlaid on the parent environment, never replacing it. */
+      env?: Record<string, string>;
+      timeoutMs: number;
+      resources?: readonly string[];
+    }
   | { type: "append-trail"; line: string };
 
 /**
@@ -116,15 +157,27 @@ export type OracleMeasurement = {
 };
 
 /**
- * `by` names the gate that refused the write. Five members, covering the three
- * failure categories the agent-native VCS distinguishes (`src/vcs`, ai-vcs.md
- * § 5.4): `contract` is "you declared one thing and did another",
- * `structural` is "the edit does not parse", and `typecheck` / `tests` /
- * `schema` are quality signals from a check that ran. An infrastructure
- * failure is not in here at all; it is `infra-failed`, so a flaky harness
- * cannot be mistaken for a bad change.
+ * `by` names the gate that refused the write. Seven members, covering the
+ * three failure categories the agent-native VCS distinguishes (`src/vcs`,
+ * ai-vcs.md § 5.4): `contract` is "you declared one thing and did another",
+ * `structural` is "the edit does not parse", and `typecheck` / `lint` /
+ * `tests` / `schema` are quality signals from a check that ran. An
+ * infrastructure failure is not in here at all; it is `infra-failed`, so a
+ * flaky harness cannot be mistaken for a bad change.
+ *
+ * `command` is the seventh and it is not a gate: it is a declared command that
+ * exited non-zero, which is what a bare `run-command` effect comes back as
+ * when nothing above it has interpreted the exit yet. A stage that DOES
+ * interpret it reports its own name (`typecheck`, `lint`, `tests`) instead.
  */
-export type RejectedBy = "typecheck" | "tests" | "schema" | "contract" | "structural";
+export type RejectedBy =
+  | "typecheck"
+  | "lint"
+  | "tests"
+  | "schema"
+  | "contract"
+  | "structural"
+  | "command";
 
 /**
  * What a rejection can name beyond the gate that produced it.
@@ -140,10 +193,28 @@ export type RejectedBy = "typecheck" | "tests" | "schema" | "contract" | "struct
 export type RejectionDetail = { failed?: readonly string[] };
 
 export type EffectResult =
-  | { effect: Effect; outcome: "committed"; version: number; measured?: OracleMeasurement }
+  | {
+      effect: Effect;
+      outcome: "committed";
+      version: number;
+      measured?: OracleMeasurement;
+      command?: CommandResult;
+    }
   | { effect: Effect; outcome: "conflict"; currentVersion: number }
-  | { effect: Effect; outcome: "rejected"; by: RejectedBy; detail?: RejectionDetail; measured?: OracleMeasurement }
-  | { effect: Effect; outcome: "infra-failed"; measured?: OracleMeasurement };
+  | {
+      effect: Effect;
+      outcome: "rejected";
+      by: RejectedBy;
+      detail?: RejectionDetail;
+      measured?: OracleMeasurement;
+      command?: CommandResult;
+    }
+  | {
+      effect: Effect;
+      outcome: "infra-failed";
+      measured?: OracleMeasurement;
+      command?: CommandResult;
+    };
 
 /**
  * The measurement on a result, if there is one.
@@ -156,6 +227,70 @@ export type EffectResult =
  */
 export const measurementOf = (result: EffectResult | undefined): OracleMeasurement | undefined =>
   result === undefined || result.outcome === "conflict" ? undefined : result.measured;
+
+/**
+ * What a `run-command` result printed, if it printed anything.
+ *
+ * The same narrowing `measurementOf` does, one field over and for the same
+ * reason: `conflict` is the one outcome that carries none, because a command
+ * claims no version and therefore has no optimistic check to lose. A result
+ * with no `command` at all is a process that never STARTED, so nothing about
+ * it was observed and nothing about it is claimed.
+ */
+export const commandOf = (result: EffectResult | undefined): CommandResult | undefined =>
+  result === undefined || result.outcome === "conflict" ? undefined : result.command;
+
+/** Both channels of a command's output, in the order a person reads them. */
+export const commandOutput = (result: CommandResult | undefined): string =>
+  result === undefined ? "" : `${result.stdout}${result.stderr}`.trim();
+
+/**
+ * One declared command, as the effect that runs it. The one place a
+ * `NormalizedCommand` becomes a `run-command`, so a stage that composes a
+ * command never has to remember which fields are optional.
+ */
+export const commandEffect = (
+  command: NormalizedCommand,
+  cwd?: string,
+): Extract<Effect, { type: "run-command" }> => ({
+  type: "run-command",
+  argv: command.argv,
+  ...(cwd === undefined ? {} : { cwd }),
+  ...(command.env === undefined ? {} : { env: command.env }),
+  timeoutMs: command.timeoutMs,
+  ...(command.resources === undefined ? {} : { resources: command.resources }),
+});
+
+/**
+ * One `run-command` effect, executed, as an `EffectResult`.
+ *
+ * Shared by both executors because they differ in nothing here: a command is a
+ * command, and the only thing either of them adds is where the relative `cwd`
+ * is resolved from and what `version` a committed run is given.
+ */
+export const executeCommand = async (
+  effect: Extract<Effect, { type: "run-command" }>,
+  base: string,
+  version: () => number,
+): Promise<EffectResult> => {
+  const result = await runCommand({
+    argv: effect.argv,
+    cwd: resolve(base, effect.cwd ?? "."),
+    ...(effect.env === undefined ? {} : { env: effect.env }),
+    timeoutMs: effect.timeoutMs,
+  });
+  // The process never started. Not a verdict about the command, and the caller
+  // must not charge it to whoever asked for it.
+  if (result === undefined) return { effect, outcome: "infra-failed" };
+  // It started and was killed at its budget. It RAN, so what it printed is
+  // evidence, and it produced no exit status so there is no verdict to read.
+  if (result.timedOut || result.exitCode === null) {
+    return { effect, outcome: "infra-failed", command: result };
+  }
+  return result.exitCode === 0
+    ? { effect, outcome: "committed", version: version(), command: result }
+    : { effect, outcome: "rejected", by: "command", command: result };
+};
 
 export type Artifact = { version: number; row: unknown };
 
@@ -181,18 +316,28 @@ export type MemoryEffectsOptions = {
    * outlive the process passes a store opened on a path.
    */
   store?: ArtifactStore;
+  /**
+   * Where a `run-command` effect's relative `cwd` is resolved from. The
+   * process's own working directory by default, which is the only base an
+   * executor with no repository behind it could honestly pick.
+   */
+  cwd?: string;
 };
 
 /**
  * In-memory effect executor. `upsert-artifact` goes to a real artifact store
  * under the optimistic version check the effect declares; the trail is an
- * array. `replace-symbol`, `write-file`, `run-tests` and `measure-oracle` come
- * back `infra-failed` because there is no VCS and no test runner behind this
- * executor — that is the honest outcome, not `rejected`.
+ * array; `run-command` really spawns, because a command needs no VCS behind it
+ * and an executor that refused one would be pretending it could not do a thing
+ * it can. `replace-symbol`, `write-file`, `run-tests` and `measure-oracle`
+ * come back `infra-failed` because there IS no VCS and no impact graph behind
+ * this executor — that is the honest outcome, not `rejected`.
  */
 export const memoryEffects = (options: MemoryEffectsOptions = {}) => {
   const store = options.store ?? openArtifacts();
   const trail: string[] = [];
+  /** Commands run so far. A command claims no version, so this is its ordinal. */
+  let commands = 0;
 
   const upsert = (e: Extract<Effect, { type: "upsert-artifact" }>): EffectResult => {
     const result = store.upsert({
@@ -206,21 +351,32 @@ export const memoryEffects = (options: MemoryEffectsOptions = {}) => {
       : { effect: e, outcome: "conflict", currentVersion: result.currentVersion };
   };
 
-  const execute = async (effects: Effect[]): Promise<EffectResult[]> =>
-    effects.map((effect): EffectResult => {
+  const execute = async (effects: Effect[]): Promise<EffectResult[]> => {
+    const results: EffectResult[] = [];
+    for (const effect of effects) {
       switch (effect.type) {
         case "upsert-artifact":
-          return upsert(effect);
+          results.push(upsert(effect));
+          break;
         case "append-trail":
           trail.push(effect.line);
-          return { effect, outcome: "committed", version: trail.length };
+          results.push({ effect, outcome: "committed", version: trail.length });
+          break;
+        case "run-command":
+          results.push(
+            await executeCommand(effect, options.cwd ?? process.cwd(), () => (commands += 1)),
+          );
+          break;
         case "replace-symbol":
         case "write-file":
         case "run-tests":
         case "measure-oracle":
-          return { effect, outcome: "infra-failed" };
+          results.push({ effect, outcome: "infra-failed" });
+          break;
       }
-    });
+    }
+    return results;
+  };
 
   /**
    * The store's rows, keyed `table/id`. Derived from the store's own
