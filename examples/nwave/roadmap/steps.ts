@@ -161,7 +161,7 @@ export const acceptanceIsDistills = (decisions: readonly string[]): Requirement<
 export const stepIdsAreUnique = shapeRule(
   "roadmap.step-ids-are-unique",
   "handover.value-fields-are-invalid",
-  "Step ids are unique within the roadmap. Two rows claiming one identity make every dependency " +
+  "Step ids are unique within the roadmap. Two steps claiming one identity make every dependency " +
     "naming it ambiguous.",
   "duplicate-id",
 );
@@ -305,7 +305,7 @@ export const slicesNeedNoUndeclaredApi = (
   text:
     "The step does not require public API the authority does not declare. A step whose observation " +
     "can only be reached by adding surface the design does not name is a design gap wearing a " +
-    "roadmap row, and it is reported not-slice rather than accepted.",
+    "roadmap step, and it is reported not-slice rather than accepted.",
   decisions,
 });
 

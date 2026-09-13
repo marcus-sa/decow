@@ -20,7 +20,7 @@
  * holds which shared resource right now. Every one of them is a fact about
  * this process rather than about the work, and a second process has its own
  * answer to each. Everything else — which runs exist, what they decided, which
- * row is on which run — is in `runs.sqlite` and is read back.
+ * step is on which run — is in `runs.sqlite` and is read back.
  */
 
 import type { ArtifactStore } from "@des/core/artifacts";
@@ -33,8 +33,8 @@ import { openRunner, type Runner } from "./runner.ts";
 import { openRuns, type RunStore } from "./runs.ts";
 import { openRunDatabase, type RunDatabase } from "./store.ts";
 
-/** Which pipeline row a run belongs to, for a run that is one. */
-export type RowOwner = { pipelineId: string; rowId: string };
+/** Which pipeline step a run belongs to, for a run that is one. */
+export type StepOwner = { pipelineId: string; stepId: string };
 
 export type Registry = {
   workflows: AnyWorkflowRegistration[];
@@ -53,7 +53,7 @@ export type Registry = {
   driving: Set<string>;
   /** Why a pipeline's last drive stopped early, when one did. */
   errors: Map<string, string>;
-  /** Shared infrastructure two rows take turns on. One set per server. */
+  /** Shared infrastructure two steps take turns on. One set per server. */
   leases: ResourceLeases;
 
   /** Hold a driving promise until it settles, so `idle` means something. */
@@ -134,7 +134,7 @@ export const openRegistry = (options: RegistryOptions): Registry => {
 
     idle: async () => {
       // Two sources of work that start each other: a pipeline drive starts
-      // runs, and a run settling lets a drive start the next row. So the wait
+      // runs, and a run settling lets a drive start the next step. So the wait
       // alternates until both are quiet at the same time.
       for (;;) {
         await runner.idle();

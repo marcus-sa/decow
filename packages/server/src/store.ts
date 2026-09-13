@@ -5,7 +5,7 @@
  * This reverses the previous cut. Runs, traces, attempts and events lived in
  * maps, and the comment above them said losing that cost a reader their scroll
  * position rather than a fact. That was wrong twice over: a restarted server
- * showed no prior run at all, and a pipeline row whose run had settled read
+ * showed no prior run at all, and a pipeline step whose run had settled read
  * `pending` again, so a second drive would deliver it a second time. The facts
  * were on disk in four other stores and the one thing that joined them was not.
  *
@@ -45,7 +45,7 @@ import type { Json } from "./json.ts";
 /** One appended event, as it is stored. */
 export type StoredEvent = {
   seq: number;
-  /** Absent for a `pipeline-row` event about a row with no run yet. */
+  /** Absent for a `pipeline-step` event about a step with no run yet. */
   runId?: string;
   kind: string;
   payload: Json;
@@ -172,7 +172,7 @@ export const openRunDatabase = (options: RunDatabaseOptions = {}): RunDatabase =
   )`);
 
   // Append-only. `run_id` is nullable because one of the eight kinds —
-  // `pipeline-row` — is about a row that may not have a run yet.
+  // `pipeline-step` — is about a step that may not have a run yet.
   db.run(`CREATE TABLE IF NOT EXISTS run_events (
     seq     INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id  TEXT,

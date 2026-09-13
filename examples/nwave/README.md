@@ -11,17 +11,17 @@ project it delivers.
 They connect through data, not through each other's code:
 
 ```
-roadmap/   a request     ──►  roadmap rows in the artifact store   (roadmaps, roadmap_steps)
+roadmap/   a request     ──►  roadmap steps in the artifact store  (roadmaps, roadmap_steps)
                                         │   observation, dependencies, authority,
                                         │   predictedTouches — and three EMPTY fields
                                         ▼
-distill/   obligations/  ──►  the same rows, with `acceptance`, `oracle` and `supports` filled in
+distill/   obligations/  ──►  the same steps, with `acceptance`, `oracle` and `supports` filled in
            oracle/       ──►  one executable oracle per value, written to disk and MEASURED RED,
                               recorded as an `oracle_runs` row
                                         │
                                         ▼
-deliver/   the scheduler reads the rows, refuses any value whose oracle is not red, and runs the
-           fixed step cycle once per ready row — with that row's oracle file PROTECTED, so RED to
+deliver/   the scheduler reads the steps, refuses any value whose oracle is not red, and runs the
+           fixed step cycle once per ready step — with that step's oracle file PROTECTED, so RED to
            GREEN is bought by production. Each outcome is a step_runs row.
                                         │
 targets/todo/.des/  the composition that points all of it at a real project — `targets/todo`, copied
@@ -29,7 +29,7 @@ targets/todo/.des/  the composition that points all of it at a real project — 
 ```
 
 An agent never writes a workflow. It fills in leaves. The graphs below are
-fixed; the roadmap is the only thing authored per feature, and it is rows.
+fixed; the roadmap is the only thing authored per feature, and it is steps.
 
 ## Reading the graphs
 
@@ -64,9 +64,9 @@ not the other — so a proposal breaking one never REACHES the gate: the check
 refuses it and the worker is re-driven. The paths that disappeared were ones
 production could not take, and the ones that remain are reachable.
 
-## `roadmap/` — the authoring workflow whose output is rows
+## `roadmap/` — the authoring workflow whose output is steps
 
-Files: `schema.ts` (the roadmap rows), `shape.ts` (the pure shape validator),
+Files: `schema.ts` (the roadmap steps), `shape.ts` (the pure shape validator),
 `disjointness.ts` (the pure blast-radius pass), `steps.ts` (the two leaves and
 their requirement rows), `fixture.ts` (a known-good roadmap and three
 deliberately broken ones), `graph.ts`, `graph.test.ts`.
@@ -215,13 +215,13 @@ verdicts from the same `scriptedExecutor` seam it gets a write outcome from.
 ### The composition
 
 The first graph is registered as a WORKFLOW and runs once per roadmap; the
-second is registered as a PIPELINE over the roadmap's rows, one run per value,
+second is registered as a PIPELINE over the roadmap's steps, one run per value,
 in dependency order — each value under its own VCS session and its own task id
 — and `recordOracleRun` appends an `oracle_runs` row per finished run.
 `verdict` on that row is the measured one widened by exactly one word:
 `blocked` is a run that produced no measurement at all, which keeps "measured
 green" and "never measured" two different facts. Neither of them schedules
-anything: a pipeline registration is rows plus `record`, and the server drives
+anything: a pipeline registration is steps plus `record`, and the server drives
 the frontier.
 
 There is **no protected scope here**, and that asymmetry is the point: this is
@@ -232,7 +232,7 @@ scope: \`test/\``), read by `testPathScope` and refused by name when absent. Thr
 consumers read it: the author writes there, the executor walls the oracle
 there, and the manifest validator refuses a support outside it.
 
-## `deliver/` — the fixed step cycle, and the scheduler that runs it per row
+## `deliver/` — the fixed step cycle, and the scheduler that runs it per step
 
 Files: `steps.ts` (the leaves, their enums and requirement rows, the
 `StepUnderDelivery` input), `graph.ts`, `pipeline.ts` (the composition over the
@@ -259,14 +259,14 @@ on the scheduler, `oracleIsRed` on the projection — which mirrors the shipped
 runner's own rule that with no recorded oracle the next step for a value is
 `des oracle`, never `des craft`.
 
-Two things the pipeline builds per row, and both are about ownership:
+Two things the pipeline builds per step, and both are about ownership:
 
-- **`protected: [the row's oracle file]`.** `_crafter_owns` as an executor
+- **`protected: [the step's oracle file]`.** `_crafter_owns` as an executor
   rule: every path the task declares is the crafter's except the oracle. The
   supports are *not* walled — a support is the oracle's dependency rather than
   the thing that measures the value.
 - **`knownRed`: every other undelivered value's oracle.** Every one of them is
-  red by construction, so refusing this row's correct write for one of them
+  red by construction, so refusing this step's correct write for one of them
   would make a module with two undelivered values undeliverable. An *accepted*
   sibling's oracle is deliberately not in it: that one is green, and breaking
   it is a real regression the gate exists to catch.
@@ -281,7 +281,7 @@ What is a model call and what is not:
   branch routes its typed outcome.
 - **The gate verdict is the declared lint command's exit status.** `gates` used
   to be a leaf classifying lint output into four words; it emits a
-  `run-command` built from `commands.lint` over the files the row writes, and
+  `run-command` built from `commands.lint` over the files the step writes, and
   `clean | lint-failed | infra-failed` is a pure function of the result. The
   gate's own output becomes the evidence `fix-lint` reads, so the fixing leaf
   answers the linter's words rather than a paraphrase. Two verdicts went with
@@ -291,7 +291,7 @@ What is a model call and what is not:
   inside the cycle can invalidate a green verdict, so the cycle runs exactly
   once and `cycle-exhausted` is gone with it.
 - **The test verdict is the effect's outcome.** `committed` is green.
-  `rejected: tests` is `still-red` when every failing test is one of the row's
+  `rejected: tests` is `still-red` when every failing test is one of the step's
   own oracle's and `broke-other` otherwise. `rejected: contract` means the
   selection dropped below the impact floor and parks for a person.
   `infra-failed` is `harness-failed`.
@@ -360,7 +360,7 @@ runs/<name>/
 
 Five stores, all files rather than `:memory:`, so a server restarted against
 the same run directory continues rather than beginning again: it shows every
-prior run, keeps a delivered row delivered, and answers a suspension its
+prior run, keeps a delivered step delivered, and answers a suspension its
 predecessor produced. `runs/` is gitignored. `test/` is tracked only once it
 exists, because the oracle is what creates it.
 
@@ -399,18 +399,18 @@ it:
   Haiku and `validate-manifest` is a total function.
 - **`oracle`** writes one value's oracle and lets software measure it.
   `author-oracle` is Sonnet, for the same reason `implement` is.
-- **`deliver`** runs the step cycle over one row. `implement` is Sonnet; every
-  other leaf is Haiku. It refuses a row with no red oracle **by name**.
+- **`deliver`** runs the step cycle over one step. `implement` is Sonnet; every
+  other leaf is Haiku. It refuses a step with no red oracle **by name**.
 
 **Two pipelines**, which are those same registrations under the server's
 scheduler: `oracles` (one per value, in dependency order) and `delivery` (the
-step cycle, once per red-oracled row, with each row's own oracle protected and
-every sibling's excused as known-red). A pipeline row is `{ id, dependencies,
+step cycle, once per red-oracled step, with each step's own oracle protected and
+every sibling's excused as known-red). A pipeline step is `{ id, dependencies,
 workflowId, input }` and nothing else — it names one of the four graphs above
 and the input one run of it takes.
 
 So a graph and a pipeline are two front doors onto ONE registration rather
-than onto one graph twice: same seed, same executor, same journal, and a row's
+than onto one graph twice: same seed, same executor, same journal, and a step's
 run is an ordinary run with an id, a trace, events and a dialog. Neither door
 escapes what the other enforces — the readiness precondition is the pipeline's
 `readiness` AND the standalone seed's refusal.

@@ -1,9 +1,9 @@
 /**
- * A pipeline: the rows, what each one's status projects, and the run each one
+ * A pipeline: the steps, what each one's status projects, and the run each one
  * is on.
  *
  * There is no second graph here. A pipeline is the one fixed graph
- * instantiated once per row, so the tree is a list and each row's link is a
+ * instantiated once per step, so the tree is a list and each step's link is a
  * run of that graph — an ordinary run, with a trace, drawn on the same page
  * every other run is.
  */
@@ -27,7 +27,7 @@ function PipelinePage(): React.ReactElement {
   useEffect(
     () =>
       subscribe((event) => {
-        if (event.type === "pipeline-row" && event.pipelineId === tree.id) void router.invalidate();
+        if (event.type === "pipeline-step" && event.pipelineId === tree.id) void router.invalidate();
         if (event.type === "terminal" || event.type === "suspended") void router.invalidate();
       }),
     [tree.id, router],
@@ -57,26 +57,26 @@ function PipelinePage(): React.ReactElement {
       {error === undefined ? null : <p className="error">{error}</p>}
       {tree.error === undefined ? null : <p className="error">{tree.error}</p>}
 
-      <h2>Rows</h2>
-      <ul className="tree" data-testid="rows">
-        {tree.rows.map((row) => (
-          <li key={row.id} className="row" data-row={row.id} data-status={row.status}>
-            {row.runId === undefined ? (
+      <h2>Steps</h2>
+      <ul className="tree" data-testid="steps">
+        {tree.steps.map((step) => (
+          <li key={step.id} className="row" data-step={step.id} data-status={step.status}>
+            {step.runId === undefined ? (
               <span className="card">
-                <span className={`pill ${row.status}`}>{row.status}</span> <code>{row.id}</code>
+                <span className={`pill ${step.status}`}>{step.status}</span> <code>{step.id}</code>
                 <span className="meta">
-                  {row.description ?? ""}
-                  {row.dependencies.length === 0 ? "" : ` · after ${row.dependencies.join(", ")}`}
+                  {step.description ?? ""}
+                  {step.dependencies.length === 0 ? "" : ` · after ${step.dependencies.join(", ")}`}
                 </span>
               </span>
             ) : (
-              <Link to="/runs/$runId" params={{ runId: row.runId }}>
+              <Link to="/runs/$runId" params={{ runId: step.runId }}>
                 <span>
-                  <span className={`pill ${row.status}`}>{row.status}</span> <code>{row.id}</code>
+                  <span className={`pill ${step.status}`}>{step.status}</span> <code>{step.id}</code>
                 </span>
                 <span className="meta">
-                  {row.description ?? ""}
-                  {row.dependencies.length === 0 ? "" : ` · after ${row.dependencies.join(", ")}`}
+                  {step.description ?? ""}
+                  {step.dependencies.length === 0 ? "" : ` · after ${step.dependencies.join(", ")}`}
                 </span>
               </Link>
             )}
@@ -85,8 +85,8 @@ function PipelinePage(): React.ReactElement {
       </ul>
 
       <p className="meta">
-        A row runs when every row it depends on reads <code>accepted</code>. One that is parked or
-        rejected blocks its own dependents and nothing else.
+        A step runs when every step it depends on reads <code>accepted</code>. One that is parked
+        or rejected blocks its own dependents and nothing else.
       </p>
     </div>
   );

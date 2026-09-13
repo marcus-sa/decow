@@ -1,43 +1,43 @@
 /**
- * A pipeline, driven. The rows are the consumer's; the scheduling is the
- * server's; every row's run is an ordinary run.
+ * A pipeline, driven. The steps are the consumer's; the scheduling is the
+ * server's; every step's run is an ordinary run.
  *
  * This is the half that moved. A pipeline registration used to own `run` and
- * `resume` and call `@des/core`'s `run` itself, which meant a row's run had no
+ * `resume` and call `@des/core`'s `run` itself, which meant a step's run had no
  * server run id, published no events, and parked where no dialog could reach
  * it — a run nobody could watch and a suspension nobody could answer. Now the
- * server schedules: `openScheduler` over the declared rows, `runOne` is
- * `runner.start(row.workflowId, row.input)`, and the scheduler awaits that
+ * server schedules: `openScheduler` over the declared steps, `runOne` is
+ * `runner.start(step.workflowId, step.input)`, and the scheduler awaits that
  * run's terminal or suspension exactly as it awaited a direct call.
  *
- * WHAT A ROW'S STATUS IS, AND WHERE IT COMES FROM. The scheduler needs a
- * status per row; the server has one, because it started the run and holds its
+ * WHAT A STEP'S STATUS IS, AND WHERE IT COMES FROM. The scheduler needs a
+ * status per step; the server has one, because it started the run and holds its
  * record. `pending` covers "never started" and "running right now", which is
  * the scheduler's own reading of `pending` and is what makes an interrupted
- * row simply run again. A consumer's `readiness` rides beside it as
- * `eligible`, because "may this row start at all" is a question a status
+ * step simply run again. A consumer's `readiness` rides beside it as
+ * `eligible`, because "may this step start at all" is a question a status
  * cannot answer.
  *
  * WHAT A CONSUMER STILL OWNS. `record`, which is where the durable row goes,
  * and `readiness`, which is where the precondition goes. Neither runs anything.
  */
 
-import { openScheduler, type RowStatus, type SchedulerRow } from "@des/core/scheduler";
+import { openScheduler, type StepStatus, type SchedulerStep } from "@des/core/scheduler";
 import type { RunOutcome } from "@des/core/workflow";
-import type { PipelineRegistration, PipelineRow } from "./registration.ts";
-import type { Registry, RowOwner } from "./registry.ts";
+import type { PipelineRegistration, PipelineStep } from "./registration.ts";
+import type { Registry, StepOwner } from "./registry.ts";
 
-/** One row, with what the server knows about the run it last started for it. */
-export type PipelineRowView = PipelineRow & {
-  status: RowStatus;
-  /** The run this row is on, once the server has started one. */
+/** One step, with what the server knows about the run it last started for it. */
+export type PipelineStepView = PipelineStep & {
+  status: StepStatus;
+  /** The run this step is on, once the server has started one. */
   runId?: string;
 };
 
 export type PipelineTree = {
   id: string;
   title: string;
-  rows: PipelineRowView[];
+  steps: PipelineStepView[];
   /** Is a drive in flight right now? */
   driving: boolean;
   /** Why the last drive stopped early, when one did. */
@@ -45,44 +45,44 @@ export type PipelineTree = {
 };
 
 /**
- * The run this pipeline last started for this row, if it started one.
+ * The run this pipeline last started for this step, if it started one.
  *
- * READ OFF THE EVENT LOG rather than off a map, which is what makes a row
- * survive a restart. A `pipeline-row` event names the pipeline, the row and
+ * READ OFF THE EVENT LOG rather than off a map, which is what makes a step
+ * survive a restart. A `pipeline-step` event names the pipeline, the step and
  * the run the server attached to it, and the log is append-only and ordered —
- * so the last one that named a run IS the run the row is on, in this process
+ * so the last one that named a run IS the run the step is on, in this process
  * or in the next one over the same directory.
  */
-export const runIdOf = (registry: Registry, pipelineId: string, rowId: string): string | undefined => {
-  for (const event of [...registry.runs.db.events.byKind("pipeline-row")].reverse()) {
-    const payload = event.payload as { pipelineId?: unknown; rowId?: unknown; runId?: unknown };
-    if (payload.pipelineId !== pipelineId || payload.rowId !== rowId) continue;
+export const runIdOf = (registry: Registry, pipelineId: string, stepId: string): string | undefined => {
+  for (const event of [...registry.runs.db.events.byKind("pipeline-step")].reverse()) {
+    const payload = event.payload as { pipelineId?: unknown; stepId?: unknown; runId?: unknown };
+    if (payload.pipelineId !== pipelineId || payload.stepId !== stepId) continue;
     if (typeof payload.runId === "string") return payload.runId;
   }
   return undefined;
 };
 
-/** The pipeline row a run belongs to, for a run that is one. */
-export const ownerOf = (registry: Registry, runId: string): RowOwner | undefined => {
-  for (const event of [...registry.runs.db.events.byKind("pipeline-row")].reverse()) {
-    const payload = event.payload as { pipelineId?: unknown; rowId?: unknown; runId?: unknown };
+/** The pipeline step a run belongs to, for a run that is one. */
+export const ownerOf = (registry: Registry, runId: string): StepOwner | undefined => {
+  for (const event of [...registry.runs.db.events.byKind("pipeline-step")].reverse()) {
+    const payload = event.payload as { pipelineId?: unknown; stepId?: unknown; runId?: unknown };
     if (payload.runId !== runId) continue;
-    if (typeof payload.pipelineId === "string" && typeof payload.rowId === "string") {
-      return { pipelineId: payload.pipelineId, rowId: payload.rowId };
+    if (typeof payload.pipelineId === "string" && typeof payload.stepId === "string") {
+      return { pipelineId: payload.pipelineId, stepId: payload.stepId };
     }
   }
   return undefined;
 };
 
 /**
- * A row's status, read off the run the server started for it.
+ * A step's status, read off the run the server started for it.
  *
  * `failed` is a graph bug rather than a declared ending, and it reads
- * `rejected` here because that is what it means to the frontier: the row did
+ * `rejected` here because that is what it means to the frontier: the step did
  * not succeed, so nothing downstream of it becomes ready.
  */
-export const statusOf = (registry: Registry, pipelineId: string, rowId: string): RowStatus => {
-  const runId = runIdOf(registry, pipelineId, rowId);
+export const statusOf = (registry: Registry, pipelineId: string, stepId: string): StepStatus => {
+  const runId = runIdOf(registry, pipelineId, stepId);
   const record = runId === undefined ? undefined : registry.runs.get(runId);
   switch (record?.status) {
     case "accepted":
@@ -98,49 +98,49 @@ export const statusOf = (registry: Registry, pipelineId: string, rowId: string):
 };
 
 /**
- * Say which run a row is on. The saying IS the remembering: the event is
+ * Say which run a step is on. The saying IS the remembering: the event is
  * appended before it is published, so the attachment is durable by the time
  * anybody hears about it.
  */
-const attach = (registry: Registry, pipelineId: string, row: PipelineRow, runId: string): void => {
+const attach = (registry: Registry, pipelineId: string, step: PipelineStep, runId: string): void => {
   registry.events.emit({
-    type: "pipeline-row",
+    type: "pipeline-step",
     pipelineId,
-    rowId: row.id,
+    stepId: step.id,
     status: "pending",
     runId,
   });
 };
 
-/** Say where a row ended up, once its run settled. */
-const announce = (registry: Registry, pipelineId: string, rowId: string): void => {
+/** Say where a step ended up, once its run settled. */
+const announce = (registry: Registry, pipelineId: string, stepId: string): void => {
   registry.events.emit({
-    type: "pipeline-row",
+    type: "pipeline-step",
     pipelineId,
-    rowId,
-    status: statusOf(registry, pipelineId, rowId),
-    ...(runIdOf(registry, pipelineId, rowId) === undefined
+    stepId,
+    status: statusOf(registry, pipelineId, stepId),
+    ...(runIdOf(registry, pipelineId, stepId) === undefined
       ? {}
-      : { runId: runIdOf(registry, pipelineId, rowId) as string }),
+      : { runId: runIdOf(registry, pipelineId, stepId) as string }),
   });
 };
 
-/** The rows, each with the status the server projects for it. */
+/** The steps, each with the status the server projects for it. */
 export const tree = async (
   registry: Registry,
   pipeline: PipelineRegistration,
 ): Promise<PipelineTree> => {
-  const rows = await pipeline.rows();
+  const steps = await pipeline.steps();
   const error = registry.errors.get(pipeline.id);
   return {
     id: pipeline.id,
     title: pipeline.title,
-    rows: rows.map((row) => ({
-      ...row,
-      status: statusOf(registry, pipeline.id, row.id),
-      ...(runIdOf(registry, pipeline.id, row.id) === undefined
+    steps: steps.map((step) => ({
+      ...step,
+      status: statusOf(registry, pipeline.id, step.id),
+      ...(runIdOf(registry, pipeline.id, step.id) === undefined
         ? {}
-        : { runId: runIdOf(registry, pipeline.id, row.id) as string }),
+        : { runId: runIdOf(registry, pipeline.id, step.id) as string }),
     })),
     driving: registry.driving.has(pipeline.id),
     ...(error === undefined ? {} : { error }),
@@ -150,41 +150,41 @@ export const tree = async (
 /**
  * Run the frontier to quiescence.
  *
- * The scheduler is built per drive rather than held, because the rows are
+ * The scheduler is built per drive rather than held, because the steps are
  * re-read per drive: a roadmap this same server authored may have grown since
- * the last one, and a scheduler over a stale row set would schedule a roadmap
+ * the last one, and a scheduler over a stale step set would schedule a roadmap
  * nobody has.
  */
 const driveOnce = async (registry: Registry, pipeline: PipelineRegistration): Promise<void> => {
-  const rows = await pipeline.rows();
-  const byId = new Map(rows.map((row) => [row.id, row] as const));
-  const rowFor = (id: string): PipelineRow => {
-    const row = byId.get(id);
-    if (row === undefined) throw new Error(`pipeline ${pipeline.id}: no row ${id}`);
-    return row;
+  const steps = await pipeline.steps();
+  const byId = new Map(steps.map((step) => [step.id, step] as const));
+  const stepFor = (id: string): PipelineStep => {
+    const step = byId.get(id);
+    if (step === undefined) throw new Error(`pipeline ${pipeline.id}: no step ${id}`);
+    return step;
   };
 
   const scheduler = openScheduler<unknown>({
-    rows: rows.map((row): SchedulerRow => ({ id: row.id, dependencies: row.dependencies })),
-    concurrency: Math.max(1, pipeline.concurrency ?? rows.length),
+    steps: steps.map((step): SchedulerStep => ({ id: step.id, dependencies: step.dependencies })),
+    concurrency: Math.max(1, pipeline.concurrency ?? steps.length),
     leases: registry.leases,
-    resourcesFor: (r: SchedulerRow) => pipeline.resourcesFor?.(rowFor(r.id)) ?? [],
+    resourcesFor: (r: SchedulerStep) => pipeline.resourcesFor?.(stepFor(r.id)) ?? [],
 
     runOne: async (r) => {
-      const row = rowFor(r.id);
-      const started = registry.runner.start(row.workflowId, row.input);
-      attach(registry, pipeline.id, row, started.runId);
+      const step = stepFor(r.id);
+      const started = registry.runner.start(step.workflowId, step.input);
+      attach(registry, pipeline.id, step, started.runId);
       try {
         return await started.settled;
       } finally {
-        announce(registry, pipeline.id, row.id);
+        announce(registry, pipeline.id, step.id);
       }
     },
 
     resumeOne: async (r, runId, answer) => {
       const settled = registry.runner.resume(runId, answer);
       if (settled === undefined) {
-        throw new Error(`pipeline ${pipeline.id}: run ${runId} of row ${r.id} cannot be resumed`);
+        throw new Error(`pipeline ${pipeline.id}: run ${runId} of step ${r.id} cannot be resumed`);
       }
       try {
         return await settled;
@@ -210,8 +210,8 @@ const driveOnce = async (registry: Registry, pipeline: PipelineRegistration): Pr
 /**
  * Drive a pipeline, holding whatever refused it where a reader can find it.
  *
- * A consumer refuses by NAME — a `record` that will not write twice, a row set
- * that names a row nobody has — and a refusal nobody can read is a pipeline
+ * A consumer refuses by NAME — a `record` that will not write twice, a step set
+ * that names a step nobody has — and a refusal nobody can read is a pipeline
  * that silently did nothing. It is held rather than thrown into the void
  * because the drive is asynchronous: whatever started it answered long ago.
  */
@@ -235,16 +235,16 @@ export const start = (registry: Registry, pipeline: PipelineRegistration): { sta
 };
 
 /**
- * A run that belongs to a pipeline row has just been resumed: record it when
+ * A run that belongs to a pipeline step has just been resumed: record it when
  * it settles, then re-evaluate the frontier.
  *
  * This is what makes answering a suspension a continuation of the PIPELINE
- * rather than of the row, and it fires whichever dialog the person used — the
- * row's, or the run page's, because both go through the same resume.
+ * rather than of the step, and it fires whichever dialog the person used — the
+ * step's, or the run page's, because both go through the same resume.
  */
 export const continueAfterResume = (
   registry: Registry,
-  owner: { pipelineId: string; rowId: string },
+  owner: { pipelineId: string; stepId: string },
   settled: Promise<RunOutcome<unknown>>,
 ): void => {
   const pipeline = registry.pipelineById.get(owner.pipelineId);
@@ -253,8 +253,8 @@ export const continueAfterResume = (
     (async () => {
       try {
         const outcome = await settled;
-        announce(registry, pipeline.id, owner.rowId);
-        await pipeline.record?.(owner.rowId, outcome);
+        announce(registry, pipeline.id, owner.stepId);
+        await pipeline.record?.(owner.stepId, outcome);
       } catch (error) {
         registry.errors.set(pipeline.id, String(error));
         return;

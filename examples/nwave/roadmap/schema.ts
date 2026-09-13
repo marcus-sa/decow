@@ -2,8 +2,8 @@
  * The roadmap is DATA, not a workflow.
  *
  * This is the distinction the whole example rests on. An agent does not
- * generate a workflow per feature; it generates ROWS, and a scheduler
- * instantiates the fixed DELIVER step cycle once per row. So what an authoring
+ * generate a workflow per feature; it generates STEPS, and a scheduler
+ * instantiates the fixed DELIVER step cycle once per step. So what an authoring
  * run produces is a typed structure with a version column, and the graph that
  * produces it is fixed and hand-written like the other two examples.
  *
@@ -50,7 +50,7 @@ export const AcceptanceObligation = z.object({
 export type AcceptanceObligation = z.infer<typeof AcceptanceObligation>;
 
 /**
- * One roadmap row. Every field is an input: nothing here is derived from
+ * One roadmap step. Every field is an input: nothing here is derived from
  * anything else, which is what lets the pure validators below be re-run
  * against a changed policy without a migration.
  */

@@ -4,7 +4,7 @@
  * One of them is the DELIVERY roadmap: the two todo values, pre-baked through
  * ROADMAP, DISTILL and the oracle measurement before the browser ever opens,
  * because the delivery pipeline is what the last test drives and it cannot
- * drive rows whose oracle has not been measured red.
+ * drive steps whose oracle has not been measured red.
  *
  * The other is the ROADMAP fixture the browser authors for itself, and it is
  * the committed known-good one — `examples/nwave/roadmap/fixture.ts`'s
@@ -28,7 +28,7 @@ export const BROWSER_REQUEST = KNOWN_GOOD_REQUEST;
 /** `01-0n` becomes `02-0n`, in the ids and in every dependency that names one. */
 const renumber = (id: string): string => id.replace(/^01-/, "02-");
 
-/** The known-good roadmap, out of the way of the delivery roadmap's rows. */
+/** The known-good roadmap, out of the way of the delivery roadmap's steps. */
 export const BROWSER_ROADMAP: Roadmap = {
   ...KNOWN_GOOD,
   steps: KNOWN_GOOD.steps.map((step) => ({

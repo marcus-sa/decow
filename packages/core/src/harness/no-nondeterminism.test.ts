@@ -58,11 +58,11 @@ const EXEMPT = new Set([join(SRC, "vcs/defaults.ts")]);
  * function of the proposal and the roadmap.
  *
  * The scheduler is scanned for the same reason the compiler is: it decides
- * which rows run, and a frontier that depended on when it was computed would
+ * which steps run, and a frontier that depended on when it was computed would
  * make a feature's delivery order a function of the clock.
  *
  * A TARGET's `commands.ts` is scanned too, and it is the one scanned file that
- * is not this repository's. It is consumer code rather than rows, and it is
+ * is not this repository's. It is consumer code rather than steps, and it is
  * read on every write: a declaration that built a temp path out of a clock, or
  * a seed out of an RNG, would make the same write produce a different command
  * on every run, which is the property this whole scan exists to hold. The glob

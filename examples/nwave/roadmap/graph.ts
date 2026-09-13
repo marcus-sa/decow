@@ -2,8 +2,8 @@
  * The roadmap authoring workflow.
  *
  * The roadmap is DATA. An agent never generates a workflow per feature; it
- * generates rows, and a scheduler instantiates the fixed DELIVER step cycle
- * once per row. So this graph is fixed and hand-written like the other two,
+ * generates steps, and a scheduler instantiates the fixed DELIVER step cycle
+ * once per step. So this graph is fixed and hand-written like the other two,
  * and what it produces is `roadmaps` and `roadmap_steps` rows through the
  * effect executor.
  *

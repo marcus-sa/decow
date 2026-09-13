@@ -210,7 +210,7 @@ export const spinGraph = (): Workflow<SpinState> => ({
 /**
  * How many runs were inside the step at once, at the most.
  *
- * What a resource lease is FOR is making two rows take turns, and the only
+ * What a resource lease is FOR is making two steps take turns, and the only
  * honest way to see that from outside is to watch whether they were ever both
  * in the work at the same moment. So the fixture counts.
  */
@@ -235,7 +235,7 @@ export const overlapTracker = (): Overlap => {
   };
 };
 
-export type BusyState = { row: string };
+export type BusyState = { step: string };
 
 /** One step that takes long enough for a second run to be inside it too. */
 export const busyGraph = (track: Overlap): Workflow<BusyState> => ({

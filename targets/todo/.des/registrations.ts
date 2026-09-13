@@ -12,14 +12,14 @@
  * one of them is a test.
  *
  * TWO WAYS TO START THE SAME GRAPH, and they are the same graph. A WORKFLOW
- * registration is one run over one row, started by a person. A PIPELINE is a
- * declaration of WHICH rows and in what order, and the server starts each one
+ * registration is one run over one step, started by a person. A PIPELINE is a
+ * declaration of WHICH steps and in what order, and the server starts each one
  * as a run of the very same registration — same seed, same executor, same
- * journal. So a row's run is watchable, its trace lands on it, and its
+ * journal. So a step's run is watchable, its trace lands on it, and its
  * suspension is answered in the dialog that answers any other run.
  *
  * Nothing escapes the precondition by picking a door: the standalone `deliver`
- * seed refuses a row whose oracle has not been measured red, by name, and the
+ * seed refuses a step whose oracle has not been measured red, by name, and the
  * pipeline declares the same fact as its `readiness`.
  */
 
@@ -34,7 +34,7 @@ import {
   readRoadmap,
   recordStepRun,
   ROADMAP_STEPS_TABLE,
-  type RoadmapRow,
+  type RoadmapStep,
 } from "../../../examples/nwave/deliver/pipeline.ts";
 import type { State as DeliverState } from "../../../examples/nwave/deliver/graph.ts";
 import { deliverGraph } from "../../../examples/nwave/deliver/graph.ts";
@@ -105,26 +105,26 @@ export type RegistrationOptions = {
   models: Models;
 };
 
-/** The row this input names, or a refusal that says which id was not there. */
-const rowOf = (dir: RunDir, rowId: string): RoadmapRow => {
-  const row = rows(dir).find((r) => r.id === rowId);
-  if (row === undefined) {
+/** The step this input names, or a refusal that says which id was not there. */
+const stepOf = (dir: RunDir, stepId: string): RoadmapStep => {
+  const step = steps(dir).find((r) => r.id === stepId);
+  if (step === undefined) {
     throw new Error(
-      `no row ${rowId} in the roadmap. Run the roadmap graph and approve it first; ` +
-        `the rows it wrote are ${rows(dir).map((r) => r.id).join(", ") || "(none)"}.`,
+      `no step ${stepId} in the roadmap. Run the roadmap graph and approve it first; ` +
+        `the steps it wrote are ${steps(dir).map((r) => r.id).join(", ") || "(none)"}.`,
     );
   }
-  return row;
+  return step;
 };
 
 /**
- * The roadmap's rows, or none.
+ * The roadmap's steps, or none.
  *
  * Nothing is registered against a roadmap that does not exist yet: the first
  * thing this target does is author one, so every reader here has to survive
  * the state where it has not.
  */
-const rows = (dir: RunDir): RoadmapRow[] => {
+const steps = (dir: RunDir): RoadmapStep[] => {
   try {
     return readRoadmap(dir.artifacts, ROADMAP_ID);
   } catch {
@@ -151,13 +151,13 @@ export const todoRegistrations = (
 
   const roadmap = registration<RoadmapState, { request: string }>({
     id: "roadmap",
-    title: "ROADMAP — decompose the request into rows a person approves",
+    title: "ROADMAP — decompose the request into steps a person approves",
     input: z.object({
       request: z
         .string()
         .min(1)
         .default(REQUEST)
-        .describe("What the roadmap is authored for. Also the row id it is stored under."),
+        .describe("What the roadmap is authored for. Also the step id it is stored under."),
     }),
     journal: dir.journal,
     graph: (ctx) => roadmapGraph(ctx.journal, todoRoadmapDefs(models), ctx.observe),
@@ -181,21 +181,21 @@ export const todoRegistrations = (
         ctx.observe,
       ),
     seed: () => {
-      const roadmapRows = rows(dir);
-      if (roadmapRows.length === 0) {
+      const roadmapSteps = steps(dir);
+      if (roadmapSteps.length === 0) {
         throw new Error("there is no approved roadmap yet, so there is nothing to state facts about");
       }
       const stored: Roadmap = {
         request: ROADMAP_ID,
-        steps: roadmapRows.map((row) => ({
-          id: row.id,
-          observation: row.observation,
-          dependencies: row.dependencies,
-          authority: row.authority,
-          predictedTouches: row.predictedTouches,
-          acceptance: row.acceptance,
-          ...(row.oracle === undefined ? {} : { oracle: row.oracle }),
-          supports: row.supports,
+        steps: roadmapSteps.map((step) => ({
+          id: step.id,
+          observation: step.observation,
+          dependencies: step.dependencies,
+          authority: step.authority,
+          predictedTouches: step.predictedTouches,
+          acceptance: step.acceptance,
+          ...(step.oracle === undefined ? {} : { oracle: step.oracle }),
+          supports: step.supports,
         })),
       };
       return seedObligations({
@@ -203,9 +203,9 @@ export const todoRegistrations = (
         design: dir.design,
         testPaths: testPathScope(dir.design),
         versions: Object.fromEntries(
-          roadmapRows.map((row) => [
-            row.id,
-            dir.artifacts.read(ROADMAP_STEPS_TABLE, row.id)?.version ?? 0,
+          roadmapSteps.map((step) => [
+            step.id,
+            dir.artifacts.read(ROADMAP_STEPS_TABLE, step.id)?.version ?? 0,
           ]),
         ),
       });
@@ -216,30 +216,30 @@ export const todoRegistrations = (
 
   /* ------------------------------------------- DISTILL, the oracle */
 
-  const oracle = registration<OracleState, { rowId: string }>({
+  const oracle = registration<OracleState, { stepId: string }>({
     id: "oracle",
     title: "DISTILL — author one value's oracle, and let software measure it",
-    input: z.object({ rowId: z.string().min(1).describe("Which roadmap row to write the oracle for") }),
+    input: z.object({ stepId: z.string().min(1).describe("Which roadmap step to write the oracle for") }),
     journal: dir.journal,
     graph: (ctx) => oracleGraph(ctx.journal, todoOracleDefs(models), ctx.observe),
     seed: (input) =>
       seedOracle({
-        value: valueUnderOracle(rowOf(dir, input.rowId)),
+        value: valueUnderOracle(stepOf(dir, input.stepId)),
         design: dir.design,
         testPaths: testPathScope(dir.design),
       }),
     // No protected scope here, and that is the asymmetry the arrangement rests
     // on: this is the one turn that owns the oracle.
     // The SESSION is the run's, so two runs hold two leases rather than
-    // colliding on the one a session may hold; the TASK is the row's, so the
+    // colliding on the one a session may hold; the TASK is the step's, so the
     // event log's answer to "who wrote this oracle" joins the journal's answer
-    // to "what did this turn decide" on the row id both of them carry.
+    // to "what did this turn decide" on the step id both of them carry.
     executor: ({ runId, input }) =>
       vcsExecutor({
         vcs: dir.vcs,
         session: runId,
         intent: {
-          taskId: rowOf(dir, input.rowId).id,
+          taskId: stepOf(dir, input.stepId).id,
           parentTaskId: ROADMAP_ID,
           description: "author the oracle",
         },
@@ -250,36 +250,36 @@ export const todoRegistrations = (
 
   /* -------------------------------------------------------------- DELIVER */
 
-  const deliver = registration<DeliverState, { rowId: string }>({
+  const deliver = registration<DeliverState, { stepId: string }>({
     id: "deliver",
-    title: "DELIVER — run the step cycle over one row whose oracle is red",
-    input: z.object({ rowId: z.string().min(1).describe("Which roadmap row to deliver") }),
+    title: "DELIVER — run the step cycle over one step whose oracle is red",
+    input: z.object({ stepId: z.string().min(1).describe("Which roadmap step to deliver") }),
     journal: dir.journal,
     graph: (ctx) => deliverGraph(ctx.journal, todoDeliverDefs(models), dir.commands, ctx.observe),
     seed: (input) => {
-      const row = rowOf(dir, input.rowId);
+      const step = stepOf(dir, input.stepId);
       // "No edge bypasses RED" is a readiness precondition rather than an edge,
-      // and it holds for a row started by hand exactly as it holds for one the
+      // and it holds for a step started by hand exactly as it holds for one the
       // scheduler started: an unmeasured oracle proves nothing and a green one
       // proves the wrong thing.
-      if (!oracleIsRed(dir.artifacts, row.id)) {
+      if (!oracleIsRed(dir.artifacts, step.id)) {
         throw new Error(
-          `${row.id} has no oracle measured red, so nothing may deliver it. ` +
+          `${step.id} has no oracle measured red, so nothing may deliver it. ` +
             "Run the oracle graph for it first.",
         );
       }
       return deliverSeed({
         vcs: dir.vcs,
-        row,
+        step,
         // The red a crafter is looking at is the red the suite prints NOW, in
-        // this run's own checkout: the row before it may have turned a sibling
+        // this run's own checkout: the step before it may have turned a sibling
         // green. So it is measured per run rather than supplied.
         design: dir.design,
         evidence: runSuite(dir.project).output,
       });
     },
     /**
-     * The crafter's executor, with this row's own oracle WALLED OFF.
+     * The crafter's executor, with this step's own oracle WALLED OFF.
      *
      * `_crafter_owns` as an executor rule rather than a graph edge: RED to
      * GREEN is bought by production and never by editing the test that
@@ -288,18 +288,18 @@ export const todoRegistrations = (
      * graph merely passed along.
      *
      * `knownRed` is the other half: every OTHER undelivered value's oracle is
-     * red by construction, and refusing this row's correct write for one of
+     * red by construction, and refusing this step's correct write for one of
      * them would make a module with two undelivered values undeliverable.
      */
     executor: ({ runId, input }) => {
-      const row = rowOf(dir, input.rowId);
+      const step = stepOf(dir, input.stepId);
       return vcsExecutor({
         vcs: dir.vcs,
         session: runId,
-        intent: { taskId: row.id, parentTaskId: ROADMAP_ID, description: row.observation },
+        intent: { taskId: step.id, parentTaskId: ROADMAP_ID, description: step.observation },
         artifacts: dir.artifacts,
-        knownRed: knownRedTests(dir.artifacts, dir.vcs, rows(dir), row.id),
-        ...(row.oracle === undefined ? {} : { protected: [parseOracleLocator(row.oracle).path] }),
+        knownRed: knownRedTests(dir.artifacts, dir.vcs, steps(dir), step.id),
+        ...(step.oracle === undefined ? {} : { protected: [parseOracleLocator(step.oracle).path] }),
       });
     },
     runtime: dir.runtime,
@@ -310,53 +310,53 @@ export const todoRegistrations = (
   /**
    * The two compositions, as DATA.
    *
-   * Neither runs anything. A pipeline declares its rows — each one naming a
-   * registered graph and the input one run of it takes — plus whether a row
+   * Neither runs anything. A pipeline declares its steps — each one naming a
+   * registered graph and the input one run of it takes — plus whether a step
    * may run at all and what to persist when one finishes. The SERVER drives
-   * the frontier and starts each ready row as an ordinary run, which is what
-   * gives a row a run id, a live trace, events and a suspension a person
+   * the frontier and starts each ready step as an ordinary run, which is what
+   * gives a step a run id, a live trace, events and a suspension a person
    * answers in the same dialog they answer a standalone run in.
    *
-   * The rows are re-read per request and per drive rather than captured at
-   * boot, because they are written by a graph this same server runs: a row set
-   * captured at boot would be a row set over a roadmap that did not exist yet.
+   * The steps are re-read per request and per drive rather than captured at
+   * boot, because they are written by a graph this same server runs: a step set
+   * captured at boot would be a step set over a roadmap that did not exist yet.
    */
 
-  /** One row per roadmap row, pointed at the graph that delivers it. */
-  const rowsFor = (workflowId: string) => () =>
-    rows(dir).map((row) => ({
-      id: row.id,
-      description: row.observation,
-      dependencies: row.dependencies,
+  /** One step per roadmap step, pointed at the graph that delivers it. */
+  const stepsFor = (workflowId: string) => () =>
+    steps(dir).map((step) => ({
+      id: step.id,
+      description: step.observation,
+      dependencies: step.dependencies,
       workflowId,
-      input: { rowId: row.id },
+      input: { stepId: step.id },
     }));
 
   /** DISTILL's second half, over every value in dependency order. */
   const oracles: PipelineRegistration = {
     id: "oracles",
     title: "DISTILL — one oracle per value, authored and measured",
-    rows: rowsFor("oracle"),
-    record: (rowId, outcome) => {
-      recordOracleRun(dir.artifacts, rowId, outcome);
+    steps: stepsFor("oracle"),
+    record: (stepId, outcome) => {
+      recordOracleRun(dir.artifacts, stepId, outcome);
     },
     concurrency: 1,
   };
 
-  /** DELIVER, once per row whose oracle came back red. */
+  /** DELIVER, once per step whose oracle came back red. */
   const delivery: PipelineRegistration = {
     id: "delivery",
-    title: "DELIVER — the step cycle, once per red-oracled row",
-    rows: rowsFor("deliver"),
-    // "No edge bypasses RED", as the readiness precondition it is. A row with
+    title: "DELIVER — the step cycle, once per red-oracled step",
+    steps: stepsFor("deliver"),
+    // "No edge bypasses RED", as the readiness precondition it is. A step with
     // no oracle measured red never becomes ready and blocks its dependents,
     // exactly as the standalone `deliver` seed refuses one by name.
-    readiness: (rowId) => oracleIsRed(dir.artifacts, rowId),
-    record: (rowId, outcome) => {
-      recordStepRun(dir.artifacts, rowId, outcome);
+    readiness: (stepId) => oracleIsRed(dir.artifacts, stepId),
+    record: (stepId, outcome) => {
+      recordStepRun(dir.artifacts, stepId, outcome);
     },
     concurrency: 1,
-    resourcesFor: (row) => declaredResources(dir.vcs, dir.commands, rowOf(dir, row.id)),
+    resourcesFor: (step) => declaredResources(dir.vcs, dir.commands, stepOf(dir, step.id)),
   };
 
   return { workflows: [roadmap, obligations, oracle, deliver], pipelines: [oracles, delivery] };

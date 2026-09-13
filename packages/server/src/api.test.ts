@@ -10,7 +10,7 @@
  * reports the nodes it enters as it enters them, parks with the closed enum a
  * person has to choose from, refuses an answer outside that enum by NAMING it,
  * and continues the SAME run to a terminal — plus the half this cut moved:
- * that a pipeline's rows are ordinary runs of registered graphs, driven by the
+ * that a pipeline's steps are ordinary runs of registered graphs, driven by the
  * server's own scheduler, each with a run id, a trace and a suspension a
  * person answers in the same place.
  */
@@ -30,7 +30,7 @@ import {
   listWorkflows,
   readArtifacts,
   RefusedAnswer,
-  resumeRow,
+  resumeStep,
   resumeRun,
   runPipeline,
   startRun,
@@ -49,7 +49,7 @@ import {
   type GateState,
 } from "./fixture.ts";
 import { openRegistry, type Registry } from "./registry.ts";
-import { registration, type PipelineRegistration, type PipelineRow } from "./registration.ts";
+import { registration, type PipelineRegistration, type PipelineStep } from "./registration.ts";
 
 /* ------------------------------------------------------------- the registry */
 
@@ -64,7 +64,7 @@ const gateRegistry = (decision: ClassifyDecision, subject: string) => {
     workflows: [
       registration<GateState, { subject: string }>({
         id: "gate",
-        title: "A leaf, a person, and a row",
+        title: "A leaf, a person, and a step",
         input: GateInput,
         journal: memoryJournal(),
         graph: (ctx) =>
@@ -284,17 +284,17 @@ describe("the artifact rows", () => {
 /* ---------------------------------------------------------- the pipelines */
 
 /** What a pipeline recorded, in the order it recorded it. */
-type Recorded = { rowId: string; kind: string; runId: string };
+type Recorded = { stepId: string; kind: string; runId: string };
 
 /**
- * Two rows, B after A, each one an ordinary run of the gate graph.
+ * Two steps, B after A, each one an ordinary run of the gate graph.
  *
- * The registration is DATA plus two hooks: the rows it declares, whether a row
+ * The registration is DATA plus two hooks: the steps it declares, whether a step
  * may run, and what to do when one finishes. Nothing here runs anything.
  */
-const twoRows = (options: {
+const twoSteps = (options: {
   decision?: ClassifyDecision;
-  readiness?: (rowId: string) => boolean;
+  readiness?: (stepId: string) => boolean;
   recorded?: Recorded[];
 } = {}) => {
   const artifacts = openArtifacts();
@@ -302,22 +302,22 @@ const twoRows = (options: {
   const recorded = options.recorded ?? [];
   let minted = 0;
 
-  const rows: PipelineRow[] = [
+  const steps: PipelineStep[] = [
     // Both subjects carry `alph`, because the leaf's anchor check is
-    // mechanical and runs for real: one script answers two rows only when its
+    // mechanical and runs for real: one script answers two steps only when its
     // anchor is a verbatim substring of both.
-    { id: "a", dependencies: [], description: "the first row", workflowId: "gate", input: { subject: "alpha" } },
-    { id: "b", dependencies: ["a"], description: "the row that waits", workflowId: "gate", input: { subject: "alpha bravo" } },
+    { id: "a", dependencies: [], description: "the first step", workflowId: "gate", input: { subject: "alpha" } },
+    { id: "b", dependencies: ["a"], description: "the step that waits", workflowId: "gate", input: { subject: "alpha bravo" } },
   ];
 
   const pipeline: PipelineRegistration = {
-    id: "two-rows",
+    id: "two-steps",
     title: "A roadmap of two",
-    rows: () => rows,
+    steps: () => steps,
     ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
-    record: (rowId, outcome: RunOutcome<unknown>) => {
+    record: (stepId, outcome: RunOutcome<unknown>) => {
       recorded.push({
-        rowId,
+        stepId,
         kind: outcome.kind === "suspended" ? "suspended" : outcome.terminal.kind,
         runId: outcome.runId,
       });
@@ -331,7 +331,7 @@ const twoRows = (options: {
     workflows: [
       registration<GateState, { subject: string }>({
         id: "gate",
-        title: "A leaf, a person, and a row",
+        title: "A leaf, a person, and a step",
         input: GateInput,
         journal: memoryJournal(),
         graph: (ctx) =>
@@ -343,40 +343,40 @@ const twoRows = (options: {
     pipelines: [pipeline],
   });
 
-  return { registry, artifacts, recorded, rows };
+  return { registry, artifacts, recorded, steps };
 };
 
 describe("a registered pipeline", () => {
-  test("its rows are declarations, and its tree is those rows plus what the server knows", async () => {
-    const { registry } = twoRows();
-    expect(listPipelines(registry)).toEqual([{ id: "two-rows", title: "A roadmap of two" }]);
+  test("its steps are declarations, and its tree is those steps plus what the server knows", async () => {
+    const { registry } = twoSteps();
+    expect(listPipelines(registry)).toEqual([{ id: "two-steps", title: "A roadmap of two" }]);
 
-    const before = await getPipeline(registry, "two-rows");
-    expect(before.rows.map((r) => [r.id, r.status])).toEqual([
+    const before = await getPipeline(registry, "two-steps");
+    expect(before.steps.map((r) => [r.id, r.status])).toEqual([
       ["a", "pending"],
       ["b", "pending"],
     ]);
-    expect(before.rows[1]?.dependencies).toEqual(["a"]);
-    expect(before.rows.every((r) => r.runId === undefined)).toBe(true);
+    expect(before.steps[1]?.dependencies).toEqual(["a"]);
+    expect(before.steps.every((r) => r.runId === undefined)).toBe(true);
     expect(() => getPipeline(registry, "nope")).toThrow(/no pipeline nope/);
   });
 
-  test("every row runs through the runner, so every row has a run, a trace and events", async () => {
-    const { registry, recorded } = twoRows();
+  test("every step runs through the runner, so every step has a run, a trace and events", async () => {
+    const { registry, recorded } = twoSteps();
     const events = listen(registry);
 
-    expect(runPipeline(registry, "two-rows")).toEqual({ id: "two-rows", started: true });
+    expect(runPipeline(registry, "two-steps")).toEqual({ id: "two-steps", started: true });
     await registry.idle();
 
-    const after = await getPipeline(registry, "two-rows");
-    expect(after.rows.map((r) => r.status)).toEqual(["accepted", "accepted"]);
+    const after = await getPipeline(registry, "two-steps");
+    expect(after.steps.map((r) => r.status)).toEqual(["accepted", "accepted"]);
     expect(after.error).toBeUndefined();
 
-    // A row's run is an ordinary run: it is in the run list, it has a trace
-    // through the authored nodes, and the row links to it by id.
-    for (const row of after.rows) {
-      expect(row.runId).toBeDefined();
-      const record = getRun(registry, row.runId as string);
+    // A step's run is an ordinary run: it is in the run list, it has a trace
+    // through the authored nodes, and the step links to it by id.
+    for (const step of after.steps) {
+      expect(step.runId).toBeDefined();
+      const record = getRun(registry, step.runId as string);
       expect(record.workflowId).toBe("gate");
       expect(record.status).toBe("accepted");
       expect(record.trace.map((t) => t.node)).toEqual([
@@ -389,16 +389,16 @@ describe("a registered pipeline", () => {
     expect(listRuns(registry)).toHaveLength(2);
 
     // B ran after A, and only because A read `accepted`.
-    expect(recorded.map((r) => `${r.rowId}:${r.kind}`)).toEqual(["a:accepted", "b:accepted"]);
+    expect(recorded.map((r) => `${r.stepId}:${r.kind}`)).toEqual(["a:accepted", "b:accepted"]);
     // The consumer's own record carries the run id, so its durable row and the
     // run a person watched are the same thing.
     expect(recorded[0]?.runId).toBeDefined();
 
-    // And the rows were announced as they moved.
+    // And the steps were announced as they moved.
     const moved = events.seen.filter(
-      (e): e is Extract<ServerEvent, { type: "pipeline-row" }> => e.type === "pipeline-row",
+      (e): e is Extract<ServerEvent, { type: "pipeline-step" }> => e.type === "pipeline-step",
     );
-    expect(moved.map((e) => `${e.rowId}:${e.status}`)).toEqual([
+    expect(moved.map((e) => `${e.stepId}:${e.status}`)).toEqual([
       "a:pending",
       "a:accepted",
       "b:pending",
@@ -409,82 +409,82 @@ describe("a registered pipeline", () => {
   });
 
   test("a second drive while one is going starts no second", async () => {
-    const { registry } = twoRows();
-    expect(runPipeline(registry, "two-rows").started).toBe(true);
-    expect(runPipeline(registry, "two-rows").started).toBe(false);
+    const { registry } = twoSteps();
+    expect(runPipeline(registry, "two-steps").started).toBe(true);
+    expect(runPipeline(registry, "two-steps").started).toBe(false);
     await registry.idle();
     expect(listRuns(registry)).toHaveLength(2);
   });
 
-  test("a parked row is answered on its own run, and the frontier moves when it settles", async () => {
-    // The whole point of the move: the row's suspension IS a run's suspension,
-    // so the dialog that answers a standalone run answers a row.
-    const { registry, recorded } = twoRows({ decision: "needs-a-person" });
-    runPipeline(registry, "two-rows");
+  test("a parked step is answered on its own run, and the frontier moves when it settles", async () => {
+    // The whole point of the move: the step's suspension IS a run's suspension,
+    // so the dialog that answers a standalone run answers a step.
+    const { registry, recorded } = twoSteps({ decision: "needs-a-person" });
+    runPipeline(registry, "two-steps");
     await registry.idle();
 
-    const parked = await getPipeline(registry, "two-rows");
-    expect(parked.rows.map((r) => r.status)).toEqual(["suspended", "pending"]);
-    const runId = parked.rows[0]?.runId as string;
+    const parked = await getPipeline(registry, "two-steps");
+    expect(parked.steps.map((r) => r.status)).toEqual(["suspended", "pending"]);
+    const runId = parked.steps[0]?.runId as string;
     expect(getRun(registry, runId).suspension?.resume?.options).toEqual(["approve", "reject"]);
 
     // The answer is refused by name here too: one resume, one closed enum.
-    expect(() => resumeRow(registry, "two-rows", "a", { decision: "maybe" })).toThrow(
+    expect(() => resumeStep(registry, "two-steps", "a", { decision: "maybe" })).toThrow(
       /must be one of approve, reject/,
     );
 
-    expect(resumeRow(registry, "two-rows", "a", { decision: "approve" })).toEqual({ runId });
+    expect(resumeStep(registry, "two-steps", "a", { decision: "approve" })).toEqual({ runId });
     await registry.idle();
 
-    const after = await getPipeline(registry, "two-rows");
-    expect(after.rows.map((r) => r.status)).toEqual(["accepted", "suspended"]);
+    const after = await getPipeline(registry, "two-steps");
+    expect(after.steps.map((r) => r.status)).toEqual(["accepted", "suspended"]);
     // A's run carries both halves, and B only started because A was accepted.
     expect(getRun(registry, runId).trace.map((t) => t.node)).toContain("ask");
-    expect(recorded.map((r) => `${r.rowId}:${r.kind}`)).toEqual([
+    expect(recorded.map((r) => `${r.stepId}:${r.kind}`)).toEqual([
       "a:suspended",
       "a:accepted",
       "b:suspended",
     ]);
   });
 
-  test("a row nobody has cannot be answered, and says so", async () => {
-    const { registry } = twoRows();
-    expect(() => resumeRow(registry, "two-rows", "a", { decision: "approve" })).toThrow(
+  test("a step nobody has cannot be answered, and says so", async () => {
+    const { registry } = twoSteps();
+    expect(() => resumeStep(registry, "two-steps", "a", { decision: "approve" })).toThrow(
       /has no run/,
     );
   });
 
-  test("an ineligible row never becomes ready, and it blocks its dependents", async () => {
+  test("an ineligible step never becomes ready, and it blocks its dependents", async () => {
     // The precondition the frontier rule cannot express. DELIVER's is "this
     // value's oracle has been measured red"; here it is a flag, and the shape
-    // is the same: nothing downstream of a row that may not run becomes ready.
-    const { registry } = twoRows({ readiness: (rowId) => rowId !== "a" });
-    runPipeline(registry, "two-rows");
+    // is the same: nothing downstream of a step that may not run becomes ready.
+    const { registry } = twoSteps({ readiness: (stepId) => stepId !== "a" });
+    runPipeline(registry, "two-steps");
     await registry.idle();
 
-    const after = await getPipeline(registry, "two-rows");
-    expect(after.rows.map((r) => r.status)).toEqual(["pending", "pending"]);
+    const after = await getPipeline(registry, "two-steps");
+    expect(after.steps.map((r) => r.status)).toEqual(["pending", "pending"]);
     // Nothing ran at all: the fixture's model bindings throw, so reaching a
     // leaf would have failed this.
     expect(listRuns(registry)).toEqual([]);
   });
 });
 
-describe("a declared resource serializes two rows", () => {
-  /** Two independent rows of a graph slow enough for them to overlap. */
-  const twoBusyRows = (resourcesFor?: (row: PipelineRow) => string[]) => {
+describe("a declared resource serializes two steps", () => {
+  /** Two independent steps of a graph slow enough for them to overlap. */
+  const twoBusySteps = (resourcesFor?: (step: PipelineStep) => string[]) => {
     const track = overlapTracker();
     const effects = memoryEffects();
-    const rows: PipelineRow[] = [
-      { id: "a", dependencies: [], workflowId: "busy", input: { row: "a" } },
-      { id: "b", dependencies: [], workflowId: "busy", input: { row: "b" } },
+    const steps: PipelineStep[] = [
+      { id: "a", dependencies: [], workflowId: "busy", input: { step: "a" } },
+      { id: "b", dependencies: [], workflowId: "busy", input: { step: "b" } },
     ];
     const registry = openRegistry({
       workflows: [
         registration<BusyState, BusyState>({
           id: "busy",
           title: "One step, slowly",
-          input: GateInput.pick({}).extend({ row: GateInput.shape.subject }),
+          input: GateInput.pick({}).extend({ step: GateInput.shape.subject }),
           journal: memoryJournal(),
           graph: () => busyGraph(track),
           seed: (input) => input,
@@ -493,9 +493,9 @@ describe("a declared resource serializes two rows", () => {
       ],
       pipelines: [
         {
-          id: "busy-rows",
-          title: "Two rows that could overlap",
-          rows: () => rows,
+          id: "busy-steps",
+          title: "Two steps that could overlap",
+          steps: () => steps,
           concurrency: 2,
           ...(resourcesFor === undefined ? {} : { resourcesFor }),
         },
@@ -504,25 +504,25 @@ describe("a declared resource serializes two rows", () => {
     return { registry, track };
   };
 
-  test("two rows that name the same resource never overlap", async () => {
-    const { registry, track } = twoBusyRows(() => ["shared-db"]);
-    runPipeline(registry, "busy-rows");
+  test("two steps that name the same resource never overlap", async () => {
+    const { registry, track } = twoBusySteps(() => ["shared-db"]);
+    runPipeline(registry, "busy-steps");
     await registry.idle();
 
-    const after = await getPipeline(registry, "busy-rows");
-    expect(after.rows.map((r) => r.status)).toEqual(["accepted", "accepted"]);
+    const after = await getPipeline(registry, "busy-steps");
+    expect(after.steps.map((r) => r.status)).toEqual(["accepted", "accepted"]);
     expect(track.peak()).toBe(1);
   });
 
-  test("two rows that name nothing run together", async () => {
-    // The control. Same rows, same concurrency, same lease manager; the only
-    // difference is what the row says it needs.
-    const { registry, track } = twoBusyRows();
-    runPipeline(registry, "busy-rows");
+  test("two steps that name nothing run together", async () => {
+    // The control. Same steps, same concurrency, same lease manager; the only
+    // difference is what the step says it needs.
+    const { registry, track } = twoBusySteps();
+    runPipeline(registry, "busy-steps");
     await registry.idle();
 
-    const after = await getPipeline(registry, "busy-rows");
-    expect(after.rows.map((r) => r.status)).toEqual(["accepted", "accepted"]);
+    const after = await getPipeline(registry, "busy-steps");
+    expect(after.steps.map((r) => r.status)).toEqual(["accepted", "accepted"]);
     expect(track.peak()).toBe(2);
   });
 });

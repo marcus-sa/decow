@@ -4,12 +4,12 @@
  * This is the stubbed twin of the five commands, and everything they do is
  * done here except the inference:
  *
- *   ROADMAP    two rows, persisted through the roadmap workflow's own `persist`
+ *   ROADMAP    two steps, persisted through the roadmap workflow's own `persist`
  *   DISTILL    the obligations graph fills in their acceptance facts; the
  *              oracle graph authors one test file per value through a real
  *              `write-file`, and a REAL `bun test` measures each one red
- *   DELIVER    the scheduler reads the rows back, refuses any value whose
- *              oracle is not red, and runs the step cycle once per row against
+ *   DELIVER    the scheduler reads the steps back, refuses any value whose
+ *              oracle is not red, and runs the step cycle once per step against
  *              a REAL `tsc --noEmit` and a REAL impact-scoped `bun test`
  *
  * Every leaf is stubbed at the BINDING — the one seam this composition has —
@@ -259,16 +259,16 @@ const HAPPY: Partial<Record<LeafId, string>> = {
  * list, because `deliver.selection-matches-its-decision` refuses a decision
  * its own payload contradicts.
  */
-const ROW_IDS = ["01-01", "01-02"] as const;
+const STEP_IDS = ["01-01", "01-02"] as const;
 
-/** The row a prompt is about. Every leaf's prompt names it; a model reads it too. */
-const rowIn = (prompt: string): string => ROW_IDS.find((id) => prompt.includes(id)) ?? "01-01";
+/** The step a prompt is about. Every leaf's prompt names it; a model reads it too. */
+const stepIn = (prompt: string): string => STEP_IDS.find((id) => prompt.includes(id)) ?? "01-01";
 
-const leafPayload = (row: string, symbolId: string): Record<string, unknown> => ({
+const leafPayload = (step: string, symbolId: string): Record<string, unknown> => ({
   anchor: "",
   rationale: "stubbed",
   symbolId,
-  body: BODIES[row] ?? "",
+  body: BODIES[step] ?? "",
   gap: "",
   extra: [],
 });
@@ -277,18 +277,18 @@ const leafPayload = (row: string, symbolId: string): Record<string, unknown> => 
  * The five roles, all answered by ONE scripted binding, which is the whole of
  * what this test injects.
  *
- * A binding is answered per CALL, and which row a call is about is on the
+ * A binding is answered per CALL, and which step a call is about is on the
  * prompt — `Step 01-01`, `Value 01-02` — exactly where the model it stands in
- * for would read it. So one script serves both rows without the composition
+ * for would read it. So one script serves both steps without the composition
  * growing anywhere for a test to reach.
  */
-const scriptedModels = (symbolFor: (row: string) => string): Models => {
+const scriptedModels = (symbolFor: (step: string) => string): Models => {
   const binding: ModelBinding = scriptedBinding(({ step, prompt }): ScriptedAnswer[] | undefined => {
     if (step.id === "distill.propose-obligations") {
       return [{ decision: "proposed", payload: { values: MANIFEST, rationale: "stubbed" } }];
     }
     if (step.id === "distill.author-oracle") {
-      const path = (ORACLES[rowIn(prompt) as keyof typeof ORACLES] ?? "").split("::")[0] as string;
+      const path = (ORACLES[stepIn(prompt) as keyof typeof ORACLES] ?? "").split("::")[0] as string;
       return [
         {
           decision: "authored",
@@ -302,8 +302,8 @@ const scriptedModels = (symbolFor: (row: string) => string): Models => {
     const leaf = step.id.slice("deliver.".length) as LeafId;
     const decision = HAPPY[leaf];
     if (decision === undefined) return undefined;
-    const row = rowIn(prompt);
-    return [{ decision, payload: leafPayload(row, symbolFor(row)) }];
+    const stepId = stepIn(prompt);
+    return [{ decision, payload: leafPayload(stepId, symbolFor(stepId)) }];
   });
 
   return {
@@ -322,7 +322,7 @@ const persistRoadmap = async (roadmap: Roadmap, design: string, effects: ReturnT
   // for real — a paraphrase would be refused here rather than judged.
   const binding = scriptedBinding({
     "roadmap.decompose": [
-      { decision: "proposed", payload: { roadmap, rationale: "one row per stub" } },
+      { decision: "proposed", payload: { roadmap, rationale: "one step per stub" } },
     ],
     "roadmap.validate-slices": [
       {
@@ -355,7 +355,7 @@ const persistRoadmap = async (roadmap: Roadmap, design: string, effects: ReturnT
  * This is `todoRegistrations` — the same function `main.ts` calls — handed a
  * run directory whose stores are this test's. Everything below is driven
  * through it: a graph is started with `startRun`, a pipeline with
- * `runPipeline`, and the server's scheduler is what decides which row runs
+ * `runPipeline`, and the server's scheduler is what decides which step runs
  * when. Nothing here calls `run()`.
  */
 const openStubbedServer = (
@@ -383,13 +383,13 @@ const openStubbedServer = (
     close: () => {},
   };
   const { workflows, pipelines } = todoRegistrations(dir, {
-    models: scriptedModels((row) => project.symbolId("src/todo.ts", METHODS[row] ?? "")),
+    models: scriptedModels((step) => project.symbolId("src/todo.ts", METHODS[step] ?? "")),
   });
   const registry = openRegistry({ workflows, pipelines, artifacts, store });
   return { registry, artifacts, journal, dir };
 };
 
-/** Which method each row rewrites, so `implement` can name the symbol. */
+/** Which method each step rewrites, so `implement` can name the symbol. */
 const METHODS: Record<string, string> = { "01-01": "complete", "01-02": "remove" };
 
 /** Drive one pipeline to quiescence and answer with its tree. */
@@ -436,14 +436,14 @@ describe("the todo target, delivered", () => {
 
     const oracleTree = await drivePipeline(registry, "oracles");
 
-    expect(oracleTree.rows.map((r) => `${r.id}:${r.status}`)).toEqual([
+    expect(oracleTree.steps.map((r) => `${r.id}:${r.status}`)).toEqual([
       "01-01:accepted",
       "01-02:accepted",
     ]);
-    // Every row is an ordinary RUN: the tree links to it, and the run's own
+    // Every step is an ordinary RUN: the tree links to it, and the run's own
     // trace is of the oracle graph the author wrote.
-    for (const row of oracleTree.rows) {
-      const record = getRun(registry, row.runId as string);
+    for (const step of oracleTree.steps) {
+      const record = getRun(registry, step.runId as string);
       expect(record.workflowId).toBe("oracle");
       expect(record.trace.map((t) => t.node)).toContain("measure");
     }
@@ -455,8 +455,8 @@ describe("the todo target, delivered", () => {
     expect(project.read("test/remove.test.ts")).toBe(ORACLE_BODIES["test/remove.test.ts"] ?? "");
     // And the measurements are on the event log, under each value's own task,
     // with the argv the TARGET declared rather than one the framework picked.
-    for (const row of ["01-01", "01-02"]) {
-      const events = project.vcs.log.byTask(row).filter((e) => e.kind === "oracle-measured");
+    for (const step of ["01-01", "01-02"]) {
+      const events = project.vcs.log.byTask(step).filter((e) => e.kind === "oracle-measured");
       expect(events).toHaveLength(1);
       const detail = JSON.parse(String(events[0]?.detail));
       expect(detail.verdict).toBe("red");
@@ -472,13 +472,13 @@ describe("the todo target, delivered", () => {
 
     const deliveryTree = await drivePipeline(registry, "delivery");
 
-    expect(deliveryTree.rows.map((r) => `${r.id}:${r.status}`)).toEqual([
+    expect(deliveryTree.steps.map((r) => `${r.id}:${r.status}`)).toEqual([
       "01-01:accepted",
       "01-02:accepted",
     ]);
     expect(statusOf(artifacts, "01-01")).toBe("accepted");
-    for (const row of deliveryTree.rows) {
-      const record = getRun(registry, row.runId as string);
+    for (const step of deliveryTree.steps) {
+      const record = getRun(registry, step.runId as string);
       expect(record.workflowId).toBe("deliver");
       expect(record.status).toBe("accepted");
     }
@@ -490,11 +490,11 @@ describe("the todo target, delivered", () => {
     expect(source).toContain("this.#todos.splice(at, 1);");
 
     // The quality gate ran the target's OWN declared lint command, for real,
-    // over the file the row wrote. Not a leaf classifying a string: a command
+    // over the file the step wrote. Not a leaf classifying a string: a command
     // the consumer named, and an exit status.
-    for (const row of ["01-01", "01-02"]) {
+    for (const step of ["01-01", "01-02"]) {
       const lints = project.vcs.log
-        .byTask(row)
+        .byTask(step)
         .filter((e) => e.kind === "trail")
         .map((e) => JSON.parse(String(e.detail)) as { ran?: string[]; exit?: number });
       const gate = lints.find((l) => l.ran?.includes("biome"));
@@ -525,19 +525,19 @@ describe("the todo target, delivered", () => {
 
     expect(oracleIsRed(artifacts, "01-01")).toBe(false);
 
-    // The pipeline's readiness refuses both rows, so nothing runs at all: the
+    // The pipeline's readiness refuses both steps, so nothing runs at all: the
     // model bindings throw, so reaching a leaf would fail here.
     const tree = await drivePipeline(registry, "delivery");
-    expect(tree.rows.map((r) => r.status)).toEqual(["pending", "pending"]);
-    expect(tree.rows.every((r) => r.runId === undefined)).toBe(true);
+    expect(tree.steps.map((r) => r.status)).toEqual(["pending", "pending"]);
+    expect(tree.steps.every((r) => r.runId === undefined)).toBe(true);
     expect(registry.runs.list()).toEqual([]);
     expect(project.read("src/todo.ts")).toContain('throw new Error("not implemented")');
 
-    // And the same precondition refuses a row started BY HAND, by name — the
+    // And the same precondition refuses a step started BY HAND, by name — the
     // standalone seed and the pipeline's readiness say the same thing. The
     // refusal lands ON THE RUN rather than on the call, because a seed runs
     // where the run does: a person reads it in the run they started.
-    const byHand = startRun(registry, "deliver", { rowId: "01-01" });
+    const byHand = startRun(registry, "deliver", { stepId: "01-01" });
     await registry.idle();
     const refused = getRun(registry, byHand.runId);
     expect(refused.status).toBe("failed");
@@ -601,12 +601,12 @@ describe("the todo target, delivered", () => {
         expect(projection.nodes.some((n) => n.kind === "terminal")).toBe(true);
       }
 
-      // With no roadmap yet, a pipeline has no rows and refuses nothing.
-      expect(await pipelines[0]?.rows()).toEqual([]);
-      // And a graph that needs a row refuses BY NAME rather than throwing
+      // With no roadmap yet, a pipeline has no steps and refuses nothing.
+      expect(await pipelines[0]?.steps()).toEqual([]);
+      // And a graph that needs a step refuses BY NAME rather than throwing
       // something a reader cannot act on.
       const deliver = workflows.find((w) => w.id === "deliver");
-      expect(() => deliver?.seed({ rowId: "01-01" })).toThrow(/no row 01-01 in the roadmap/);
+      expect(() => deliver?.seed({ stepId: "01-01" })).toThrow(/no step 01-01 in the roadmap/);
 
       dir.close();
     } finally {

@@ -9,13 +9,13 @@
  *
  * Every one of them is a projection of something that already exists: the
  * authored graph, a run's record, the artifact store's rows, a pipeline's
- * declared rows. The three that are not — starting a run, answering a
+ * declared steps. The three that are not — starting a run, answering a
  * suspension, and driving a pipeline — take a value the graph's own schema
  * validates, and a value that does not parse is refused HERE, with the closed
  * set it should have come from, rather than three frames into a compiled step.
  */
 
-import type { RowStatus } from "@des/core/scheduler";
+import type { StepStatus } from "@des/core/scheduler";
 import { z } from "zod";
 import { asJson, type Json } from "./json.ts";
 import { continueAfterResume, ownerOf, runIdOf, start, tree, type PipelineTree } from "./pipelines.ts";
@@ -128,7 +128,7 @@ export const resumeRun = (
   registry: Registry,
   runId: string,
   answer: unknown,
-): { runId: string; status: RowStatus | "running" } => {
+): { runId: string; status: StepStatus | "running" } => {
   const record = registry.runs.get(runId);
   if (record === undefined) throw new Error(`no run ${runId}`);
   if (record.status !== "suspended") {
@@ -236,20 +236,20 @@ export const runPipeline = (registry: Registry, id: string): { id: string; start
 });
 
 /**
- * Answer a parked row. It is the row's own RUN that is resumed — the same run
+ * Answer a parked step. It is the step's own RUN that is resumed — the same run
  * the tree links to and the run page draws — and the frontier is re-evaluated
  * when it settles.
  */
-export const resumeRow = (
+export const resumeStep = (
   registry: Registry,
   id: string,
-  rowId: string,
+  stepId: string,
   answer: unknown,
 ): { runId: string } => {
   const pipeline = pipelineOf(registry, id);
-  const runId = runIdOf(registry, pipeline.id, rowId);
+  const runId = runIdOf(registry, pipeline.id, stepId);
   if (runId === undefined) {
-    throw new Error(`row ${rowId} of pipeline ${id} has no run, so there is nothing to answer`);
+    throw new Error(`step ${stepId} of pipeline ${id} has no run, so there is nothing to answer`);
   }
   resumeRun(registry, runId, answer);
   return { runId };

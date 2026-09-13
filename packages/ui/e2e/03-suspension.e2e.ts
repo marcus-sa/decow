@@ -6,7 +6,7 @@
  * dialog ARE that set, read off the node's own `resumeSchema` by the server,
  * so a person cannot answer with something the node would refuse. The answer
  * continues the SAME run — the trace spans both halves — and the run ends
- * `accepted` with the rows persisted.
+ * `accepted` with the steps persisted.
  *
  * The video is recorded for this one, because it is the one that is worth
  * watching rather than reading.

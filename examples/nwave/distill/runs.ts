@@ -15,7 +15,7 @@
 
 import type { ArtifactStore } from "@des/core/artifacts";
 import type { OracleVerdict } from "@des/core/effects";
-import type { RowStatus } from "@des/core/scheduler";
+import type { StepStatus } from "@des/core/scheduler";
 import type { RunOutcome } from "@des/core/workflow";
 
 /** Where a finished oracle run is recorded. Append-only, one row per run. */
@@ -66,7 +66,7 @@ export const oracleIsRed = (artifacts: ArtifactStore, stepId: string): boolean =
  * suspension, and the only route to its `reject` terminal is a person
  * answering `abandon`, which nothing in this composition does.
  */
-export const oracleStatusOf = (artifacts: ArtifactStore, stepId: string): RowStatus => {
+export const oracleStatusOf = (artifacts: ArtifactStore, stepId: string): StepStatus => {
   const last = oracleRunsOf(artifacts, stepId).at(-1);
   if (last === undefined) return "pending";
   return last.verdict === "red" ? "accepted" : "suspended";

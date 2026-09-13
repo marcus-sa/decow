@@ -29,7 +29,7 @@
  *
  * THE DATABASE IS THE SOURCE OF TRUTH. Runs, the events they publish and what
  * every leaf call decided and cost are rows in `runs/<name>/runs.sqlite`, so a
- * restarted server shows every prior run, a delivered pipeline row stays
+ * restarted server shows every prior run, a delivered pipeline step stays
  * delivered, and a suspension one process produced is answerable by the next.
  * Token counts are attributed by `runStep` to the call that spent them, so
  * concurrency costs the numbers nothing.

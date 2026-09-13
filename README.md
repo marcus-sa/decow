@@ -6,7 +6,7 @@ The property the rest of the design rests on is testable in this repo right now,
 
 All four have cycles in them. Their path spaces are two and three figures rather than infinite because every repetition is a `loop` node with a required bound.
 
-The four examples are one consumer's waves, so they live together under [`examples/nwave/`](#the-four-worked-examples), and they are one **pipeline** rather than four demonstrations: the roadmap workflow writes rows, [DISTILL](#distill-is-two-graphs) fills in what each value must be observed to do and writes the oracle that observes it, and the DELIVER step cycle runs once per row whose oracle has been measured red.
+The four examples are one consumer's waves, so they live together under [`examples/nwave/`](#the-four-worked-examples), and they are one **pipeline** rather than four demonstrations: the roadmap workflow writes steps, [DISTILL](#distill-is-two-graphs) fills in what each value must be observed to do and writes the oracle that observes it, and the DELIVER step cycle runs once per step whose oracle has been measured red.
 
 That last clause is the shape of this cut. **The oracle is authored by one wave, executed by software, and walled off from the next wave.** RED is not a node in the step cycle; it is a recorded verdict the step cycle refuses to run without.
 
@@ -15,6 +15,14 @@ Every process the framework runs is a **declared command**. The consumer says ho
 The second half of the repo is the [VCS module](#vcs-module): `replace-symbol`, `write-file`, `run-tests` and `measure-oracle` execute for real, under a lease, through a verification gate, into an append-only event log. `run-tests` is a **union**: the VCS owns the impact floor and the workflow owns selection above it, so a leaf may add a test and can never subtract one. Artifact rows have [a real database](#artifact-rows) behind them, so a roadmap outlives the process that authored it.
 
 There is something to deliver *to*: [`targets/todo/`](#the-todo-target), a small TypeScript project with two stubbed methods and **no test file at all**, plus [one server](#the-server-and-the-ui) that registers all four graphs against a copy of it. [Runs, their events and every leaf attempt are rows](#runs-are-rows) in the run directory, so a restarted server shows what the last one did and can answer the suspension it left. A suspension is answered in the UI, from the closed enum the node itself declares; suspensions are also [durable](#durable-snapshots), so a run parked by one process can be answered by another. A browser has [driven all of it](#a-browser-has-rendered-it), and the screenshots are in the repository. **No real-model run has been performed yet** — see [The real run](#the-real-run).
+
+## Terms
+
+Two things here are called a step, and they are not the same thing.
+
+- **A step of the roadmap** is one unit of work a request decomposes into: `{ id, dependencies }` plus the obligations and the oracle DISTILL attaches to it. A pipeline is a set of them with dependencies, and DELIVER runs its cycle once per step.
+- **A step node of a graph** is a `type: "step"` node inside a `Workflow<S>` — the thing `runStep` runs and a `StepResult` comes back from. The DELIVER step cycle is one fixed graph of those nodes, instantiated once per roadmap step.
+- **A row is a database row**, and nothing else: an artifact row, a `runs` / `run_events` / `leaf_attempts` row, a requirement row.
 
 ## Install, test, run
 
@@ -78,18 +86,18 @@ It starts **without a key**: the graphs, the projections, the artifact rows and 
 | `packages/core/src/core/effects.ts` | § Effects with typed results. The `Effect` / `EffectResult` unions plus an in-memory executor with optimistic concurrency. |
 | `packages/core/src/core/commands.ts` | § Effects with typed results → `run-command`. The consumer's `Commands` contract, and the one process runner behind every command the framework runs. |
 | `packages/core/src/core/journal.ts` | § Journal. The interface, an in-memory implementation, and a persistent one on `bun:sqlite`. |
-| `packages/core/src/core/scheduler.ts` | § DELIVER runs in parallel. The frontier, the concurrency limit, resource leases, and termination. Generic in rows; the composition is the consumer's. |
+| `packages/core/src/core/scheduler.ts` | § DELIVER runs in parallel. The frontier, the concurrency limit, resource leases, and termination. Generic in steps; the composition is the consumer's. |
 | `packages/core/src/artifacts/` | § Artifacts are typed rows, not documents. The store: one version column, one append-only event log, one time-travel read. |
 | `packages/core/src/bindings/` | § Framework versus consumer → "model bindings: which small models, which validator family". `mastra.ts` is one model call; `claude-code.ts` is a Claude Code subagent. |
 | `packages/core/src/checks/` | § Framework versus consumer → "a library of mechanical checks": `verbatim.ts`, `enum-member.ts`, `id-in-set.ts`. |
 | `packages/core/src/harness/` | § Framework versus consumer → "test harness": `scripted-binding.ts` (the one way a test stubs a leaf), `no-replay.ts`, `enumerate-paths.ts` (the graph inspector, the reachable-path walker, and the effect-outcome axis), `matchers.ts`. |
 | `examples/nwave/distill/` | § DISTILL is two graphs. `manifest.ts` is `des distill`'s closed rule set as a pure function; `obligations/` is the graph around it; `oracle/` is `des oracle --value N`, where the acceptance designer authors and software measures. Bootstrap steps 2 and 3. |
-| `examples/nwave/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops, starting at `implement` because RED is a row it reads. `pipeline.ts` is bootstrap step 7's second half: one roadmap row as one run's seed, and what a finished run is persisted as. The scheduling is the server's. |
-| `examples/nwave/roadmap/` | § DELIVER is two graphs → the roadmap half, and § Framework versus consumer → the authoring workflow. Bootstrap step 7's first half — the roadmap as rows, with two pure decision functions and no generator. |
+| `examples/nwave/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops, starting at `implement` because RED is a row it reads. `pipeline.ts` is bootstrap step 7's second half: one roadmap step as one run's seed, and what a finished run is persisted as. The scheduling is the server's. |
+| `examples/nwave/roadmap/` | § DELIVER is two graphs → the roadmap half, and § Framework versus consumer → the authoring workflow. Bootstrap step 7's first half — the roadmap as steps, with two pure decision functions and no generator. |
 | `targets/todo/.des/` | The composition that points all four graphs and the two pipelines at a real project: `registrations.ts` declares them and `main.ts` serves them. Its one injection point is `models`. Not a wave: the consumer's own composition. |
 | `targets/todo/` | The delivery target. A template project with two stubbed methods and no test file, copied into a run directory and never mutated in place. The oracle is authored into it, not shipped with it. |
 | `packages/core/src/vcs/` | § The agent-native VCS is the effect executor and mechanical verifier, and the whole of [`ai-vcs.md`](./ai-vcs.md) phases 2 to 4. See [`packages/core/src/vcs/README.md`](./packages/core/src/vcs/README.md). |
-| `packages/server/` | § The server and the UI are the entrypoint. `registration.ts` is what a target declares; `projection.ts` reads the AUTHORED graph off the node map; `runner.ts` drives one and watches it; `pipelines.ts` schedules the rows a pipeline declares; `store.ts` is the three tables runs, events and attempts are rows in; `api.ts` is the surface, and `registry.ts` is where a request handler finds it. |
+| `packages/server/` | § The server and the UI are the entrypoint. `registration.ts` is what a target declares; `projection.ts` reads the AUTHORED graph off the node map; `runner.ts` drives one and watches it; `pipelines.ts` schedules the steps a pipeline declares; `store.ts` is the three tables runs, events and attempts are rows in; `api.ts` is the surface, and `registry.ts` is where a request handler finds it. |
 | `packages/ui/` | § The server and the UI are the entrypoint → the application. `server/functions.ts` wraps every call as a server function; `routes/` are the pages and the one event route; `layout.ts` is dagre — including where every edge label goes — `graph.tsx` is JointJS, `suspension.tsx` is the dialog whose buttons are a node's closed enum; `e2e/` is a browser driving all of it. |
 
 The model bindings live under `packages/core/src/bindings/` and nothing in `core/` imports them: the design's framework/consumer table puts "which small models, which validator family" on the consumer side, and the smoke scripts are where a consumer picks.
@@ -376,7 +384,7 @@ and the mapping is deliberately coarse, because a branch should read a verdict a
 
 The output rides on the result as `command` — `{ exitCode, stdout, stderr, durationMs, timedOut }`, each channel capped at **64 000 bytes** with a trailing `…` when it was truncated. It is payload: a person reads it, a correction turn reads it, the event log carries an excerpt of it. The exit and the outcome are the only things a branch reads. A **stage** that interprets a non-zero exit reports its own name instead, so `tsc` saying no is `rejected { by: "typecheck" }` and the linter saying no is `rejected { by: "lint" }`; `command` is what an uninterpreted exit looks like.
 
-`resources` is how shared test infrastructure gets serialised. A row's own declared commands name what they need exclusively, the pipeline's default `resourcesFor` is the union of those names, and the scheduler takes the whole set as a lease before the row runs. Two rows that name `shared-db` take turns; two that name nothing run together. Both halves are asserted against the same two independent rows.
+`resources` is how shared test infrastructure gets serialised. A step's own declared commands name what they need exclusively, the pipeline's default `resourcesFor` is the union of those names, and the scheduler takes the whole set as a lease before the step runs. Two steps that name `shared-db` take turns; two that name nothing run together. Both halves are asserted against the same two independent steps.
 
 Both effect executors run it, because a command needs no VCS behind it and an executor that refused one would be pretending it could not do a thing it can. The VCS executor adds two things: the repository root as the base for a relative `cwd`, and a `trail` event carrying the argv and the exit, because every effect it performs is on the event log.
 
@@ -400,7 +408,7 @@ One reading changed, and it got sharper rather than looser. A selector naming no
 
 ## The four worked examples
 
-They live under `examples/nwave/`, together, because they are waves of one consumer's process rather than unrelated demonstrations — and they compose: ROADMAP writes the rows, DISTILL fills in their acceptance facts and writes the oracle that measures each value, and DELIVER runs once per row whose oracle came back red.
+They live under `examples/nwave/`, together, because they are waves of one consumer's process rather than unrelated demonstrations — and they compose: ROADMAP writes the steps, DISTILL fills in their acceptance facts and writes the oracle that measures each value, and DELIVER runs once per step whose oracle came back red.
 
 | | ROADMAP | DISTILL / obligations | DISTILL / oracle | DELIVER |
 |---|---|---|---|---|
@@ -508,7 +516,7 @@ The pre-craft oracle reviewer is **retired** with it. Between "measured" and "ju
 
 ### The crafter is walled off from the oracle
 
-`_crafter_owns`, as an executor rule. Every path a task declares is the crafter's **except the oracle**, because RED to GREEN must be bought by production and never by editing the test that measures it. The DELIVER pipeline builds each row's executor with `protected: [the row's oracle file]`, so a `replace-symbol` or a `write-file` landing there is `rejected { by: "contract" }` before a lease is asked for, with the refusal on the event log.
+`_crafter_owns`, as an executor rule. Every path a task declares is the crafter's **except the oracle**, because RED to GREEN must be bought by production and never by editing the test that measures it. The DELIVER pipeline builds each step's executor with `protected: [the step's oracle file]`, so a `replace-symbol` or a `write-file` landing there is `rejected { by: "contract" }` before a lease is asked for, with the refusal on the event log.
 
 Expressing it in the executor rather than in a graph is what makes it hold for every write the graph could emit — including one a model proposed and the graph merely passed along. The supports are *not* walled: a support is the oracle's dependency rather than the thing that measures the value, which is the same line the shipped runner's own ownership check draws.
 
@@ -535,7 +543,7 @@ That split needed the ids to reach the branch, so `EffectResult`'s `rejected` ga
 
 ### `gates` is effect-driven too
 
-`gates` used to be a leaf: a model read a lint result and answered `clean | clippy-in-scope | mutation-below-gate | out-of-scope-structural`. Whether the quality gate found anything is what **running** it answers, and a model asked the same question is a second source of truth for a fact the command already produced. So `gates` is a `step` that emits a `run-command` built from the consumer's declared `commands.lint` over the files the row writes, and `gate.route` is a pure function of the typed result:
+`gates` used to be a leaf: a model read a lint result and answered `clean | clippy-in-scope | mutation-below-gate | out-of-scope-structural`. Whether the quality gate found anything is what **running** it answers, and a model asked the same question is a second source of truth for a fact the command already produced. So `gates` is a `step` that emits a `run-command` built from the consumer's declared `commands.lint` over the files the step writes, and `gate.route` is a pure function of the typed result:
 
 | Effect result | Verdict | Route |
 |---|---|---|
@@ -555,9 +563,9 @@ The DELIVER step cycle is the design's fixed graph: implement until green, refac
 
 `select-tests` carries a second, `no-extra | extra`, which is the union rule above. The other six (`implement`, `fix-acceptance-test`, `surface-design-gap`, `refactor`, `fix-lint`, `commit`) are generative. "Make this AT pass with the minimal change" is code generation, not a closed-enum decision, so their decision space is a singleton and the routable outcome downstream is something else: for `implement`, the **effect result**. It returns a `replace-symbol` effect and the branch after it routes `committed | conflict | rejected | infra-failed`, plus `exhausted` for "the validator was never satisfied".
 
-**The cycle starts at `implement`, and nothing precedes it.** There is no oracle node and no RED node, because neither has anything left to do: the oracle was authored and executed in [its own graph](#the-oracle-graph-the-model-decides-and-software-measures), and this one reads the recorded verdict. So "no edge bypasses RED" is a **readiness precondition** rather than a topology claim — a row whose oracle has no `red` in `oracle_runs` never becomes ready — which mirrors the shipped runner's own rule that with no recorded oracle the next step for a value is `des oracle`, never `des craft`.
+**The cycle starts at `implement`, and nothing precedes it.** There is no oracle node and no RED node, because neither has anything left to do: the oracle was authored and executed in [its own graph](#the-oracle-graph-the-model-decides-and-software-measures), and this one reads the recorded verdict. So "no edge bypasses RED" is a **readiness precondition** rather than a topology claim — a step whose oracle has no `red` in `oracle_runs` never becomes ready — which mirrors the shipped runner's own rule that with no recorded oracle the next step for a value is `des oracle`, never `des craft`.
 
-That is a stronger guarantee than an edge, not a weaker one. An edge could be reached with a fabricated observation; a row that is not ready has no run at all. Both front doors refuse such a row **by name** rather than skipping it: the scheduler through `eligible`, and a run started by hand in its seed.
+That is a stronger guarantee than an edge, not a weaker one. An edge could be reached with a fabricated observation; a step that is not ready has no run at all. Both front doors refuse such a step **by name** rather than skipping it: the scheduler through `eligible`, and a run started by hand in its seed.
 
 Three nodes are **not** leaves: [`run-tests`](#run-tests-is-effect-driven) and [`gates`](#gates-is-effect-driven-too) read an effect's result, and `test-loop.head` is a pure branch. A node whose answer a cheaper thing already produces does not get a model, and "cheaper" now includes "a command's exit status" and "a measurement another wave already took".
 
@@ -605,11 +613,11 @@ The oracle adds a third thing the DELIVER walk has to vary, and it is neither a 
 
 ### ROADMAP: the roadmap is data, and this is the graph that writes it
 
-The third example is the authoring workflow, and the thing it is there to say is that **a roadmap is rows**. An agent does not generate a workflow per feature. It generates rows, and a scheduler instantiates the one fixed step cycle per row. Nothing about a feature changes the graph.
+The third example is the authoring workflow, and the thing it is there to say is that **a roadmap is steps**. An agent does not generate a workflow per feature. It generates steps, and a scheduler instantiates the one fixed step cycle per step. Nothing about a feature changes the graph.
 
 So this graph is fixed and hand-written like the other two, and what it produces is `roadmaps` and `roadmap_steps` artifact rows through the effect executor.
 
-#### The rows
+#### The steps
 
 Modelled on nWave's own `handover.json`, with our naming. A `StoredHandover` there is a request plus an ordered tuple of `HandoverValue`s; these are the same facts, as zod schemas, in `examples/nwave/roadmap/schema.ts`:
 
@@ -644,8 +652,8 @@ That is the point of the example. A graph's branches do not have to read a model
 
 | Defect | What it names |
 |---|---|
-| `no-steps` | the roadmap has no rows at all |
-| `duplicate-id` | two rows claim one identity |
+| `no-steps` | the roadmap has no steps at all |
+| `duplicate-id` | two steps claim one identity |
 | `dangling-dependency` | a dependency names no step in the roadmap |
 | `cycle` | the dependency graph is not a DAG, named by the path that closes it |
 | `observation-too-short` | a step says too little to be worked from, with its length |
@@ -693,52 +701,52 @@ That is a position rather than an omission. Every route into `human` is a block 
 
 **It chooses data, not just decisions.** Two branches read pure functions of the roadmap, so to reach `shape.route`'s `invalid` edge or `disjointness.route`'s `consistent` and `drift-unresolvable` edges the walk has to vary the *roadmap*. The choice point at `decompose` is therefore a choice of **proposal**, drawn from the hand-written roadmaps in `examples/nwave/roadmap/fixture.ts`: `KNOWN_GOOD` (three steps, one declared dependency, one deliberate overlap → `edges-added`), `DISJOINT` (→ `consistent`), `UNRESOLVABLE` (→ `drift-unresolvable`), `MALFORMED` (every shape defect at once, three of which the LEAF's own checks catch — so it exhausts there and never reaches the gate), `UNSHAPED` (only the dangling dependency and the cycle, which are the gate's alone → `invalid`), plus `cannot-decompose` and a worker that never answers. Enumerating a graph whose decisions are functions of its data means enumerating enough data to reach every edge.
 
-`KNOWN_GOOD` is also the known-good artifact in the framework/consumer sense: the harness proves a roadmap is well-formed, and a hand-written one is the only thing that says a well-formed one is *right*. `KNOWN_GOOD_RESOLVED` beside it is the expected output rows, which is what makes "the resolution is not advice" a testable claim rather than a comment.
+`KNOWN_GOOD` is also the known-good artifact in the framework/consumer sense: the harness proves a roadmap is well-formed, and a hand-written one is the only thing that says a well-formed one is *right*. `KNOWN_GOOD_RESOLVED` beside it is the expected output steps, which is what makes "the resolution is not advice" a testable claim rather than a comment.
 
 ## The scheduler and the pipeline
 
-The roadmap is rows. The step cycle is one fixed graph. The scheduler instantiates the graph once per row and runs the ready set concurrently. Two waves use it now: DISTILL runs one oracle turn per value in dependency order, and DELIVER runs the step cycle per row.
+The roadmap is steps. The step cycle is one fixed graph. The scheduler instantiates the graph once per step and runs the ready set concurrently. Two waves use it now: DISTILL runs one oracle turn per value in dependency order, and DELIVER runs the step cycle per step.
 
-**[`packages/core/src/core/scheduler.ts`](./packages/core/src/core/scheduler.ts) is generic.** A row is `{ id, dependencies }` and nothing else; what a row means, where it is read from, and what its run does are the consumer's.
+**[`packages/core/src/core/scheduler.ts`](./packages/core/src/core/scheduler.ts) is generic.** A step is `{ id, dependencies }` and nothing else; what a step means, where it is read from, and what its run does are the consumer's.
 
 ```ts
 openScheduler<S>({
-  rows,                    // { id, dependencies }[]
-  runOne,                  // (row) => Promise<RunOutcome<S>>
-  resumeOne,               // (row, runId, answer) => Promise<RunOutcome<S>>
-  statusOf,                // (rowId) => Promise<RowStatus>       the projection
-  record,                  // (rowId, outcome) => Promise<void>   the only write
-  eligible?,               // (rowId) => Promise<boolean>         may it run at all?
+  steps,                   // { id, dependencies }[]
+  runOne,                  // (step) => Promise<RunOutcome<S>>
+  resumeOne,               // (step, runId, answer) => Promise<RunOutcome<S>>
+  statusOf,                // (stepId) => Promise<StepStatus>     the projection
+  record,                  // (stepId, outcome) => Promise<void>  the only write
+  eligible?,               // (stepId) => Promise<boolean>        may it run at all?
   concurrency,             // a positive integer
-  resourcesFor?,           // (row) => string[]
+  resourcesFor?,           // (step) => string[]
   leases?,                 // ResourceLeases; inMemoryLeases() is supplied
 });
-// => { run(), resume(rowId, answer), parked() }
+// => { run(), resume(stepId, answer), parked() }
 ```
 
-**State is a projection**, which is the one design decision worth defending. The scheduler persists nothing of its own: it asks `statusOf` for every row, reports each finished run through `record`, and re-reads. That is the stance nwave's `delivery_state.py` takes — the next step is *derived* from persisted facts and never decided — and it buys the property that matters: a scheduler that died mid-feature restarts by reading rather than by remembering. A row in flight has nothing persisted yet, so it reads `pending` and is simply run again.
+**State is a projection**, which is the one design decision worth defending. The scheduler persists nothing of its own: it asks `statusOf` for every step, reports each finished run through `record`, and re-reads. That is the stance nwave's `delivery_state.py` takes — the next step is *derived* from persisted facts and never decided — and it buys the property that matters: a scheduler that died mid-feature restarts by reading rather than by remembering. A step in flight has nothing persisted yet, so it reads `pending` and is simply run again.
 
-- **The frontier** is every row whose every dependency reads `accepted`. A `rejected` or `suspended` row therefore blocks only its dependents, and that *falls out of* the rule rather than being enforced: nothing downstream of it becomes ready and everything else keeps running. A person's queue is a list of independent blocked subtrees.
-- **`eligible` is the precondition the frontier rule cannot express.** "Is everything this row waits on done" and "may this row start at all" are different questions, and `statusOf` cannot carry the second: a row that has not run is `pending` whether or not it may. It is read once per refresh, beside `statusOf`, so `ready` stays synchronous and a consumer's answer is a projection like every other fact here. An ineligible row blocks its dependents exactly the way a rejected one does. DELIVER's is `oracleIsRed`.
-- **Resuming** a parked row continues it through the framework's own `resume` and then re-evaluates the frontier in the same call, so answering one row continues the feature rather than the row.
-- **Resource leases** serialize shared test infrastructure and nothing else. A row declares the names it needs, the scheduler takes the whole set atomically before the run and releases it after (`finally`, so a throwing run does not deadlock the next one), and two rows sharing one name serialize on that name while two rows sharing none run together. Taking the set at once is what makes it deadlock-free: a run never holds one name while waiting for another. `inMemoryLeases` grants waiters FIFO, so which of two blocked rows goes first is a function of the order they asked rather than of timing.
+- **The frontier** is every step whose every dependency reads `accepted`. A `rejected` or `suspended` step therefore blocks only its dependents, and that *falls out of* the rule rather than being enforced: nothing downstream of it becomes ready and everything else keeps running. A person's queue is a list of independent blocked subtrees.
+- **`eligible` is the precondition the frontier rule cannot express.** "Is everything this step waits on done" and "may this step start at all" are different questions, and `statusOf` cannot carry the second: a step that has not run is `pending` whether or not it may. It is read once per refresh, beside `statusOf`, so `ready` stays synchronous and a consumer's answer is a projection like every other fact here. An ineligible step blocks its dependents exactly the way a rejected one does. DELIVER's is `oracleIsRed`.
+- **Resuming** a parked step continues it through the framework's own `resume` and then re-evaluates the frontier in the same call, so answering one step continues the feature rather than the step.
+- **Resource leases** serialize shared test infrastructure and nothing else. A step declares the names it needs, the scheduler takes the whole set atomically before the run and releases it after (`finally`, so a throwing run does not deadlock the next one), and two steps sharing one name serialize on that name while two steps sharing none run together. Taking the set at once is what makes it deadlock-free: a run never holds one name while waiting for another. `inMemoryLeases` grants waiters FIFO, so which of two blocked steps goes first is a function of the order they asked rather than of timing.
 - **A `runOne` that throws is a graph bug and is not absorbed.** Everything a graph decides is data, so a throw means the graph itself is malformed, and swallowing it into a status would hide that.
 
-**[`examples/nwave/deliver/pipeline.ts`](./examples/nwave/deliver/pipeline.ts) is the row half, and the SERVER is the scheduling half.** The consumer's file reads the `roadmaps` row for its `stepIds` and joins through to `roadmap_steps` (a scan would mix two roadmaps in one store), turns one row into the seed of one DELIVER run, and appends a `step_runs` row `{ stepId, runId, outcome, seq }` for each finished run. It calls `openScheduler` nowhere: a pipeline registration is rows plus `readiness` plus `record`, and `@des/server` drives the frontier — starting each ready row through the same `runner.start` a person's button starts a run with, so **a row's run is an ordinary run** with an id, a trace, events and a dialog. One DELIVER run per row, with:
+**[`examples/nwave/deliver/pipeline.ts`](./examples/nwave/deliver/pipeline.ts) is the step half, and the SERVER is the scheduling half.** The consumer's file reads the `roadmaps` row for its `stepIds` and joins through to `roadmap_steps` (a scan would mix two roadmaps in one store), turns one step into the seed of one DELIVER run, and appends a `step_runs` row `{ stepId, runId, outcome, seq }` for each finished run. It calls `openScheduler` nowhere: a pipeline registration is steps plus `readiness` plus `record`, and `@des/server` drives the frontier — starting each ready step through the same `runner.start` a person's button starts a run with, so **a step's run is an ordinary run** with an id, a trace, events and a dialog. One DELIVER run per step, with:
 
-- the row's obligations, `predictedTouches` and `authority` in the `StepUnderDelivery` the graph reads;
+- the step's obligations, `predictedTouches` and `authority` in the `StepUnderDelivery` the graph reads;
 - **the run's id as the VCS session**, so two runs hold two leases rather than colliding on the one lease a session may hold;
-- **the row id as the task id**, so the event log's answer to "what changed" joins the journal's answer to "what did this step decide" on one key;
-- and therefore the row id in **every leaf's journal input**, because `StepUnderDelivery` carries it and the journal key is a hash of the input. Two rows cannot share a key, so one row's decision cannot replay as another's. That is asserted directly rather than assumed.
+- **the step id as the task id**, so the event log's answer to "what changed" joins the journal's answer to "what did this step decide" on one key;
+- and therefore the step id in **every leaf's journal input**, because `StepUnderDelivery` carries it and the journal key is a hash of the input. Two steps cannot share a key, so one step's decision cannot replay as another's. That is asserted directly rather than assumed.
 
-Two things the DELIVER registration builds per row are about OWNERSHIP rather than plumbing, and both are executor options rather than graph edges:
+Two things the DELIVER registration builds per step are about OWNERSHIP rather than plumbing, and both are executor options rather than graph edges:
 
-- **`protected: [the row's oracle file]`** — `_crafter_owns`. Every path the task declares is the crafter's except the oracle.
-- **`knownRed`: every other undelivered value's oracle.** Every one of them is red by construction, because a value is only ready once its own oracle has been measured red. Without this a module with two undelivered values is undeliverable: the gate refuses row A's correct write because row B's oracle — which A did not break and cannot fix — is failing. An *accepted* sibling's oracle is deliberately not in the set: that one is green, and breaking it is a real regression the gate exists to catch.
+- **`protected: [the step's oracle file]`** — `_crafter_owns`. Every path the task declares is the crafter's except the oracle.
+- **`knownRed`: every other undelivered value's oracle.** Every one of them is red by construction, because a value is only ready once its own oracle has been measured red. Without this a module with two undelivered values is undeliverable: the gate refuses step A's correct write because step B's oracle — which A did not break and cannot fix — is failing. An *accepted* sibling's oracle is deliberately not in the set: that one is green, and breaking it is a real regression the gate exists to catch.
 
 That second one was found by running the worked example, not by reading the code. The first end-to-end run of the todo target refused `complete`'s write for `remove`'s red oracle, which is exactly the shape the batch filter had already been widened for once.
 
-**The end-to-end test drives all of that through the server**, and it is one of the two tests in the repo allowed to shell out. A two-step roadmap (B depends on A) is persisted *through the roadmap workflow's own `persist`* into the artifact store; a temp TypeScript project holds two oracles and two production symbols; the leaves are scripted at the binding so nothing reaches a model; and the tests stage is the real one, over the declared test command. `runPipeline` is pressed once: A runs, B runs after A is `accepted`, both rows carry a run id the run store answers for, both `step_runs` rows read `accepted`, the event log shows the write under each row's own task id and each run's own session, and `bun test` over the project at the end reports 2 pass. A companion test drives an implementation that does *not* satisfy its oracle and watches the real gate refuse it, roll the file back byte for byte, park the row's run with the enum a person answers from, and leave B unready.
+**The end-to-end test drives all of that through the server**, and it is one of the two tests in the repo allowed to shell out. A two-step roadmap (B depends on A) is persisted *through the roadmap workflow's own `persist`* into the artifact store; a temp TypeScript project holds two oracles and two production symbols; the leaves are scripted at the binding so nothing reaches a model; and the tests stage is the real one, over the declared test command. `runPipeline` is pressed once: A runs, B runs after A is `accepted`, both steps carry a run id the run store answers for, both `step_runs` rows read `accepted`, the event log shows the write under each step's own task id and each run's own session, and `bun test` over the project at the end reports 2 pass. A companion test drives an implementation that does *not* satisfy its oracle and watches the real gate refuse it, roll the file back byte for byte, park the step's run with the enum a person answers from, and leave B unready.
 
 One honest finding from building that: with the impact floor covering the step's own acceptance test, a wrong implementation is caught at the **write** gate as `rejected: tests` and retried, so `still-red` is reached only when the suite fails for something the write's impacted set does not cover. That is the under-approximation `impact.ts` already documents (a fixture file, an environment variable, a subprocess), not a new gap.
 
@@ -797,18 +805,18 @@ person will choose from, read off its own `resumeSchema`.
 snapshots, suspend and resume stay the engine's; `run` and `resume` are still
 `@des/core`'s. What the server adds is the half neither has an opinion about:
 which graph a person authored, which of its nodes a run is on, what each leaf
-attempt decided and cost, and which rows of a pipeline are waiting on which.
+attempt decided and cost, and which steps of a pipeline are waiting on which.
 Live node events come from the engine's own stream, projected back onto
 authored ids by the compiler that minted the compiled ones.
 
 **Runs, attempts and events are ROWS**, and the registry is a projection of
 them — see [Runs are rows](#runs-are-rows).
 
-**A pipeline is a registered composition that runs nothing.** It is rows —
+**A pipeline is a registered composition that runs nothing.** It is steps —
 each naming a registered workflow and the input one run of it takes — plus
 `readiness` and `record`. The server drives the frontier through `@des/core`'s
-scheduler and starts each ready row through the same `runner.start` a person's
-button uses, so **a row's run is an ordinary run**: a server run id, a live
+scheduler and starts each ready step through the same `runner.start` a person's
+button uses, so **a step's run is an ordinary run**: a server run id, a live
 trace, events, and a suspension answered in the same dialog. Its status is read
 off that run.
 
@@ -816,7 +824,7 @@ off that run.
 a dialog whose buttons are the node's own closed enum. A person cannot answer
 with something the node would refuse, because nothing else is offered; an
 answer that somehow is refused comes back naming the enum, and the run stays
-parked. Answering a pipeline row is answering its run, from either page, and
+parked. Answering a pipeline step is answering its run, from either page, and
 the frontier is re-evaluated when it settles.
 
 ### The registration
@@ -837,11 +845,11 @@ type WorkflowRegistration<S, I> = {
 type PipelineRegistration = {
   id: string;
   title: string;
-  rows: () => PipelineRow[] | Promise<PipelineRow[]>;   // { id, dependencies, workflowId, input }
-  readiness?: (rowId: string) => boolean | Promise<boolean>;
-  record?: (rowId: string, outcome: RunOutcome<unknown>) => void | Promise<void>;
+  steps: () => PipelineStep[] | Promise<PipelineStep[]>; // { id, dependencies, workflowId, input }
+  readiness?: (stepId: string) => boolean | Promise<boolean>;
+  record?: (stepId: string, outcome: RunOutcome<unknown>) => void | Promise<void>;
   concurrency?: number;
-  resourcesFor?: (row: PipelineRow) => string[];
+  resourcesFor?: (step: PipelineStep) => string[];
 };
 ```
 
@@ -850,10 +858,10 @@ Three of those shapes are worth defending. **The graph is a factory** because a
 did each attempt cost" is exactly what a person watching wants — so the server
 supplies both, which is the signature every graph builder in this repository
 already has. **The executor sees the run's input** because its two ownership
-options are facts about what the run is ABOUT: which oracle this row's crafter
-is walled off from, and which failing tests it did not cause. **A pipeline row
+options are facts about what the run is ABOUT: which oracle this step's crafter
+is walled off from, and which failing tests it did not cause. **A pipeline step
 names a workflow and an input** rather than carrying a way to run itself,
-which is what makes "starting one row by hand does not escape the precondition
+which is what makes "starting one step by hand does not escape the precondition
 the scheduler enforces" structural: there is one registration and both doors
 reach it.
 
@@ -866,10 +874,10 @@ reach it.
 | `listRuns` · `getRun` | Status, the trace with iteration counters, the suspension and its answer space, the terminal, and every leaf attempt. |
 | `resumeRun` | Answer a suspension. Outside the enum is a refusal naming it. |
 | `readArtifacts` | A table's rows, now or at a past version. |
-| `listPipelines` · `getPipeline` | The compositions, and one's run tree with the run each row is on. |
-| `runPipeline` · `resumeRow` | Drive the frontier; answer a parked row. |
+| `listPipelines` · `getPipeline` | The compositions, and one's run tree with the run each step is on. |
+| `runPipeline` · `resumeStep` | Drive the frontier; answer a parked step. |
 | `exportRun` | One run as JSON lines: the run, then its attempts, then its events. |
-| `GET /api/events` | The one route rather than a function: `run-started`, `node-entered`, `node-left`, `leaf-attempt`, `suspended`, `resumed`, `terminal`, `pipeline-row` — every one of them appended to `run_events` before it is published. |
+| `GET /api/events` | The one route rather than a function: `run-started`, `node-entered`, `node-left`, `leaf-attempt`, `suspended`, `resumed`, `terminal`, `pipeline-step` — every one of them appended to `run_events` before it is published. |
 
 **The run id is the server's, and the engine's is recorded beside it.** `run`
 mints its own and hands it back when it stops, so a call that must answer with
@@ -896,13 +904,13 @@ schema is the server's and is written where the server can migrate it. Nothing
 has to be atomic across the two, because no artifact write is part of a run
 write.
 
-**The registry is a projection.** `getRun`, `listRuns`, the pipeline row tree
+**The registry is a projection.** `getRun`, `listRuns`, the pipeline step tree
 and `statusOf` read the database; the trace is derived from a run's own
-`node-entered` events rather than kept beside them; the row a run belongs to is
-read off the `pipeline-row` events rather than a map. The runner holds nothing
+`node-entered` events rather than kept beside them; the step a run belongs to is
+read off the `pipeline-step` events rather than a map. The runner holds nothing
 — it rebuilds the graph from the registration and re-parses the input off the
 row — so **a restarted server shows every prior run, keeps a delivered pipeline
-row delivered, and answers the suspension its predecessor left.**
+step delivered, and answers the suspension its predecessor left.**
 `packages/server/src/restart.test.ts` drives exactly that through two real
 `serve()` calls over one directory.
 
@@ -975,9 +983,9 @@ with `todoRegistrations(dir, { models: scripted })` and nothing more.
   `human-review` under `edges-added`, offering exactly `approve` / `revise` /
   `abandon`; approve carries the SAME run to `accepted` and the trace spans
   both halves. Recorded to video.
-- **A pipeline**: two pending rows, one button, both `accepted`, and each row's
+- **A pipeline**: two pending steps, one button, both `accepted`, and each step's
   link opening its own run page with the step cycle's trace on it — nothing
-  below the graph stubbed, so each row writes a real body through the real
+  below the graph stubbed, so each step writes a real body through the real
   write path with a real `tsc`, `biome check` and `bun test` at the gate.
 
 Screenshots are committed under
@@ -1033,9 +1041,9 @@ bun run todo [run-name]             # http://localhost:3000, run directory `firs
 
 `targets/todo/.des/main.ts` is a list of registrations and a call to `serve`. It replaced six commands, which were six processes over one run directory, each holding nothing and reading everything back out of five files — because a suspension had to survive the exit of the process that produced it. A server stays up, so a suspension is answered where it is read.
 
-It registers **four graphs** — `roadmap`, `obligations`, `oracle`, `deliver` — and **two pipelines**: `oracles` (one oracle per value, in dependency order) and `delivery` (the step cycle, once per red-oracled row). A pipeline row names one of those four graphs and the input one run of it takes, so a graph and a pipeline are two front doors onto ONE registration rather than onto one graph twice — same seed, same executor, same journal. Neither escapes what the other enforces: the standalone `deliver` seed refuses a row whose oracle has not been measured red, by name, and the pipeline declares the same fact as its `readiness`.
+It registers **four graphs** — `roadmap`, `obligations`, `oracle`, `deliver` — and **two pipelines**: `oracles` (one oracle per value, in dependency order) and `delivery` (the step cycle, once per red-oracled step). A pipeline step names one of those four graphs and the input one run of it takes, so a graph and a pipeline are two front doors onto ONE registration rather than onto one graph twice — same seed, same executor, same journal. Neither escapes what the other enforces: the standalone `deliver` seed refuses a step whose oracle has not been measured red, by name, and the pipeline declares the same fact as its `readiness`.
 
-A run directory holds the copied project plus five stores — `vcs.sqlite`, `artifacts.sqlite`, `journal.sqlite`, `mastra.sqlite`, `runs.sqlite` — all of them files, so a restarted server continues rather than beginning again: it shows every prior run, keeps a delivered row delivered, and answers a suspension its predecessor produced. `runs/` is gitignored. `test/` is tracked only once it exists, because the oracle is what creates it.
+A run directory holds the copied project plus five stores — `vcs.sqlite`, `artifacts.sqlite`, `journal.sqlite`, `mastra.sqlite`, `runs.sqlite` — all of them files, so a restarted server continues rather than beginning again: it shows every prior run, keeps a delivered step delivered, and answers a suspension its predecessor produced. `runs/` is gitignored. `test/` is tracked only once it exists, because the oracle is what creates it.
 
 **It starts without a key**, and that is a position rather than a convenience. The graphs, the projections, the artifact rows and the event stream are all readable without one, so refusing at the door would make every one of them unreadable to say one thing about a leaf. The refusal is where the need is: a leaf with no key throws by name, `runStep` records it as a trail entry the way it records any provider error, and the graph routes the exhausted leaf where it routes one. Measured rather than assumed — starting a roadmap run with no key parks it at `human` under `validator-exhausted`, with the credential message on both attempts and in the trail, and the server still up.
 
@@ -1055,13 +1063,13 @@ Full detail in [`examples/nwave/README.md`](./examples/nwave/README.md#targetsto
 - the roadmap authored through the roadmap workflow's own graph and persisted by its own `persist`, with all three of DISTILL's fields empty;
 - the obligations graph filling them in and `persist` writing the enriched rows back;
 - the oracle graph authoring one test file per value through a real `write-file` and a **real `bun test` measuring each one red** — nothing in the test file asserts the redness, because the runner is what says so;
-- DELIVER refusing nothing (both rows are oracled), writing both stub bodies through the real gate, running `bunx biome check src/todo.ts` for real as the quality gate, and leaving both oracle files **byte-identical**;
+- DELIVER refusing nothing (both steps are oracled), writing both stub bodies through the real gate, running `bunx biome check src/todo.ts` for real as the quality gate, and leaving both oracle files **byte-identical**;
 - and the project's own suite: 2 pass, 0 skip, exit 0.
 
 Every one of those is driven **through the server**: `todoRegistrations` is the
 same function `main.ts` calls, the registry is the one `serve` would build, and
 a wave is `startRun` or `runPipeline` rather than a call into a composition.
-Each row of each pipeline comes back with a run id the run store answers for,
+Each step of each pipeline comes back with a run id the run store answers for,
 and the trace on it is of the graph the author wrote.
 
 Both halves of the declaration are asserted against what actually ran: the `oracle-measured` event carries the `--reporter=junit` argv the target declared, and the gate's `trail` event carries `["bunx", "biome", "check", "src/todo.ts"]` at exit 0.
@@ -1069,7 +1077,7 @@ Both halves of the declaration are asserted against what actually ran: the `orac
 **About 3.6 s, zero model calls.** A companion test asserts the other half: with
 no `oracle_runs` row the pipeline's `readiness` refuses both values, no run is
 started at all, and the stubs are untouched — the model bindings throw, so
-reaching a leaf would fail it. The same precondition refuses a row started BY
+reaching a leaf would fail it. The same precondition refuses a step started BY
 HAND, and lands on that run rather than on the call, because a seed runs where
 the run does.
 
@@ -1132,7 +1140,7 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 5. **The example's `State` uses one slot per classifier.** The sketch's `anchors: Record<string, string>` and `exhausted: Kind[]` are *shared* fields that all four classifiers write, and no shallow merge can keep four writes to one key. `State` carries `e2e | expectation | benchmark | dst: { lane?, anchor?, exhausted? }`, so each sub-step writes exactly one top-level key. Consequence for the document's second test: `result.state.expectation` becomes `terminal.state.expectation.lane`.
 
-6. **The journal key keeps the step id and version in plain text.** The sketch hashes `id`, `version`, and the input together into one opaque digest. The prose says "keyed by (step id, step version, input hash)", so the key is literally `<step id>@<version>:<sha256 of input>`. Same three components, same collision resistance on the input, and a reader can tell which step a key belongs to without hashing anything. `journalKey` is exported so a test can assert that two rows never collide on one.
+6. **The journal key keeps the step id and version in plain text.** The sketch hashes `id`, `version`, and the input together into one opaque digest. The prose says "keyed by (step id, step version, input hash)", so the key is literally `<step id>@<version>:<sha256 of input>`. Same three components, same collision resistance on the input, and a reader can tell which step a key belongs to without hashing anything. `journalKey` is exported so a test can assert that two steps never collide on one.
 
 7. **Input canonicalisation is a recursive sort, not a replacer array.** The sketch uses `JSON.stringify(input, Object.keys(input).sort())`. A replacer *array* is a key allowlist applied at every nesting level, so any nested key not also present at the top level is silently dropped from the hash — two different inputs can collide. `canonicalJson` sorts keys recursively instead.
 
@@ -1193,27 +1201,27 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 35. **The tree-sitter layer sees `test.skip("x")` as the same symbol as `test("x")`.** A modifier — `skip`, `todo`, `only`, `failing` — on a `test` or `it` call is recognised, and it does not change the identity key, because identity is `(kind, container, name)` and a modifier is none of those. `ai-vcs.md` § 4.1 lists what a test symbol is without addressing modifiers. Nothing depends on this any more — pending markers were the previous cut's model of DISTILL and are gone — but the parser is more correct with it than without, so it stays.
 
-36. **`StepUnderDelivery` carries the roadmap row's own facts.** `acceptance`, `predictedTouches`, `authority` and `oracle`, so a leaf reads what the row declares rather than a projection of it. `State` carries `acceptanceTests` — the test ids the row's oracle names, resolved ONCE where the row becomes a run. Resolving them inside the graph would read an inventory that has moved since the oracle was measured.
+36. **`StepUnderDelivery` carries the roadmap step's own facts.** `acceptance`, `predictedTouches`, `authority` and `oracle`, so a leaf reads what the step declares rather than a projection of it. `State` carries `acceptanceTests` — the test ids the step's oracle names, resolved ONCE where the step becomes a run. Resolving them inside the graph would read an inventory that has moved since the oracle was measured.
 
 37. **`run-tests` is a step, not a leaf.** It had a model behind it in an earlier cut. It does not need one: reading whether a suite passed is reading an effect's typed result. `TEST_OUTCOMES` is deleted with its rows. This is the design's "what decomposes and what stays wide" applied one notch further than the document takes it, and the document now says so.
 
 38. **The harness gained a second axis, `scriptedExecutor(choose, space)`.** The design's harness is "stub journal, path enumeration, trace matchers" — the first of which is a scripted BINDING here, per deviation 84 — and the walk enumerated leaf decisions only — which covered half of DELIVER's edge tables, because the other half route an `EffectResult`. An `EffectOutcomeSpace` names, per effect type, the outcomes to try, and the executor forks the path per outcome. An effect type the space does **not** declare is refused rather than answered `committed`: a silent commit makes the coverage claim a fiction for the edges the other outcomes route to, and nothing would say so. It is one outcome per effect rather than per batch, so a graph whose batch is atomic (the roadmap's `persist`, where a partial write is not a smaller success) keeps its own executor.
 
-39. **The scheduler's `runOne` consumes the framework's own `RunOutcome<S>`, and a throw is not absorbed.** The design says `runOne(row) → Promise<RunOutcome>` without saying whose. Using the framework's own means the scheduler maps `accepted | rejected | suspended` off it and hands the whole outcome (`runId` included) to `record`, so a consumer persists what it needs without a second vocabulary. A `runOne` that *throws* propagates: everything a graph decides is data, so a throw means the graph itself is malformed and swallowing it into a status would hide that. `resumeOne` is injected beside it, symmetrically, because `resume` needs the graph the row was run with.
+39. **The scheduler's `runOne` consumes the framework's own `RunOutcome<S>`, and a throw is not absorbed.** The design says `runOne(step) → Promise<RunOutcome>` without saying whose. Using the framework's own means the scheduler maps `accepted | rejected | suspended` off it and hands the whole outcome (`runId` included) to `record`, so a consumer persists what it needs without a second vocabulary. A `runOne` that *throws* propagates: everything a graph decides is data, so a throw means the graph itself is malformed and swallowing it into a status would hide that. `resumeOne` is injected beside it, symmetrically, because `resume` needs the graph the step was run with.
 
-40. **The scheduler holds a parked row's `runId` in memory, and `RowStatus` has no `running`.** State is a projection, so nothing about an *unfinished* run is persisted, and `pending` therefore covers both "never run" and "in flight" — which is the honest reading, since the two are indistinguishable to a reader and the right thing to do with an unfinished run is to run it. The scheduler knows its own in-flight set and does not start one twice; a second scheduler over the same rows would, which is why `record` is the consumer's place to refuse that (the pipeline does, by id collision on `step_runs`).
+40. **The scheduler holds a parked step's `runId` in memory, and `StepStatus` has no `running`.** State is a projection, so nothing about an *unfinished* run is persisted, and `pending` therefore covers both "never run" and "in flight" — which is the honest reading, since the two are indistinguishable to a reader and the right thing to do with an unfinished run is to run it. The scheduler knows its own in-flight set and does not start one twice; a second scheduler over the same steps would, which is why `record` is the consumer's place to refuse that (the pipeline does, by id collision on `step_runs`).
 
 41. **`runStep` gained an optional observer, and so did `leaf`.** New surface the design does not name, forced by the run report. The journal records what a step DECIDED and the exhaustion trail exists only when the validator was never satisfied; neither records what a *successful* step cost — how many attempts it took, which mechanical check refused the first one, what the validator said about the second. Those facts exist only inside `runStep`'s loop, and a report claiming a first-attempt acceptance rate needs them. So `runStep(def, raw, journal, observe?)` and `leaf({ …, observe? })` take a `StepObserver`, which is handed one `StepAttempt` per attempt and is **never read back**: nothing in the framework branches on an observation and removing the sink changes no trajectory. A journal hit emits nothing, because no model was called. The three graph builders thread it through as an optional last argument. What each call cost rides on the same seam — see deviation 83.
 
 42. **`mastraAgent` gained `onUsage`, and the shape it hands over is unshaped.** Token counts come from the provider layer and there is more than one shape of them in this dependency graph: `@mastra/core`'s own `TokenUsage` is flat (`promptTokens` / `completionTokens`) and the AI SDK's `LanguageModelUsage` nests (`inputTokens.total`). A binding that picked one would report zero against the other and say nothing about it, so the binding hands over whatever the provider reported, verbatim, and the consumer's `readTokens` reads all three known shapes — yielding an EMPTY object rather than a zero for anything else, because "the provider did not say" and "the call cost nothing" are different claims.
 
-43. **The DELIVER composition carried a per-row observer factory, an `onRun` hook and `resumeParked`.** The observer was `(rowId) => StepObserver` rather than one observer, because a record's most useful field is which roadmap step it belongs to and the journal key does not carry it — the row id is inside the hashed input. `onRun` existed because the `step_runs` row records the outcome and the run id but the TRACE only exists on the outcome. `resumeParked` read the parked run id off the row's own `step_runs` row instead of out of the scheduler's memory, which was deviation 40's limitation answered where the projection already lives. All three went with `openPipeline` in deviation 76: the server holds the run, so it holds the observer seam, the trace and the id a resume needs.
+43. **The DELIVER composition carried a per-step observer factory, an `onRun` hook and `resumeParked`.** The observer was `(stepId) => StepObserver` rather than one observer, because a record's most useful field is which roadmap step it belongs to and the journal key does not carry it — the step id is inside the hashed input. `onRun` existed because the `step_runs` row records the outcome and the run id but the TRACE only exists on the outcome. `resumeParked` read the parked run id off the step's own `step_runs` row instead of out of the scheduler's memory, which was deviation 40's limitation answered where the projection already lives. All three went with `openPipeline` in deviation 76: the server holds the run, so it holds the observer seam, the trace and the id a resume needs.
 
 44. **The tests stage excludes every test the BATCH is rewriting, not just the write in hand.** Deviation 34 established the exclusion and scoped it per write. The todo target broke it: a value with TWO acceptance tests writes both as two writes under one lease, and the per-write filter leaves the first in the second's impacted set — where it fails, by design, because the production code it asserts is still a stub. The lease is what names the batch, so the lease is what the filter is over. A defect found by pointing the framework at a real project, which is what the target is for.
 
 45. **`bun test` names its roots rather than scanning the tree.** `bun test ./packages ./examples ./targets/todo/.des`. A target's own project files and the run copies under `runs/` — including the oracles DISTILL writes into them — would otherwise be collected by a bare `bun test` at the root. The root `tsconfig.json` excludes the same two, because the target has its own and the copies are typechecked by the write path's own `tsc` stage, inside the run.
 
-46. **`run-tests.red`, `oracle` and `activate-at` are deleted, and RED moved a layer out.** The previous cut had DELIVER locate a pre-authored acceptance test behind a `test.skip(` marker, strip the marker, and classify the first run. All three were built on a model of DISTILL that the shipped nwave runner does not have: nothing there pre-authors a body behind a marker, and `des oracle` is a separate step that WRITES the test and has software measure it. So the step cycle starts at `implement`, and "no edge bypasses RED" is a readiness precondition — `oracleIsRed` on the `oracle_runs` projection, `eligible` on the scheduler — which is stronger than an edge rather than weaker, because an edge can be reached with a fabricated observation and a row that is not ready has no run at all.
+46. **`run-tests.red`, `oracle` and `activate-at` are deleted, and RED moved a layer out.** The previous cut had DELIVER locate a pre-authored acceptance test behind a `test.skip(` marker, strip the marker, and classify the first run. All three were built on a model of DISTILL that the shipped nwave runner does not have: nothing there pre-authors a body behind a marker, and `des oracle` is a separate step that WRITES the test and has software measure it. So the step cycle starts at `implement`, and "no edge bypasses RED" is a readiness precondition — `oracleIsRed` on the `oracle_runs` projection, `eligible` on the scheduler — which is stronger than an edge rather than weaker, because an edge can be reached with a fabricated observation and a step that is not ready has no run at all.
 
 47. **`Effect` gained `write-file` and `measure-oracle`.** The first because every other write resolves a symbol id, so a file that does not exist is unreachable from all of them — and an author's whole job is to write a test that is not there yet. Its concurrency model is a lease PATH SCOPE rather than a version, its structural stage asks only that no identity the file already held vanished, and its tests stage is absent rather than stubbed: an oracle's first honest run fails, so a stage that ran the suite would refuse every oracle for being what an oracle is. The second because measuring one oracle is a different question from running a suite, with a different desired answer.
 
@@ -1223,11 +1231,11 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 50. **`protected` on `vcsExecutor`.** `_crafter_owns` as an executor rule rather than a graph edge. A write landing under a declared scope is `rejected { by: "contract" }` before a lease is asked for, which is what makes it hold for every write the graph could emit — including one a model proposed and the graph merely passed along. `ai-vcs.md` has no such thing: § 9.4's authorization is what it would have belonged to, and that is not built.
 
-51. **`SchedulerSpec` gained `eligible`.** "Is everything this row waits on done" and "may this row start at all" are different questions, and `statusOf` cannot carry the second because a row that has not run is `pending` whether or not it may. Read once per refresh beside `statusOf`, so `ready` stays synchronous. An ineligible row blocks its dependents exactly the way a rejected one does.
+51. **`SchedulerSpec` gained `eligible`.** "Is everything this step waits on done" and "may this step start at all" are different questions, and `statusOf` cannot carry the second because a step that has not run is `pending` whether or not it may. Read once per refresh beside `statusOf`, so `ready` stays synchronous. An ineligible step blocks its dependents exactly the way a rejected one does.
 
 52. **`claudeCode` gained `proposal`, and the effects land on `payload.proposal`.** The agent still edits, because a tool set is what makes it an agent; it edits a SCRATCH COPY, and the diff afterwards is what becomes effects. A `replace-symbol` needs a symbol id, which is the VCS's to assign, so the binding takes a `symbolFor` port and falls back to `write-file` rather than importing the VCS to guess one. `stepOutput` fixes the output shape at `{ decision, payload }`, which makes `payload.proposal` the one unambiguous place for the result; the step declares it optional, which is also what keeps the JSON Schema handed to the SDK satisfiable by an agent that never produces it.
 
-53. **`AcceptanceObligation` is `{ id, stimulus, expected }`, and the locator moved to the row.** It was `{ id, text, oracleLocator? }`. The shipped `distill_document.py` has the three fields, and the split is load-bearing: an oracle author handed one sentence of prose has to invent both a stimulus and an expected result before it can write an assertion. The locator moved onto `RoadmapStep` as `oracle` because there is exactly ONE per value — the thing that measures a value has to be a thing software can run and read a verdict off, and two would make "the oracle was red" ambiguous — with `supports` beside it.
+53. **`AcceptanceObligation` is `{ id, stimulus, expected }`, and the locator moved to the step.** It was `{ id, text, oracleLocator? }`. The shipped `distill_document.py` has the three fields, and the split is load-bearing: an oracle author handed one sentence of prose has to invent both a stimulus and an expected result before it can write an assertion. The locator moved onto `RoadmapStep` as `oracle` because there is exactly ONE per value — the thing that measures a value has to be a thing software can run and read a verdict off, and two would make "the oracle was red" ambiguous — with `supports` beside it.
 
 54. **`validate-shape` dropped `no-acceptance` and gained `observation-too-short`.** What a value must be observed to do is DISTILL's act; a shape check demanding obligations at ROADMAP time would refuse every roadmap for not having done a later wave's job. What ROADMAP can still ask is whether the observation says enough to be worked from, with nwave's own `MINIMUM_OBSERVATION_CHARACTERS` of 40 — measured rather than chosen, from the shortest real accepted-turn diagnostic in the shipped runner. The boundary is enforced twice: `acceptanceIsDistills` is a mechanical check on `decompose`'s own output.
 
@@ -1249,7 +1257,7 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 63. **`gates` is a step, and `add-test` is deleted.** The design's diagram has a `gates` leaf classifying a lint run and a `mutation-below-gate` arm reaching an `add-test` leaf. A gate run's verdict is its exit status, so `gates` is a step; and no command produces a mutation verdict yet, so that arm has no producer, `add-test` becomes unreachable, and `graphDefects` refuses an unreachable node by name. `HUMAN_REASONS` lost `out-of-scope-structural` and `cycle-exhausted` with them. The consequence worth stating plainly: **the outer cycle can no longer iterate**, because `add-test` was the only thing inside it that could invalidate a green verdict. The loop node stays, and a declared mutation command is what brings the second pass back. See [`gates` is effect-driven too](#gates-is-effect-driven-too).
 
-64. **`State.paths` and a fourth argument to `seed`.** The gate lints the files the row writes, and a `predictedTouches` entry is an opaque SYMBOL id. Only the registry can map one to a path, so `pipeline.ts` resolves them once where the row becomes a run — the same boundary the impact floor and the acceptance-test ids already sit on — and the graph carries the result. `writtenPaths` is exported for the same reason `oracleTests` is.
+64. **`State.paths` and a fourth argument to `seed`.** The gate lints the files the step writes, and a `predictedTouches` entry is an opaque SYMBOL id. Only the registry can map one to a path, so `pipeline.ts` resolves them once where the step becomes a run — the same boundary the impact floor and the acceptance-test ids already sit on — and the graph carries the result. `writtenPaths` is exported for the same reason `oracleTests` is.
 
 65. **`openRunDir` is async, and `openVcs` takes `commands`.** The run directory loads the target's `commands.ts` out of the copy, which is a dynamic import, which is a promise. `openVcs` refuses by name when neither `commands` nor a `verifier` is supplied, because a default set of commands would run bun and biome against a project that is neither and call the result a verdict.
 
@@ -1263,9 +1271,9 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 70. **The server's run id is its own, and the engine's is recorded beside it.** `run` mints a run id and hands it back when the run stops, so a call that must answer with an id before the run has done anything has nothing to answer with. The surface's id is the server's; the engine's is on the record as `engineRunId`, is what a resume reattaches to, and is the `runId` a consumer's `record` sees — because `RunOutcome` is the framework's type and the engine's id is the one the snapshot is under. The two join in one hop, in either direction.
 
-71. **A registration's `graph` is a factory and its `executor` sees the input.** The obvious shapes — a `Workflow<S>` value and an `executor(runId)` — cannot do their jobs: a graph handed over has its observer already closed over, so the server cannot see what its leaves decided, and an executor that cannot see what the run is ABOUT cannot wall off that row's oracle or excuse the red tests it did not cause.
+71. **A registration's `graph` is a factory and its `executor` sees the input.** The obvious shapes — a `Workflow<S>` value and an `executor(runId)` — cannot do their jobs: a graph handed over has its observer already closed over, so the server cannot see what its leaves decided, and an executor that cannot see what the run is ABOUT cannot wall off that step's oracle or excuse the red tests it did not cause.
 
-72. **A pipeline's rows are announced as they move, and its refusal is held.** The server starts each row's run, so it knows when one starts and when it settles and publishes `pipeline-row` at both — no polling, which the previous cut needed because the pipeline ran itself and nothing here saw it. A refusal that stops a drive early lands on the pipeline's tree as `error`, because the drive is asynchronous and whatever started it answered long ago.
+72. **A pipeline's steps are announced as they move, and its refusal is held.** The server starts each step's run, so it knows when one starts and when it settles and publishes `pipeline-step` at both — no polling, which the previous cut needed because the pipeline ran itself and nothing here saw it. A refusal that stops a drive early lands on the pipeline's tree as `error`, because the drive is asynchronous and whatever started it answered long ago.
 
 73. **A suspend node's REASON is not projected, and its answer space is.** `reason` is `(s: S) => string`, a function of state, so the closed set it draws from lives in the consumer's own enum and not in the node; `resumeSchema` is a value, so the answers are readable. The half a person has to choose from is the half that travels, and the reason arrives with the suspension itself.
 
@@ -1273,11 +1281,11 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 75. **The run report kept its writer and lost its table.** `summarize` and `renderTable` had one reader, `todo:report`, and that command went with the other five. The lines are still written per run directory, one per model call; the same facts are on each run in the UI. A renderer nothing renders is dead code, and the deletion took its tests with it.
 
-76. **A pipeline registration owns no execution.** It was `{ rows, status, run, resume }`, where `run` called `@des/core`'s `run` itself — so a row's run had no server id, published no events, had no trace anybody could read, and parked where no dialog could reach it. It is `{ rows, readiness?, record?, concurrency?, resourcesFor? }` now: rows name a registered workflow and the input one run of it takes, and the SERVER schedules them through the same `openScheduler` and the same `runner.start` a person's button uses. `readiness` is the precondition the frontier rule cannot express; `record` is the consumer's one write. The consequence is the point: a row's run is an ordinary run.
+76. **A pipeline registration owns no execution.** It was `{ steps, status, run, resume }`, where `run` called `@des/core`'s `run` itself — so a step's run had no server id, published no events, had no trace anybody could read, and parked where no dialog could reach it. It is `{ steps, readiness?, record?, concurrency?, resourcesFor? }` now: steps name a registered workflow and the input one run of it takes, and the SERVER schedules them through the same `openScheduler` and the same `runner.start` a person's button uses. `readiness` is the precondition the frontier rule cannot express; `record` is the consumer's one write. The consequence is the point: a step's run is an ordinary run.
 
-77. **A row's status is read off its run, not off the consumer's rows.** `statusOf` was the consumer's projection over `step_runs`; it is now the server's reading of the run it started for that row, because a registration that owns no execution cannot be asked what happened. What that costs is honest and worth saying: a restarted server no longer sees the rows a previous process delivered, so it would run them again. The durable `step_runs` and `oracle_runs` rows are still appended and are still what "did it ever fail" is answered from — they stopped being what "is it done" is answered from.
+77. **A step's status is read off its run, not off the consumer's rows.** `statusOf` was the consumer's projection over `step_runs`; it is now the server's reading of the run it started for that step, because a registration that owns no execution cannot be asked what happened. What that costs is honest and worth saying: a restarted server no longer sees the steps a previous process delivered, so it would run them again. The durable `step_runs` and `oracle_runs` rows are still appended and are still what "did it ever fail" is answered from — they stopped being what "is it done" is answered from.
 
-78. **A `seed` that refuses lands on the run, not on the call.** DELIVER's seed refuses a row with no red oracle by name, and it used to throw out of a command. `seed` now runs inside the driver, so the refusal is recorded as a `failed` run carrying the message — which is where a person reads it, and which keeps starting a run from blocking on whatever the seed does. The todo target's DELIVER seed runs the project's whole suite; a start that waited for it would be a start that waited for `bun test`.
+78. **A `seed` that refuses lands on the run, not on the call.** DELIVER's seed refuses a step with no red oracle by name, and it used to throw out of a command. `seed` now runs inside the driver, so the refusal is recorded as a `failed` run carrying the message — which is where a person reads it, and which keeps starting a run from blocking on whatever the seed does. The todo target's DELIVER seed runs the project's whole suite; a start that waited for it would be a start that waited for `bun test`.
 
 79. **`unknown` is not a serializable type, and the boundary says so.** TanStack Start validates a server function's return type against a serializable bound, and a type containing `unknown` degrades every call site to `unknown` rather than erroring where the problem is. Every value affected was JSON in fact — a JSON Schema, a form's input, an artifact row body that is JSON text in the store it came from, a trail on its way to a person — so `@des/server` has a `Json` type and one named widening, `asJson`, at each boundary that knows. Nothing in `@des/core` changed.
 
@@ -1285,13 +1293,13 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 81. **`bun run ui:dev` is gone, and browser tests replaced it.** The UI's data comes from a registry only `serve()` supplies, and a Vite dev server has none — the page would render "no registry is set". The build is about 1.5 s, so the loop is `bun run ui:build` then `bun run todo`; and what the dev server was really for, seeing whether the thing works, is now six Playwright tests that say so without a person looking.
 
-82. **A run is rows, and the registry is a projection of them.** Runs, traces, attempts, the row-to-run mapping and the event stream were maps, and deviation 77 said what that cost: a restarted server saw no rows delivered and would run them again. Three tables in `packages/server/src/store.ts` — `runs`, updated as a status changes; `run_events` and `leaf_attempts`, append-only — make the whole of it durable, and `getRun`, `listRuns`, the pipeline tree and `statusOf` read them. The trace is DERIVED from a run's own `node-entered` events rather than stored beside them; the row a run belongs to is read off the `pipeline-row` events. Deviation 77's cost is therefore paid off rather than restated: `step_runs` and `oracle_runs` answer "did it ever fail" as they always did, and "is it done" is answered by the run's own row.
+82. **A run is rows, and the registry is a projection of them.** Runs, traces, attempts, the step-to-run mapping and the event stream were maps, and deviation 77 said what that cost: a restarted server saw no steps delivered and would run them again. Three tables in `packages/server/src/store.ts` — `runs`, updated as a status changes; `run_events` and `leaf_attempts`, append-only — make the whole of it durable, and `getRun`, `listRuns`, the pipeline tree and `statusOf` read them. The trace is DERIVED from a run's own `node-entered` events rather than stored beside them; the step a run belongs to is read off the `pipeline-step` events. Deviation 77's cost is therefore paid off rather than restated: `step_runs` and `oracle_runs` answer "did it ever fail" as they always did, and "is it done" is answered by the run's own row.
 
 83. **`ModelBinding.generate` takes a `step`, and a per-call `onUsage`.** A binding is shared across steps — one worker binding answers every leaf a consumer points at it — so `generate({ system, prompt, schema })` could not say which step it was answering for, which a scripted binding needs in order to refuse an unscripted one by name. And token attribution was order-based, which holds only while one leaf is in flight; `runStep` now hands each call its own sink and already knows which attempt made it, so `StepAttempt` carries `workerTokens` and `validatorTokens` and the `concurrent: true` caveat is gone with the flag. `MastraAgentOptions.onUsage` went with it, and `readTokens` moved into `@des/core/step` because the attribution happens there now.
 
 84. **`stubJournal` became `noReplayJournal`, and stubbing moved to the binding.** The stub journal seeded `StepResult`s per step id, which short-circuits `runStep` before any model is reached: a test using one exercised neither the output schema, nor the mechanical checks, nor the validator, and the composition under test had to grow an `evidence` hook so a test could compute the journal key `runStep` would compute. `scriptedBinding` replaced the seeding. What survived is the half that was never about it — a journal that answers nothing and keeps nothing — because `enumeratePaths` re-runs a workflow once per path and a leaf inside a bounded loop is a choice point that replay would delete. New surface beyond what was asked for, and named here for that reason.
 
-85. **`scriptedBinding` takes a function as well as a table, and the function sees the prompt.** A table keyed by step id cannot express the two things this repo's tests need: which answer a leaf gives when that is the choice being enumerated, and which subject a call is about when one graph is driven over several rows. Both are functions of the call, and the second is on the PROMPT — `Step 01-01`, `Value 01-02` — which is exactly where the model it stands in for would read it. The function is consulted once per INVOCATION, on attempt 1, so a leaf a mechanical check refused and re-drove is one choice point rather than two.
+85. **`scriptedBinding` takes a function as well as a table, and the function sees the prompt.** A table keyed by step id cannot express the two things this repo's tests need: which answer a leaf gives when that is the choice being enumerated, and which subject a call is about when one graph is driven over several steps. Both are functions of the call, and the second is on the PROMPT — `Step 01-01`, `Value 01-02` — which is exactly where the model it stands in for would read it. The function is consulted once per INVOCATION, on attempt 1, so a leaf a mechanical check refused and re-drove is one choice point rather than two.
 
 86. **`targets/todo/.des/request.ts` folded into `registrations.ts`, and `openRunDir`'s `track` option went.** The first was a one-constant module and the second had no caller. A composition is what production needs and nothing else; both are checked by looking at the directory, which is now `main.ts`, `models.ts`, `registrations.ts`, `run-dir.ts` and `todo.test.ts`.
 
@@ -1310,12 +1318,12 @@ Source is ~31,330 lines: ~18,660 of implementation and ~12,670 of tests. The VCS
 
 - **A declared command per LANGUAGE, or per part of a project.** `Commands` is one set per target. A repository whose frontend and backend are checked by different tools has to say so inside one `lint` function, by branching on the paths it is handed. That works and it is not modelled; what is missing is a way to declare more than one toolchain and have the framework pick.
 
-- **`resources` reaching the write path.** The scheduler leases what a row's commands declare, before the row runs. A `run-command` emitted from inside the write path — the typecheck, lint and tests stages — carries its `resources` on the effect and nothing reads it there, because the write path takes no scheduler lease. Today the only resource that matters is one a whole row needs, so the gap is stated rather than closed.
+- **`resources` reaching the write path.** The scheduler leases what a step's commands declare, before the step runs. A `run-command` emitted from inside the write path — the typecheck, lint and tests stages — carries its `resources` on the effect and nothing reads it there, because the write path takes no scheduler lease. Today the only resource that matters is one a whole step needs, so the gap is stated rather than closed.
 
 - **A second oracle measurement.** `measure-oracle` runs the oracle once and reads one verdict, so a flaky oracle — red on its first run, green on its second — is indistinguishable from a stable one and the first answer is recorded as the fact. Running it twice would detect it and would double the cost of the one observation that is a fixed floor; nothing has measured how often it matters.
 - **A resume path for a parked ORACLE run.** Its block node takes one answer, `abandon`, and the composition does not offer it: a parked oracle run is read from the trail and the roadmap or the design is changed instead. The projection therefore reads every non-red run as `suspended`, which is exact — every block in that graph *is* a suspension, and the only route to its `reject` terminal is a person answering.
 - **A support that is itself a value.** The manifest admits whole-file supports and refuses a support that names the oracle, but nothing stops two values declaring the same support file, and nothing sequences who writes it first. In a roadmap where that happened the second author's write would land on the first's bytes and the `wholeFileStage` identity check would be the only thing standing between them.
-- **Derived `step_edges`.** The scheduler reads the `dependencies` the roadmap row declares, and the roadmap workflow's disjointness measurement is what adds the ones the author missed. The design's stronger version derives the DAG from symbol overlap *instead of* hand-authored edges, which would remove the highest-error part of roadmap authoring from the model. The measurement exists; the replacement does not.
+- **Derived `step_edges`.** The scheduler reads the `dependencies` the roadmap step declares, and the roadmap workflow's disjointness measurement is what adds the ones the author missed. The design's stronger version derives the DAG from symbol overlap *instead of* hand-authored edges, which would remove the highest-error part of roadmap authoring from the model. The measurement exists; the replacement does not.
 - **the VCS module's own remaining items**, in full in [`packages/core/src/vcs/README.md`](./packages/core/src/vcs/README.md#not-built-yet). The ones that matter to the framework: the **ast-grep pattern layer** (the lint stage is a declared command now, so the stubbed `policy` stage is gone, but an ast-grep layer inside the VCS is still unbuilt); the **LSP layer**, so there is no cross-file reference resolution and the declared typecheck command runs over the whole project; **coverage-refined impact**, so the test-impact graph is the static import graph alone; **per-case impact**, so the tests stage runs one declared command per impacted test rather than one command covering several; the **asynchronous verification tier**, so a slow test blocks a write rather than committing it `pending`; **wait-die** and **queued acquires**, so an acquire is fail-fast and hold-and-request has no fallback; **lease-level rollback**, so a lease whose second write fails leaves the first committed; **git export**; **cross-repository coordination**; and **authorization**, because a session is a string and any session may lease anything.
 - **The symbol-set-difference check.** `deliver.implement-to-the-design` carries no mechanical check, only a model refuting against the rule text. The symbol inventory that would make it a set difference over exported symbols now exists in `packages/core/src/vcs/structural`; the check that consumes it does not.
 - **The authoring workflow that writes GRAPH rows.** Bootstrap step 4: requirement rows in, graph rows out, diffed against the hand-written graph. Nothing generates a graph; all four here are hand-written, which is what makes them the oracle. The roadmap-authoring workflow is a different thing that the design's table lists on the same line: it writes *roadmap* rows, not graph rows, and it is built.

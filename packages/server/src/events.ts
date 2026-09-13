@@ -19,7 +19,7 @@
  */
 
 import type { StepAttempt } from "@des/core/step";
-import type { RowStatus } from "@des/core/scheduler";
+import type { StepStatus } from "@des/core/scheduler";
 import type { NodeId } from "@des/core/workflow";
 import { asJson } from "./json.ts";
 import type { RunDatabase } from "./store.ts";
@@ -38,7 +38,7 @@ export type ServerEvent =
       /** `failed` is a graph bug rather than a declared ending; see `RunStatus`. */
       kind: "accepted" | "rejected" | "failed";
     }
-  | { type: "pipeline-row"; pipelineId: string; rowId: string; status: RowStatus; runId?: string };
+  | { type: "pipeline-step"; pipelineId: string; stepId: string; status: StepStatus; runId?: string };
 
 /** The eight kinds, as one closed list. The table stores every one of them. */
 export const EVENT_KINDS = [
@@ -49,7 +49,7 @@ export const EVENT_KINDS = [
   "suspended",
   "resumed",
   "terminal",
-  "pipeline-row",
+  "pipeline-step",
 ] as const;
 export type EventKind = (typeof EVENT_KINDS)[number];
 

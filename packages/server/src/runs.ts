@@ -9,7 +9,7 @@
  * graph it was of; the journal knows what a step decided and not which run
  * decided it; the VCS log knows what changed and not why. The one table that
  * joined them was the map, so a restarted server showed no prior run at all and
- * a delivered pipeline row read `pending` again.
+ * a delivered pipeline step read `pending` again.
  *
  * So the database is the source of truth and this is a read of it:
  *

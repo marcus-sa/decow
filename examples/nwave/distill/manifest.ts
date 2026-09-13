@@ -27,7 +27,7 @@
  *   no-values                 the manifest proposes nothing
  *   unknown-observation       a value names an observation the roadmap does not
  *   duplicate-observation     two values claim one observation
- *   uncovered-value           a roadmap row no value speaks for
+ *   uncovered-value           a roadmap step no value speaks for
  *   no-obligations            a value that must satisfy nothing
  *   duplicate-obligation-id   two obligations of one value claim one id
  *   blank-field               an observation, id, stimulus or expected that is
@@ -45,7 +45,7 @@
  * structural: `des distill` MERGES a partial manifest into a stored graph that
  * may already carry facts for the rest, so a value it says nothing about keeps
  * what it had. This wave runs once per roadmap and has nothing to merge with,
- * so a row no value speaks for would reach DELIVER with no oracle at all.
+ * so a step no value speaks for would reach DELIVER with no oracle at all.
  *
  * `support-ignored` is the one rule that cannot be answered from the manifest
  * and the roadmap alone — it is a question about the repository — so the
@@ -279,8 +279,8 @@ export const manifestVerdict = (defects: readonly ManifestDefect[]): ManifestVer
 
 /**
  * The roadmap with its acceptance facts filled in, which is what `persist`
- * writes. The proposal is joined onto the rows by observation, exactly as
- * nwave's own join does, so a row the manifest says nothing about keeps what
+ * writes. The proposal is joined onto the steps by observation, exactly as
+ * nwave's own join does, so a step the manifest says nothing about keeps what
  * it had — and `uncovered-value` is what makes that unreachable here.
  */
 export const enrich = (roadmap: Roadmap, manifest: Manifest): Roadmap => {

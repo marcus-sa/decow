@@ -13,7 +13,7 @@ bun run e2e          # the browser tests, against a real scripted server
 | `/` | Every registered graph, every pipeline, and every run. |
 | `/workflows/:id` | The graph, drawn. A form from its input schema starts a run of it; clicking a node says what kind of thing it is. |
 | `/runs/:runId` | The same graph with the run painted on: every node it entered, the one it is on, the iteration counter on anything it entered twice — and beside it the trace in words and every leaf attempt. |
-| `/pipelines/:id` | The run tree: rows, the status each projects, and the run each one is on. |
+| `/pipelines/:id` | The run tree: steps, the status each projects, and the run each one is on. |
 | `/api/events` | The event stream. A server route rather than a page. |
 
 ## Server functions, not a client over an API
@@ -84,7 +84,7 @@ reached a model would fail rather than spend one.
 | `01-index` | Four graphs and two pipelines, server-rendered. |
 | `02-graph` | Every node under the id its author wrote; the `author` loop as a box labelled `max 2` with the loop node outside it and its body inside; `human` and `human-review` drawn as suspends, and the only two. |
 | `03-suspension` | A roadmap run started from the form, parked at `human-review`, offering exactly `approve` / `revise` / `abandon`; approve carries the SAME run to `accepted`. Video recorded. |
-| `04-pipeline` | Two pending rows, one button, both `accepted`, and each row's link opening its own run page with the step cycle's trace on it. |
+| `04-pipeline` | Two pending steps, one button, both `accepted`, and each step's link opening its own run page with the step cycle's trace on it. |
 
 Screenshots are committed under `e2e/screenshots/` at a fixed 1440×960
 viewport, so what the tests saw is reviewable in the repository. They are

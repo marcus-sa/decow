@@ -153,7 +153,7 @@ describe("the obligations graph", () => {
       "accept",
     ]);
 
-    // One upsert per roadmap row, at the version the state carried, carrying
+    // One upsert per roadmap step, at the version the state carried, carrying
     // the SAME row with its three empty fields filled in.
     expect(asked).toHaveLength(1);
     expect(asked[0]).toMatchObject({
@@ -277,7 +277,7 @@ describe("the manifest validator, as the pure function it is", () => {
     expect(defectsIn(GOOD)).toEqual([]);
   });
 
-  test("an observation the roadmap does not declare is named, and so is the row it left uncovered", () => {
+  test("an observation the roadmap does not declare is named, and so is the step it left uncovered", () => {
     // Exact string match, the way nwave's join reads it: an observation is the
     // key a value is addressed by, so a near miss is a value about something
     // else rather than a typo to forgive.

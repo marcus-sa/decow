@@ -109,7 +109,7 @@ const PERSIST_BLOCK: Record<Exclude<PersistOutcome, "committed">, BlockReason> =
 };
 
 export type State = {
-  /** The roadmap as ROADMAP persisted it: rows with no acceptance facts. */
+  /** The roadmap as ROADMAP persisted it: steps with no acceptance facts. */
   roadmap: Roadmap;
   /** The design source the obligations are anchored in. */
   design: string;
@@ -324,7 +324,7 @@ export const obligationsGraph = (
     }),
 
     /**
-     * Not a leaf. One `upsert-artifact` per roadmap row, at the version the
+     * Not a leaf. One `upsert-artifact` per roadmap step, at the version the
      * state carries, through the effect executor. The rows are the SAME rows
      * ROADMAP wrote, with their three empty fields filled in — which is what
      * "DISTILL persists its facts into the value graph" means when the value

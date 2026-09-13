@@ -20,7 +20,7 @@
  * THE CYCLE STARTS AT `implement`, and there is no RED node ahead of it. RED is
  * a fact this graph READS rather than one it establishes: `des oracle` authored
  * the oracle, software executed it, and the recorded verdict was `red` before
- * this row was ever ready (`examples/nwave/distill/oracle/`). A row with no
+ * this step was ever ready (`examples/nwave/distill/oracle/`). A step with no
  * recorded red oracle never becomes ready, so "no edge bypasses RED" is a
  * readiness precondition here rather than a node — see `../distill/README` in
  * the nwave example's own README.
@@ -200,8 +200,8 @@ export type State = {
   /** The optimistic version the next `replace-symbol` claims. */
   symbolVersion: number;
   /**
-   * The repository-relative files this row writes, as the registry resolved
-   * the row's predicted touches. Carried, not produced: the same boundary
+   * The repository-relative files this step writes, as the registry resolved
+   * the step's predicted touches. Carried, not produced: the same boundary
    * `impacted` sits on, and for the same reason — a symbol id is opaque and
    * only the VCS can say which file holds it.
    *
@@ -214,7 +214,7 @@ export type State = {
   leaf: Leaves;
   /**
    * The test ids of this step's own oracle, as the inventory reported them
-   * when the row was made ready. Carried rather than resolved here: the oracle
+   * when the step was made ready. Carried rather than resolved here: the oracle
    * was authored and measured red in its own run, and this graph reads the
    * result rather than re-deriving it.
    *
@@ -263,7 +263,7 @@ export const seed = (
   evidence: string,
   /** The impact floor a VCS query produced. Empty when nothing supplied one. */
   impacted: readonly string[] = [],
-  /** The files this row writes, as the registry resolved them. */
+  /** The files this step writes, as the registry resolved them. */
   paths: readonly string[] = [],
 ): State => ({
   step,
@@ -808,7 +808,7 @@ export const deliverGraph = (
      * would be a second source of truth for a fact the command already
      * produced.
      *
-     * The command is the consumer's `commands.lint` over the files this row
+     * The command is the consumer's `commands.lint` over the files this step
      * writes; what comes back is an `EffectResult` and `gate.route` is a pure
      * function of it. The gate's own output becomes `evidence`, so the leaf
      * that fixes a finding reads the linter's words rather than a paraphrase

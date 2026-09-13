@@ -4,7 +4,7 @@
  * nWave's DELIVER wave runs each roadmap step through a RED -> GREEN -> COMMIT
  * cycle with a crafter, a reviewer, a quality gate, and a phase log. Today
  * that order is enforced after the fact, by hooks checking the log. Here RED is
- * enforced one layer up, as a readiness precondition: a row whose oracle has no
+ * enforced one layer up, as a readiness precondition: a step whose oracle has no
  * recorded `red` verdict never becomes ready, so no run of this cycle exists
  * that skipped it.
  *
@@ -48,7 +48,7 @@ import type { Requirement } from "@des/core/requirement";
 import { stepOutput, type ModelBinding, type StepDef } from "@des/core/step";
 
 /**
- * One acceptance obligation of the row, as DISTILL left it: a stimulus and the
+ * One acceptance obligation of the step, as DISTILL left it: a stimulus and the
  * result it expects. The crafter reads both, because "what would I do and what
  * should I then see" is the question an implementation answers.
  */
@@ -59,10 +59,10 @@ export const AcceptanceObligation = z.object({
 });
 export type AcceptanceObligation = z.infer<typeof AcceptanceObligation>;
 
-/** The roadmap row under delivery. Authored upstream; never inferred here. */
+/** The roadmap step under delivery. Authored upstream; never inferred here. */
 export const StepUnderDelivery = z.object({
   id: z.string(),
-  /** The acceptance criteria, verbatim from the roadmap row. */
+  /** The acceptance criteria, verbatim from the roadmap step. */
   criteria: z.string(),
   /** The public API surface the accepted design declares, verbatim. */
   design: z.string(),
@@ -70,10 +70,10 @@ export const StepUnderDelivery = z.object({
   authority: z.string(),
   /** What the step must satisfy to be accepted. At least one. */
   acceptance: z.array(AcceptanceObligation),
-  /** Symbol ids or paths the row predicted it would write. */
+  /** Symbol ids or paths the step predicted it would write. */
   predictedTouches: z.array(z.string()),
   /**
-   * The oracle measuring this row, as DISTILL declared it. Carried so the
+   * The oracle measuring this step, as DISTILL declared it. Carried so the
    * crafter can READ the assertion it is being measured against; the executor
    * is what stops it writing there.
    */

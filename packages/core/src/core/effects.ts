@@ -93,7 +93,7 @@ export type Effect =
    * result is a memory bug waiting for a verbose compiler.
    *
    * `resources` names shared infrastructure the command needs exclusively. The
-   * scheduler takes the names as a lease before a row runs, so two rows whose
+   * scheduler takes the names as a lease before a step runs, so two steps whose
    * commands declare the same resource serialise on it.
    */
   | {

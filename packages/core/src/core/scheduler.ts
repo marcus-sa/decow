@@ -1,27 +1,27 @@
 /**
- * The scheduler. Rows in, the frontier runs, the statuses come back.
+ * The scheduler. Steps in, the frontier runs, the statuses come back.
  *
  * DELIVER is sequential today because one big model holds one context and one
  * linear log. Sequencing is a property of the executor, not of the work: once
- * the roadmap is a DAG in rows, the frontier is every row whose dependencies
+ * the roadmap is a DAG in steps, the frontier is every step whose dependencies
  * are all `accepted`, and the frontier runs concurrently.
  *
- * Generic on purpose. A row is `{ id, dependencies }` and nothing else; what a
- * row MEANS, where it is read from, and what its run does are the consumer's
+ * Generic on purpose. A step is `{ id, dependencies }` and nothing else; what a
+ * step MEANS, where it is read from, and what its run does are the consumer's
  * (`examples/nwave/deliver/pipeline.ts`). This file owns the frontier, the
  * concurrency limit, the resource leases, and termination.
  *
  * STATE IS A PROJECTION. The scheduler persists nothing of its own: it asks
- * `statusOf` for every row's status, reports each finished run through
+ * `statusOf` for every step's status, reports each finished run through
  * `record`, and re-reads. That is nwave-experimental's `delivery_state.py`
  * stance — the next step is DERIVED from persisted facts and never decided —
  * and the consequence is the useful part: a scheduler that died mid-feature
- * restarts by reading rather than by remembering, and a row in flight has
+ * restarts by reading rather than by remembering, and a step in flight has
  * nothing persisted so it simply reads `pending` and is run again.
  *
- * A `rejected` or `suspended` row blocks only its dependents, and that falls
- * out of the frontier rule rather than being enforced: a dependent of a row
- * that is not `accepted` never becomes ready, and every row not downstream of
+ * A `rejected` or `suspended` step blocks only its dependents, and that falls
+ * out of the frontier rule rather than being enforced: a dependent of a step
+ * that is not `accepted` never becomes ready, and every step not downstream of
  * it keeps running. A person's queue is therefore a list of independent
  * blocked subtrees.
  *
@@ -31,27 +31,27 @@
 
 import type { RunOutcome } from "./workflow.ts";
 
-/** A row the scheduler orders. Everything else about it is the consumer's. */
-export type SchedulerRow = { id: string; dependencies: string[] };
+/** A step the scheduler orders. Everything else about it is the consumer's. */
+export type SchedulerStep = { id: string; dependencies: string[] };
 
 /**
- * What a row's status can be, as the projection reports it.
+ * What a step's status can be, as the projection reports it.
  *
  * `pending` covers both "never run" and "running right now", deliberately:
  * nothing is persisted until a run finishes, so the two are indistinguishable
  * to a reader and the honest thing to do with an unfinished run is to run it.
- * The scheduler knows which of its own rows are in flight and does not start
- * them twice; a SECOND scheduler on the same rows would, which is why
+ * The scheduler knows which of its own steps are in flight and does not start
+ * them twice; a SECOND scheduler on the same steps would, which is why
  * `record` is the consumer's place to refuse that.
  */
-export const ROW_STATUSES = ["pending", "accepted", "rejected", "suspended"] as const;
-export type RowStatus = (typeof ROW_STATUSES)[number];
+export const STEP_STATUSES = ["pending", "accepted", "rejected", "suspended"] as const;
+export type StepStatus = (typeof STEP_STATUSES)[number];
 
 /**
  * Named resources a run needs exclusively — a VM, a kernel table, a port.
  *
  * `acquire` takes the whole set at once and resolves when every name is free,
- * so two rows that share one serialize on it and two rows that share none do
+ * so two steps that share one serialize on it and two steps that share none do
  * not. Taking the set atomically is what makes that deadlock-free: a caller
  * never holds one name while waiting for another.
  */
@@ -62,7 +62,7 @@ export type ResourceLeases = {
 
 /**
  * The in-memory implementation. FIFO among waiters, so which of two blocked
- * rows goes first is a function of the order they asked rather than of timing.
+ * steps goes first is a function of the order they asked rather than of timing.
  */
 export const inMemoryLeases = (): ResourceLeases => {
   const held = new Set<string>();
@@ -103,45 +103,45 @@ export const inMemoryLeases = (): ResourceLeases => {
 };
 
 export type SchedulerSpec<S> = {
-  rows: readonly SchedulerRow[];
-  /** Run one row to a terminal or a suspension. */
-  runOne: (row: SchedulerRow) => Promise<RunOutcome<S>>;
-  /** Continue a parked row with a person's answer. */
-  resumeOne: (row: SchedulerRow, runId: string, answer: unknown) => Promise<RunOutcome<S>>;
-  /** The row's status, as the consumer's own projection reports it. */
-  statusOf: (rowId: string) => Promise<RowStatus>;
+  steps: readonly SchedulerStep[];
+  /** Run one step to a terminal or a suspension. */
+  runOne: (step: SchedulerStep) => Promise<RunOutcome<S>>;
+  /** Continue a parked step with a person's answer. */
+  resumeOne: (step: SchedulerStep, runId: string, answer: unknown) => Promise<RunOutcome<S>>;
+  /** The step's status, as the consumer's own projection reports it. */
+  statusOf: (stepId: string) => Promise<StepStatus>;
   /** Record a finished run, so `statusOf` will report it. */
-  record: (rowId: string, outcome: RunOutcome<S>) => Promise<void>;
+  record: (stepId: string, outcome: RunOutcome<S>) => Promise<void>;
   /**
-   * May this row run AT ALL, beyond its dependencies being accepted?
+   * May this step run AT ALL, beyond its dependencies being accepted?
    *
-   * The frontier rule answers "is everything this row waits on done". It does
-   * not answer "is this row itself allowed to start", and a consumer with a
+   * The frontier rule answers "is everything this step waits on done". It does
+   * not answer "is this step itself allowed to start", and a consumer with a
    * precondition of its own has nowhere else to put it: `statusOf` is about
-   * what a row already IS, and a row that has not run is `pending` whether or
+   * what a step already IS, and a step that has not run is `pending` whether or
    * not it may.
    *
    * Read once per refresh, beside `statusOf`, so `ready` stays synchronous and
    * a consumer's answer is a projection like every other fact here. Absent:
-   * every row is eligible, which is the behaviour before this existed.
+   * every step is eligible, which is the behaviour before this existed.
    */
-  eligible?: (rowId: string) => Promise<boolean>;
-  /** How many rows may be in flight at once. At least 1. */
+  eligible?: (stepId: string) => Promise<boolean>;
+  /** How many steps may be in flight at once. At least 1. */
   concurrency: number;
-  /** Named resources the row's run needs exclusively. */
-  resourcesFor?: (row: SchedulerRow) => string[];
+  /** Named resources the step's run needs exclusively. */
+  resourcesFor?: (step: SchedulerStep) => string[];
   leases?: ResourceLeases;
 };
 
 export type Scheduler = {
-  /** Run until no row is ready and none is in flight. Returns every status. */
-  run(): Promise<Map<string, RowStatus>>;
+  /** Run until no step is ready and none is in flight. Returns every status. */
+  run(): Promise<Map<string, StepStatus>>;
   /**
-   * Continue a parked row and re-evaluate the frontier, so the rows that were
+   * Continue a parked step and re-evaluate the frontier, so the steps that were
    * waiting on it run in the same call.
    */
-  resume(rowId: string, answer: unknown): Promise<Map<string, RowStatus>>;
-  /** The run id a parked row is waiting under, for a caller that wants it. */
+  resume(stepId: string, answer: unknown): Promise<Map<string, StepStatus>>;
+  /** The run id a parked step is waiting under, for a caller that wants it. */
   parked(): Map<string, string>;
 };
 
@@ -150,47 +150,47 @@ export const openScheduler = <S>(spec: SchedulerSpec<S>): Scheduler => {
     throw new Error(`scheduler: concurrency must be a positive integer, not ${String(spec.concurrency)}`);
   }
 
-  const byId = new Map(spec.rows.map((row) => [row.id, row] as const));
-  /** The last known status per row. Re-read from the projection, never cached across a run. */
-  const statuses = new Map<string, RowStatus>();
-  /** Whether each row may run at all. Re-read beside its status. */
+  const byId = new Map(spec.steps.map((step) => [step.id, step] as const));
+  /** The last known status per step. Re-read from the projection, never cached across a run. */
+  const statuses = new Map<string, StepStatus>();
+  /** Whether each step may run at all. Re-read beside its status. */
   const eligible = new Map<string, boolean>();
-  /** The run id each parked row is waiting under. In memory: one scheduler, one process. */
+  /** The run id each parked step is waiting under. In memory: one scheduler, one process. */
   const waiting = new Map<string, string>();
 
   const refresh = async (): Promise<void> => {
-    for (const row of spec.rows) {
-      statuses.set(row.id, await spec.statusOf(row.id));
-      eligible.set(row.id, spec.eligible === undefined ? true : await spec.eligible(row.id));
+    for (const step of spec.steps) {
+      statuses.set(step.id, await spec.statusOf(step.id));
+      eligible.set(step.id, spec.eligible === undefined ? true : await spec.eligible(step.id));
     }
   };
 
   /**
-   * Rows that are eligible, whose every dependency is accepted, and which are
+   * Steps that are eligible, whose every dependency is accepted, and which are
    * not already going.
    *
-   * An INELIGIBLE row blocks its dependents exactly the way a rejected one
-   * does, and for the same reason: nothing downstream of a row that may not
+   * An INELIGIBLE step blocks its dependents exactly the way a rejected one
+   * does, and for the same reason: nothing downstream of a step that may not
    * run becomes ready, and everything not downstream of it keeps running.
    */
-  const ready = (running: ReadonlySet<string>): SchedulerRow[] =>
-    spec.rows.filter(
-      (row) =>
-        statuses.get(row.id) === "pending" &&
-        eligible.get(row.id) !== false &&
-        !running.has(row.id) &&
-        row.dependencies.every((id) => statuses.get(id) === "accepted"),
+  const ready = (running: ReadonlySet<string>): SchedulerStep[] =>
+    spec.steps.filter(
+      (step) =>
+        statuses.get(step.id) === "pending" &&
+        eligible.get(step.id) !== false &&
+        !running.has(step.id) &&
+        step.dependencies.every((id) => statuses.get(id) === "accepted"),
     );
 
-  /** One row's run, under its resource leases if it declared any. */
-  const drive = async (row: SchedulerRow): Promise<void> => {
-    const names = spec.resourcesFor?.(row) ?? [];
+  /** One step's run, under its resource leases if it declared any. */
+  const drive = async (step: SchedulerStep): Promise<void> => {
+    const names = spec.resourcesFor?.(step) ?? [];
     const release = spec.leases === undefined ? undefined : await spec.leases.acquire(names);
     try {
-      const outcome = await spec.runOne(row);
-      await spec.record(row.id, outcome);
-      if (outcome.kind === "suspended") waiting.set(row.id, outcome.runId);
-      else waiting.delete(row.id);
+      const outcome = await spec.runOne(step);
+      await spec.record(step.id, outcome);
+      if (outcome.kind === "suspended") waiting.set(step.id, outcome.runId);
+      else waiting.delete(step.id);
     } finally {
       release?.();
     }
@@ -205,7 +205,7 @@ export const openScheduler = <S>(spec: SchedulerSpec<S>): Scheduler => {
    * carry handlers, so the throw propagates without leaving an unhandled
    * rejection behind it.
    */
-  const loop = async (): Promise<Map<string, RowStatus>> => {
+  const loop = async (): Promise<Map<string, StepStatus>> => {
     await refresh();
     const running = new Map<string, Promise<{ id: string; error?: unknown }>>();
 
@@ -236,20 +236,20 @@ export const openScheduler = <S>(spec: SchedulerSpec<S>): Scheduler => {
   return {
     run: loop,
 
-    resume: async (rowId, answer) => {
-      const row = byId.get(rowId);
-      if (row === undefined) throw new Error(`scheduler: no row ${rowId}`);
-      const runId = waiting.get(rowId);
+    resume: async (stepId, answer) => {
+      const step = byId.get(stepId);
+      if (step === undefined) throw new Error(`scheduler: no step ${stepId}`);
+      const runId = waiting.get(stepId);
       if (runId === undefined) {
-        throw new Error(`scheduler: row ${rowId} is not parked, so there is no run to resume`);
+        throw new Error(`scheduler: step ${stepId} is not parked, so there is no run to resume`);
       }
-      const outcome = await spec.resumeOne(row, runId, answer);
-      await spec.record(rowId, outcome);
-      if (outcome.kind === "suspended") waiting.set(rowId, outcome.runId);
-      else waiting.delete(rowId);
-      // Re-evaluate the frontier: the rows that were waiting on this one run
+      const outcome = await spec.resumeOne(step, runId, answer);
+      await spec.record(stepId, outcome);
+      if (outcome.kind === "suspended") waiting.set(stepId, outcome.runId);
+      else waiting.delete(stepId);
+      // Re-evaluate the frontier: the steps that were waiting on this one run
       // in the same call, which is what makes a resume a continuation of the
-      // feature rather than of one row.
+      // feature rather than of one step.
       return await loop();
     },
 

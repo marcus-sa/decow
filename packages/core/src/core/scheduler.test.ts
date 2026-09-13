@@ -1,15 +1,15 @@
 /**
- * The scheduler, against fake rows and a fake `runOne`.
+ * The scheduler, against fake steps and a fake `runOne`.
  *
  * Generic on purpose, so its own arithmetic is testable without a workflow, a
  * VCS or a roadmap: what has to hold is the frontier rule, the concurrency
- * limit, the blast radius of a row that did not succeed, the resource leases,
- * and termination. The composition over real roadmap rows is
+ * limit, the blast radius of a step that did not succeed, the resource leases,
+ * and termination. The composition over real roadmap steps is
  * `examples/nwave/deliver/pipeline.test.ts`.
  */
 
 import { describe, expect, test } from "bun:test";
-import { inMemoryLeases, openScheduler, type RowStatus, type SchedulerRow } from "./scheduler.ts";
+import { inMemoryLeases, openScheduler, type StepStatus, type SchedulerStep } from "./scheduler.ts";
 import type { RunOutcome } from "./workflow.ts";
 
 type S = { id: string };
@@ -41,10 +41,10 @@ const suspended = (id: string): RunOutcome<S> => ({
  * is: the scheduler asks, it does not remember.
  */
 const projection = () => {
-  const recorded = new Map<string, RowStatus>();
+  const recorded = new Map<string, StepStatus>();
   return {
     recorded,
-    statusOf: async (id: string): Promise<RowStatus> => recorded.get(id) ?? "pending",
+    statusOf: async (id: string): Promise<StepStatus> => recorded.get(id) ?? "pending",
     record: async (id: string, outcome: RunOutcome<S>) => {
       recorded.set(id, outcome.kind === "suspended" ? "suspended" : outcome.terminal.kind);
     },
@@ -56,7 +56,7 @@ const projection = () => {
  * frontier rule worth having — B and C are independent of each other and both
  * gate D.
  */
-const DIAMOND: SchedulerRow[] = [
+const DIAMOND: SchedulerStep[] = [
   { id: "A", dependencies: [] },
   { id: "B", dependencies: ["A"] },
   { id: "C", dependencies: ["A"] },
@@ -68,14 +68,14 @@ describe("the frontier", () => {
     const store = projection();
     const order: string[] = [];
     const scheduler = openScheduler<S>({
-      rows: DIAMOND,
+      steps: DIAMOND,
       concurrency: 4,
       ...store,
-      runOne: async (row) => {
-        order.push(row.id);
-        return accepted(row.id);
+      runOne: async (step) => {
+        order.push(step.id);
+        return accepted(step.id);
       },
-      resumeOne: async (row) => accepted(row.id),
+      resumeOne: async (step) => accepted(step.id),
     });
 
     const statuses = await scheduler.run();
@@ -86,19 +86,19 @@ describe("the frontier", () => {
     expect([...statuses.values()].every((s) => s === "accepted")).toBe(true);
   });
 
-  test("a row already accepted in the projection is not run again", async () => {
+  test("a step already accepted in the projection is not run again", async () => {
     const store = projection();
     store.recorded.set("A", "accepted");
     const ran: string[] = [];
     const scheduler = openScheduler<S>({
-      rows: DIAMOND,
+      steps: DIAMOND,
       concurrency: 4,
       ...store,
-      runOne: async (row) => {
-        ran.push(row.id);
-        return accepted(row.id);
+      runOne: async (step) => {
+        ran.push(step.id);
+        return accepted(step.id);
       },
-      resumeOne: async (row) => accepted(row.id),
+      resumeOne: async (step) => accepted(step.id),
     });
 
     await scheduler.run();
@@ -111,17 +111,17 @@ describe("the frontier", () => {
     const store = projection();
     const ran: string[] = [];
     const scheduler = openScheduler<S>({
-      rows: [
+      steps: [
         { id: "A", dependencies: [] },
         { id: "B", dependencies: ["A"] },
       ],
       concurrency: 2,
       ...store,
-      runOne: async (row) => {
-        ran.push(row.id);
-        return row.id === "A" ? suspended(row.id) : accepted(row.id);
+      runOne: async (step) => {
+        ran.push(step.id);
+        return step.id === "A" ? suspended(step.id) : accepted(step.id);
       },
-      resumeOne: async (row) => accepted(row.id),
+      resumeOne: async (step) => accepted(step.id),
     });
 
     const statuses = await scheduler.run();
@@ -130,12 +130,12 @@ describe("the frontier", () => {
   });
 });
 
-describe("the blast radius of a row that did not succeed", () => {
-  test("a rejected row blocks its subtree and nothing else", async () => {
+describe("the blast radius of a step that did not succeed", () => {
+  test("a rejected step blocks its subtree and nothing else", async () => {
     const store = projection();
     const ran: string[] = [];
     const scheduler = openScheduler<S>({
-      rows: [
+      steps: [
         { id: "A", dependencies: [] },
         { id: "A-child", dependencies: ["A"] },
         { id: "A-grandchild", dependencies: ["A-child"] },
@@ -144,11 +144,11 @@ describe("the blast radius of a row that did not succeed", () => {
       ],
       concurrency: 4,
       ...store,
-      runOne: async (row) => {
-        ran.push(row.id);
-        return row.id === "A" ? rejected(row.id) : accepted(row.id);
+      runOne: async (step) => {
+        ran.push(step.id);
+        return step.id === "A" ? rejected(step.id) : accepted(step.id);
       },
-      resumeOne: async (row) => accepted(row.id),
+      resumeOne: async (step) => accepted(step.id),
     });
 
     const statuses = await scheduler.run();
@@ -162,23 +162,23 @@ describe("the blast radius of a row that did not succeed", () => {
     expect(statuses.get("B-child")).toBe("accepted");
   });
 
-  test("a suspended row resumes, and its dependents then run", async () => {
+  test("a suspended step resumes, and its dependents then run", async () => {
     const store = projection();
     const ran: string[] = [];
     let parkedOnce = false;
     const scheduler = openScheduler<S>({
-      rows: DIAMOND,
+      steps: DIAMOND,
       concurrency: 4,
       ...store,
-      runOne: async (row) => {
-        ran.push(row.id);
-        if (row.id === "A" && !parkedOnce) {
+      runOne: async (step) => {
+        ran.push(step.id);
+        if (step.id === "A" && !parkedOnce) {
           parkedOnce = true;
-          return suspended(row.id);
+          return suspended(step.id);
         }
-        return accepted(row.id);
+        return accepted(step.id);
       },
-      resumeOne: async (row) => accepted(row.id),
+      resumeOne: async (step) => accepted(step.id),
     });
 
     const parked = await scheduler.run();
@@ -187,79 +187,79 @@ describe("the blast radius of a row that did not succeed", () => {
     expect(scheduler.parked().get("A")).toBe("run-A");
 
     // The resume re-evaluates the frontier in the same call, so answering one
-    // row continues the FEATURE rather than the row.
+    // step continues the FEATURE rather than the step.
     const statuses = await scheduler.resume("A", { decision: "commit" });
     expect(ran.sort()).toEqual(["A", "B", "C", "D"]);
     expect([...statuses.values()].every((s) => s === "accepted")).toBe(true);
     expect(scheduler.parked().size).toBe(0);
   });
 
-  test("resuming a row that is not parked is refused by name", async () => {
+  test("resuming a step that is not parked is refused by name", async () => {
     const store = projection();
     const scheduler = openScheduler<S>({
-      rows: DIAMOND,
+      steps: DIAMOND,
       concurrency: 4,
       ...store,
-      runOne: async (row) => accepted(row.id),
-      resumeOne: async (row) => accepted(row.id),
+      runOne: async (step) => accepted(step.id),
+      resumeOne: async (step) => accepted(step.id),
     });
     await scheduler.run();
 
-    expect(scheduler.resume("A", {})).rejects.toThrow(/row A is not parked/);
-    expect(scheduler.resume("nope", {})).rejects.toThrow(/no row nope/);
+    expect(scheduler.resume("A", {})).rejects.toThrow(/step A is not parked/);
+    expect(scheduler.resume("nope", {})).rejects.toThrow(/no step nope/);
   });
 });
 
 describe("the concurrency limit", () => {
   /**
-   * A run that yields a few microtask turns before finishing, so two rows the
+   * A run that yields a few microtask turns before finishing, so two steps the
    * scheduler started together genuinely overlap and the in-flight count is
    * observable without a clock or an external gate.
    */
   const counting = () => {
     let peak = 0;
     let live = 0;
-    const runOne = async (row: SchedulerRow): Promise<RunOutcome<S>> => {
+    const runOne = async (step: SchedulerStep): Promise<RunOutcome<S>> => {
       live += 1;
       peak = Math.max(peak, live);
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
       live -= 1;
-      return accepted(row.id);
+      return accepted(step.id);
     };
     return { runOne, peak: () => peak };
   };
 
-  const sixRows = Array.from({ length: 6 }, (_, i) => ({ id: `r${i}`, dependencies: [] }));
+  const sixSteps = Array.from({ length: 6 }, (_, i) => ({ id: `r${i}`, dependencies: [] }));
 
-  test("never more than `concurrency` rows are in flight, and no fewer when there is work", async () => {
+  test("never more than `concurrency` steps are in flight, and no fewer when there is work", async () => {
     const store = projection();
     const g = counting();
     const scheduler = openScheduler<S>({
-      rows: sixRows,
+      steps: sixSteps,
       concurrency: 2,
       ...store,
       runOne: g.runOne,
-      resumeOne: async (row) => accepted(row.id),
+      resumeOne: async (step) => accepted(step.id),
     });
 
     const statuses = await scheduler.run();
     // The limit is a ceiling AND a target: the in-flight set is topped back up
-    // as rows finish, so six rows at a limit of two is three batches.
+    // as steps finish, so six steps at a limit of two is three batches.
     expect(g.peak()).toBe(2);
     expect([...statuses.values()].every((s) => s === "accepted")).toBe(true);
   });
 
-  test("a limit above the row count runs them all at once", async () => {
+  test("a limit above the step count runs them all at once", async () => {
     const store = projection();
     const g = counting();
     const scheduler = openScheduler<S>({
-      rows: sixRows,
+      steps: sixSteps,
       concurrency: 10,
       ...store,
       runOne: g.runOne,
-      resumeOne: async (row) => accepted(row.id),
+      resumeOne: async (step) => accepted(step.id),
     });
 
     await scheduler.run();
@@ -270,11 +270,11 @@ describe("the concurrency limit", () => {
     const store = projection();
     const g = counting();
     const scheduler = openScheduler<S>({
-      rows: sixRows,
+      steps: sixSteps,
       concurrency: 1,
       ...store,
       runOne: g.runOne,
-      resumeOne: async (row) => accepted(row.id),
+      resumeOne: async (step) => accepted(step.id),
     });
 
     await scheduler.run();
@@ -285,47 +285,47 @@ describe("the concurrency limit", () => {
     const store = projection();
     expect(() =>
       openScheduler<S>({
-        rows: DIAMOND,
+        steps: DIAMOND,
         concurrency: 0,
         ...store,
-        runOne: async (row) => accepted(row.id),
-        resumeOne: async (row) => accepted(row.id),
+        runOne: async (step) => accepted(step.id),
+        resumeOne: async (step) => accepted(step.id),
       }),
     ).toThrow(/concurrency must be a positive integer/);
   });
 });
 
 describe("resource leases", () => {
-  /** Records the set of rows in flight at every moment a run starts. */
+  /** Records the set of steps in flight at every moment a run starts. */
   const overlapping = () => {
     const live = new Set<string>();
     const together: string[][] = [];
-    const runOne = async (row: SchedulerRow): Promise<RunOutcome<S>> => {
-      live.add(row.id);
+    const runOne = async (step: SchedulerStep): Promise<RunOutcome<S>> => {
+      live.add(step.id);
       together.push([...live].sort());
       // Two microtask turns, so a genuinely parallel pair overlaps here.
       await Promise.resolve();
       await Promise.resolve();
-      live.delete(row.id);
-      return accepted(row.id);
+      live.delete(step.id);
+      return accepted(step.id);
     };
     return { runOne, together };
   };
 
-  const independent: SchedulerRow[] = [
+  const independent: SchedulerStep[] = [
     { id: "X", dependencies: [] },
     { id: "Y", dependencies: [] },
   ];
 
-  test("two rows that share a resource serialize on it", async () => {
+  test("two steps that share a resource serialize on it", async () => {
     const store = projection();
     const o = overlapping();
     const scheduler = openScheduler<S>({
-      rows: independent,
+      steps: independent,
       concurrency: 2,
       ...store,
       runOne: o.runOne,
-      resumeOne: async (row) => accepted(row.id),
+      resumeOne: async (step) => accepted(step.id),
       resourcesFor: () => ["the-kernel-table"],
       leases: inMemoryLeases(),
     });
@@ -336,16 +336,16 @@ describe("resource leases", () => {
     expect(o.together).toEqual([["X"], ["Y"]]);
   });
 
-  test("two rows that share nothing run together", async () => {
+  test("two steps that share nothing run together", async () => {
     const store = projection();
     const o = overlapping();
     const scheduler = openScheduler<S>({
-      rows: independent,
+      steps: independent,
       concurrency: 2,
       ...store,
       runOne: o.runOne,
-      resumeOne: async (row) => accepted(row.id),
-      resourcesFor: (row) => [`vm-${row.id}`],
+      resumeOne: async (step) => accepted(step.id),
+      resourcesFor: (step) => [`vm-${step.id}`],
       leases: inMemoryLeases(),
     });
 
@@ -353,16 +353,16 @@ describe("resource leases", () => {
     expect(o.together.at(-1)).toEqual(["X", "Y"]);
   });
 
-  test("a row that needs nothing is not held up by a lease it did not ask for", async () => {
+  test("a step that needs nothing is not held up by a lease it did not ask for", async () => {
     const store = projection();
     const o = overlapping();
     const scheduler = openScheduler<S>({
-      rows: independent,
+      steps: independent,
       concurrency: 2,
       ...store,
       runOne: o.runOne,
-      resumeOne: async (row) => accepted(row.id),
-      resourcesFor: (row) => (row.id === "X" ? ["the-kernel-table"] : []),
+      resumeOne: async (step) => accepted(step.id),
+      resourcesFor: (step) => (step.id === "X" ? ["the-kernel-table"] : []),
       leases: inMemoryLeases(),
     });
 
@@ -374,20 +374,20 @@ describe("resource leases", () => {
     const leases = inMemoryLeases();
     const store = projection();
     const scheduler = openScheduler<S>({
-      rows: [{ id: "X", dependencies: [] }],
+      steps: [{ id: "X", dependencies: [] }],
       concurrency: 1,
       ...store,
       runOne: async () => {
         throw new Error("graph bug: a dangling edge");
       },
-      resumeOne: async (row) => accepted(row.id),
+      resumeOne: async (step) => accepted(step.id),
       resourcesFor: () => ["the-kernel-table"],
       leases,
     });
 
     // A `runOne` that throws is a graph bug and is not absorbed into a status.
     await expect(scheduler.run()).rejects.toThrow(/graph bug/);
-    // And the resource is free afterwards, so the next row is not deadlocked
+    // And the resource is free afterwards, so the next step is not deadlocked
     // behind a run that is over.
     const release = await leases.acquire(["the-kernel-table"]);
     release();
@@ -435,7 +435,7 @@ describe("inMemoryLeases", () => {
     held();
     (await first)();
     (await second)();
-    // FIFO, so which of two blocked rows goes first is a function of the order
+    // FIFO, so which of two blocked steps goes first is a function of the order
     // they asked rather than of timing.
     expect(order).toEqual(["first", "second"]);
   });
@@ -445,26 +445,26 @@ describe("termination", () => {
   test("an empty roadmap terminates at once", async () => {
     const store = projection();
     const scheduler = openScheduler<S>({
-      rows: [],
+      steps: [],
       concurrency: 1,
       ...store,
-      runOne: async (row) => accepted(row.id),
-      resumeOne: async (row) => accepted(row.id),
+      runOne: async (step) => accepted(step.id),
+      resumeOne: async (step) => accepted(step.id),
     });
     expect([...(await scheduler.run())]).toEqual([]);
   });
 
-  test("a roadmap whose rows all block terminates rather than spinning", async () => {
+  test("a roadmap whose steps all block terminates rather than spinning", async () => {
     const store = projection();
     const scheduler = openScheduler<S>({
-      rows: [
+      steps: [
         { id: "A", dependencies: [] },
         { id: "B", dependencies: ["A"] },
       ],
       concurrency: 2,
       ...store,
-      runOne: async (row) => rejected(row.id),
-      resumeOne: async (row) => accepted(row.id),
+      runOne: async (step) => rejected(step.id),
+      resumeOne: async (step) => accepted(step.id),
     });
 
     const statuses = await scheduler.run();
@@ -472,21 +472,21 @@ describe("termination", () => {
     expect(statuses.get("B")).toBe("pending");
   });
 
-  test("a dependency on a row the roadmap does not hold never becomes ready", async () => {
+  test("a dependency on a step the roadmap does not hold never becomes ready", async () => {
     // The scheduler does not adjudicate a dangling dependency; the roadmap
     // workflow's `validate-shape` refuses one as a named defect before
     // anything is dispatched.
     const store = projection();
     const ran: string[] = [];
     const scheduler = openScheduler<S>({
-      rows: [{ id: "A", dependencies: ["nowhere"] }],
+      steps: [{ id: "A", dependencies: ["nowhere"] }],
       concurrency: 1,
       ...store,
-      runOne: async (row) => {
-        ran.push(row.id);
-        return accepted(row.id);
+      runOne: async (step) => {
+        ran.push(step.id);
+        return accepted(step.id);
       },
-      resumeOne: async (row) => accepted(row.id),
+      resumeOne: async (step) => accepted(step.id),
     });
 
     expect((await scheduler.run()).get("A")).toBe("pending");
@@ -495,28 +495,28 @@ describe("termination", () => {
 });
 
 describe("eligibility, beyond the frontier", () => {
-  test("an ineligible row never runs, and blocks its dependents exactly like a rejected one", async () => {
-    // The frontier rule answers "is everything this row waits on done". It
-    // does not answer "may this row start at all", and a consumer with a
+  test("an ineligible step never runs, and blocks its dependents exactly like a rejected one", async () => {
+    // The frontier rule answers "is everything this step waits on done". It
+    // does not answer "may this step start at all", and a consumer with a
     // precondition of its own — DELIVER's "the oracle was measured red" —
     // has nowhere else to put it.
     const ran: string[] = [];
-    const statuses = new Map<string, RowStatus>([
+    const statuses = new Map<string, StepStatus>([
       ["a", "pending"],
       ["b", "pending"],
       ["c", "pending"],
     ]);
     const scheduler = openScheduler<null>({
-      rows: [
+      steps: [
         { id: "a", dependencies: [] },
         { id: "b", dependencies: ["a"] },
         { id: "c", dependencies: [] },
       ],
       concurrency: 2,
       eligible: async (id) => id !== "a",
-      runOne: async (row) => {
-        ran.push(row.id);
-        return { kind: "terminal", terminal: { kind: "accepted", state: null }, trace: [], runId: row.id };
+      runOne: async (step) => {
+        ran.push(step.id);
+        return { kind: "terminal", terminal: { kind: "accepted", state: null }, trace: [], runId: step.id };
       },
       resumeOne: async () => {
         throw new Error("not resumed here");
@@ -536,15 +536,15 @@ describe("eligibility, beyond the frontier", () => {
     expect(final.get("c")).toBe("accepted");
   });
 
-  test("with no predicate every row is eligible, which is the behaviour before it existed", async () => {
+  test("with no predicate every step is eligible, which is the behaviour before it existed", async () => {
     const ran: string[] = [];
-    const statuses = new Map<string, RowStatus>([["a", "pending"]]);
+    const statuses = new Map<string, StepStatus>([["a", "pending"]]);
     const scheduler = openScheduler<null>({
-      rows: [{ id: "a", dependencies: [] }],
+      steps: [{ id: "a", dependencies: [] }],
       concurrency: 1,
-      runOne: async (row) => {
-        ran.push(row.id);
-        return { kind: "terminal", terminal: { kind: "accepted", state: null }, trace: [], runId: row.id };
+      runOne: async (step) => {
+        ran.push(step.id);
+        return { kind: "terminal", terminal: { kind: "accepted", state: null }, trace: [], runId: step.id };
       },
       resumeOne: async () => {
         throw new Error("not resumed here");

@@ -55,14 +55,14 @@ describe("the run database", () => {
   });
 
   test("an event with no run is still an event, and is found by kind", () => {
-    // `pipeline-row` is the one kind of the eight that may name no run: a row
+    // `pipeline-step` is the one kind of the eight that may name no run: a step
     // the server has not started yet still has a status worth publishing.
     const db = openRunDatabase();
-    db.events.append({ kind: "pipeline-row", payload: { pipelineId: "p", rowId: "a" } });
-    db.events.append({ runId: "r1", kind: "pipeline-row", payload: { pipelineId: "p", rowId: "a" } });
+    db.events.append({ kind: "pipeline-step", payload: { pipelineId: "p", stepId: "a" } });
+    db.events.append({ runId: "r1", kind: "pipeline-step", payload: { pipelineId: "p", stepId: "a" } });
     db.events.append({ runId: "r1", kind: "terminal", payload: { kind: "accepted" } });
 
-    expect(db.events.byKind("pipeline-row").map((e) => e.runId)).toEqual([undefined, "r1"]);
+    expect(db.events.byKind("pipeline-step").map((e) => e.runId)).toEqual([undefined, "r1"]);
     expect(db.events.of("r1")).toHaveLength(2);
     db.close();
   });

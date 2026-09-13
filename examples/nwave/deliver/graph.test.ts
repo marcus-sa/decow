@@ -72,9 +72,9 @@ const STEP = {
 const EVIDENCE = "test result: FAILED. assertion failed: expected Running, got Pending";
 
 /**
- * The files the row writes, as the registry resolved them. Carried like
+ * The files the step writes, as the registry resolved them. Carried like
  * `impacted` is: no VCS is wired to this graph, and the quality gate lints
- * what the row writes rather than deriving it.
+ * what the step writes rather than deriving it.
  */
 const PATHS = ["src/exec_driver.rs"];
 
@@ -106,7 +106,7 @@ const OWN_AT = "test-submit-to-running";
 const OTHER_TEST = "test-exit-observer-writes-row";
 
 /**
- * The row's own oracle, as the inventory reported it when the row was made
+ * The step's own oracle, as the inventory reported it when the step was made
  * ready. Carried into the seed rather than resolved here: this graph reads the
  * fact, it does not establish it.
  */
@@ -333,8 +333,8 @@ describe("deliver graph", () => {
     ]);
   });
 
-  test("the cycle starts at implement: RED is a fact the row carries in", async () => {
-    // The oracle was authored and measured red in its own run, and the row only
+  test("the cycle starts at implement: RED is a fact the step carries in", async () => {
+    // The oracle was authored and measured red in its own run, and the step only
     // became ready because that verdict was recorded. Nothing here re-decides
     // it, so the first node is the loop and the first leaf is the crafter's.
     const outcome = await start(HAPPY);
@@ -427,7 +427,7 @@ describe("deliver graph", () => {
     expect(visitCount(outcome.trace, "fix-lint")).toBe(1);
   });
 
-  test("the gate runs the CONSUMER's declared lint command over the row's files", async () => {
+  test("the gate runs the CONSUMER's declared lint command over the step's files", async () => {
     // The whole point of the gate being a step: the framework knows the job,
     // and the command is a declaration it reads. Nothing here is `bunx biome`
     // because nothing in the framework knows what a linter is called.

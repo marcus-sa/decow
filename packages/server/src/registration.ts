@@ -16,8 +16,8 @@
  * in this repository already has: `graph(journal, defs, observe)`.
  *
  * A PIPELINE registration owns no execution at all, and that is the second
- * shape worth defending. It is rows plus two hooks; the server schedules them,
- * and each row's run is an ordinary run of a registered workflow — with a
+ * shape worth defending. It is steps plus two hooks; the server schedules them,
+ * and each step's run is an ordinary run of a registered workflow — with a
  * server run id, a live trace, events, and a suspension a person answers in
  * the same dialog they answer a standalone run in.
  */
@@ -57,7 +57,7 @@ export type WorkflowRegistration<S = unknown, I = unknown> = {
    *
    * The validated input travels with the run id because an executor's two
    * ownership options are facts about what the run is ABOUT rather than about
-   * the run: which oracle this row's crafter is walled off from, and which
+   * the run: which oracle this step's crafter is walled off from, and which
    * failing tests it did not cause. An executor that could not see them could
    * not wall anything off.
    */
@@ -71,22 +71,22 @@ export type WorkflowRegistration<S = unknown, I = unknown> = {
 };
 
 /**
- * One row of a pipeline, as the consumer declares it.
+ * One step of a pipeline, as the consumer declares it.
  *
- * A row names a registered WORKFLOW and the input one run of it is started
- * with, and nothing else. There is no second way to run a row: `deliver` the
- * pipeline row and `deliver` the graph a person started by hand are the same
+ * A step names a registered WORKFLOW and the input one run of it is started
+ * with, and nothing else. There is no second way to run a step: `deliver` the
+ * pipeline step and `deliver` the graph a person started by hand are the same
  * registration, seeded by the same `seed`, executed by the same `executor` —
- * which is what makes "starting one row by hand does not escape the
+ * which is what makes "starting one step by hand does not escape the
  * precondition the scheduler enforces" structural rather than duplicated.
  */
-export type PipelineRow = {
+export type PipelineStep = {
   id: string;
-  /** What this row is for, in one line. */
+  /** What this step is for, in one line. */
   description?: string;
-  /** Row ids that must be accepted before this one runs. */
+  /** Step ids that must be accepted before this one runs. */
   dependencies: string[];
-  /** The registered workflow one row's run is a run OF. */
+  /** The registered workflow one step's run is a run OF. */
   workflowId: string;
   /** The input that run is started with, as that workflow's schema parses it. */
   input: Json;
@@ -95,35 +95,35 @@ export type PipelineRow = {
 /**
  * A registered composition over the scheduler: data, plus two hooks.
  *
- * It owns NO execution. The server reads the rows, drives the frontier through
- * `@des/core`'s own scheduler, and starts each ready row as a run of the
- * workflow the row names. What a consumer keeps is the two halves only it can
- * answer: whether a row may run at all, and what to persist when one finishes.
+ * It owns NO execution. The server reads the steps, drives the frontier through
+ * `@des/core`'s own scheduler, and starts each ready step as a run of the
+ * workflow the step names. What a consumer keeps is the two halves only it can
+ * answer: whether a step may run at all, and what to persist when one finishes.
  */
 export type PipelineRegistration = {
   id: string;
   title: string;
-  /** The rows, in declaration order. Re-read on every request and every run. */
-  rows: () => Promise<PipelineRow[]> | PipelineRow[];
+  /** The steps, in declaration order. Re-read on every request and every run. */
+  steps: () => Promise<PipelineStep[]> | PipelineStep[];
   /**
-   * May this row run at all, beyond its dependencies being accepted?
+   * May this step run at all, beyond its dependencies being accepted?
    *
    * DELIVER's is "this value's oracle has been measured red". The frontier
-   * rule cannot express it: a row that has not run is pending whether or not
-   * it may. An ineligible row blocks its dependents exactly as a rejected one
-   * does. Absent: every row is eligible.
+   * rule cannot express it: a step that has not run is pending whether or not
+   * it may. An ineligible step blocks its dependents exactly as a rejected one
+   * does. Absent: every step is eligible.
    */
-  readiness?: (rowId: string) => Promise<boolean> | boolean;
+  readiness?: (stepId: string) => Promise<boolean> | boolean;
   /**
    * Each finished run, as it finishes. The consumer's only write: this is
    * where a `step_runs` or an `oracle_runs` row is appended, and the outcome
    * carries the terminal STATE, which is where a measured verdict lives.
    */
-  record?: (rowId: string, outcome: RunOutcome<unknown>) => Promise<void> | void;
-  /** How many rows may be in flight at once. Every row by default. */
+  record?: (stepId: string, outcome: RunOutcome<unknown>) => Promise<void> | void;
+  /** How many steps may be in flight at once. Every step by default. */
   concurrency?: number;
-  /** Shared infrastructure a row's run needs exclusively, by name. */
-  resourcesFor?: (row: PipelineRow) => string[];
+  /** Shared infrastructure a step's run needs exclusively, by name. */
+  resourcesFor?: (step: PipelineStep) => string[];
 };
 
 /**

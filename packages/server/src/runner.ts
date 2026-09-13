@@ -12,7 +12,7 @@
  * the event bus, and the run's record is what a client that missed it reads.
  *
  * The id comes back BESIDE a promise of the outcome, and the pipeline
- * scheduler is what that is for: a row's run is an ordinary run, so the
+ * scheduler is what that is for: a step's run is an ordinary run, so the
  * scheduler starts one and awaits it exactly as it awaited a `run()` call,
  * while the person watching gets the id, the trace and the events for free.
  *

@@ -111,7 +111,7 @@ const STEP = {
   oracle: "tests/alloc.test.ts::a submitted allocation reaches Running",
 };
 
-/** The step's own oracle, as the row carries it in. */
+/** The step's own oracle, as the step carries it in. */
 const ACCEPTANCE_TESTS = ["test-submit-to-running"];
 
 const EVIDENCE =

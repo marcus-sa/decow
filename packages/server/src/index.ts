@@ -10,7 +10,7 @@
  * suspend and resume are the engine's and stay the engine's; what this adds is
  * the half the engine has no opinion about — which graph a person authored,
  * which of its nodes a run is on, what each leaf attempt decided and cost, and
- * which rows of a pipeline are still waiting on which.
+ * which steps of a pipeline are still waiting on which.
  */
 
 import type { ArtifactStore } from "@des/core/artifacts";
@@ -118,8 +118,8 @@ export {
   listRuns,
   listWorkflows,
   readArtifacts,
-  resumeRow,
   resumeRun,
+  resumeStep,
   runPipeline,
   startRun,
   RefusedAnswer,
@@ -141,9 +141,9 @@ export {
   ownerOf,
   runIdOf,
   start as startPipeline,
-  statusOf as rowStatusOf,
+  statusOf as stepStatusOf,
   tree as pipelineTree,
-  type PipelineRowView,
+  type PipelineStepView,
   type PipelineTree,
 } from "./pipelines.ts";
 export {
@@ -162,7 +162,7 @@ export {
   type AnyWorkflowRegistration,
   type GraphContext,
   type PipelineRegistration,
-  type PipelineRow,
+  type PipelineStep,
   type WorkflowRegistration,
 } from "./registration.ts";
 export {
@@ -172,7 +172,7 @@ export {
   setRegistry,
   type Registry,
   type RegistryOptions,
-  type RowOwner,
+  type StepOwner,
 } from "./registry.ts";
 export { openRunner, type Runner, type StartedRun } from "./runner.ts";
 export {

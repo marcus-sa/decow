@@ -352,7 +352,7 @@ The framework knows the four jobs; the consumer knows the four commands. That sp
 
 The result mapping is deliberately coarse, because a branch should read a verdict and not a transcript. A process that could not be spawned, or that was killed at its timeout, is `infra-failed`. Exit zero is `committed`. Any other exit is `rejected { by: "command" }`. The output rides on the result as `command` for a person, a correction turn and the event log to read, capped per channel; the exit and the outcome are the only things a branch reads. A stage that interprets a non-zero exit reports its own name instead, so `tsc` saying no is `rejected { by: "typecheck" }` and the linter saying no is `rejected { by: "lint" }`.
 
-`resources` is how shared test infrastructure is serialised. A row's declared commands name what they need exclusively, the scheduler takes the whole set as a lease before the row runs, and two rows that name the same resource take turns while two that name none run together.
+`resources` is how shared test infrastructure is serialised. A step's declared commands name what they need exclusively, the scheduler takes the whole set as a lease before the step runs, and two steps that name the same resource take turns while two that name none run together.
 
 Notably absent from the union: `create-issue`, `send-message`, or anything else that is a shared, outward-facing action. A worker step cannot defer work by opening a ticket. The only way to defer is a `needs-human` suspension with a typed reason, which parks the run for a person rather than handing work to a queue nobody owns. The rule "agents never create issues unilaterally" is unrepresentable rather than enforced.
 
@@ -585,7 +585,7 @@ The first integration test is not the VCS's own phase one. It is: the runner exe
 
 nWave's DELIVER wave generates a roadmap, then runs each step through a RED→GREEN→COMMIT cycle with a crafter agent, a reviewer, a mutation gate, and a phase log. That is two graphs. One is authored per feature: the roadmap. One is fixed: the step cycle. Today both are enforced after the fact, by hooks checking that the phase log has the right events in the right order and that the dispatch prompt carried the full template. In the framework they are enforced by topology.
 
-RED is the one that is not enforced by topology *inside* this graph, and the reason is the previous section. The oracle was authored and executed in its own run, so the step cycle has nothing to observe and no judgement to make: it READS a recorded verdict. That makes "no edge bypasses RED" a **readiness precondition** one layer out — a row whose oracle has no recorded `red` never becomes ready — which mirrors the shipped runner's own rule that with no recorded oracle the next step for a value is `des oracle`, never `des craft`. It is a stronger guarantee than an edge, not a weaker one: an edge could be reached with a fabricated observation, and a row that is not ready has no run at all.
+RED is the one that is not enforced by topology *inside* this graph, and the reason is the previous section. The oracle was authored and executed in its own run, so the step cycle has nothing to observe and no judgement to make: it READS a recorded verdict. That makes "no edge bypasses RED" a **readiness precondition** one layer out — a step whose oracle has no recorded `red` never becomes ready — which mirrors the shipped runner's own rule that with no recorded oracle the next step for a value is `des oracle`, never `des craft`. It is a stronger guarantee than an edge, not a weaker one: an edge could be reached with a fabricated observation, and a step that is not ready has no run at all.
 
 | nWave DELIVER today | In the framework |
 |---|---|
@@ -598,7 +598,7 @@ RED is the one that is not enforced by topology *inside* this graph, and the rea
 | "No effort budget cuts" | Terminal is `accepted` only when every bound AC is `green`. Partial suspends for a person; no edge leads from partial to `accepted` |
 | "Deferrals need a GH issue and user approval" | No `create-issue` effect exists. The only deferral is a `needs-human` suspension with a typed reason |
 
-The roadmap half of that is rows, and the distinction matters more than the table makes it look. An agent does not generate a workflow per feature. It generates rows, and the scheduler instantiates the one fixed step cycle per row. Nothing about a feature changes the graph; a feature is a set of rows the same graph runs against, once each. The authoring workflow that produces those rows is itself fixed and hand-written, which is why it is an example rather than a generator. The schema mirrors nWave's own `handover.json`: a `StoredHandover` is a request plus an ordered tuple of `values`, each carrying an `observation` (what will be observably true), the `dependencies` that must come first, an `authority` locating the design source it implements, and its `acceptance` obligations. One field is added, the symbols each step expects to write, because the disjointness check needs it. That check mirrors nWave's `parallel_safety.py`, whose stance it keeps: a pair the roadmap declares independent whose scopes overlap is a disagreement, and the overlapping entries are the finding rather than something the tool adjudicates. The built shape is `examples/nwave/roadmap/`.
+The roadmap half of that is steps, and the distinction matters more than the table makes it look. An agent does not generate a workflow per feature. It generates steps, and the scheduler instantiates the one fixed step cycle per step. Nothing about a feature changes the graph; a feature is a set of steps the same graph runs against, once each. The authoring workflow that produces those steps is itself fixed and hand-written, which is why it is an example rather than a generator. The schema mirrors nWave's own `handover.json`: a `StoredHandover` is a request plus an ordered tuple of `values`, each carrying an `observation` (what will be observably true), the `dependencies` that must come first, an `authority` locating the design source it implements, and its `acceptance` obligations. One field is added, the symbols each step expects to write, because the disjointness check needs it. That check mirrors nWave's `parallel_safety.py`, whose stance it keeps: a pair the roadmap declares independent whose scopes overlap is a disagreement, and the overlapping entries are the finding rather than something the tool adjudicates. The built shape is `examples/nwave/roadmap/`.
 
 ### The step cycle as a graph
 
@@ -668,20 +668,20 @@ distinct from `rejected` for the same reason one level down.
 The cycle **starts at `implement`**, and nothing precedes it. There is no
 `oracle` node and no RED node, because neither has anything left to do: the
 oracle was authored by the acceptance designer in its own run and executed by
-software there, and what this graph reads is the recorded verdict. The row's
+software there, and what this graph reads is the recorded verdict. The step's
 own test ids come in with it, which is what lets `test.route` tell "my own
 oracle is still red" from "I broke something else" — a set membership rather
 than a judgement.
 
 What the crafter may do with that oracle is bounded by the executor rather than
-by the graph: the row's oracle file is a protected scope, so a `replace-symbol`
+by the graph: the step's oracle file is a protected scope, so a `replace-symbol`
 or a `write-file` landing in it is `rejected: contract` before a lease is
 asked for. RED to GREEN is bought by production, and that is now a property of
 the data plane instead of a rule a reviewer applies.
 
 `gates` is not a leaf either, and for the same reason. Whether the quality gate
 found anything is what RUNNING it answers, so the node emits a `run-command`
-effect built from the consumer's declared lint command over the files the row
+effect built from the consumer's declared lint command over the files the step
 writes, and `gate.route` is a pure function of the typed result. Three answers,
 because three are what the graph routes differently: exit zero is `clean`, any
 other exit is `lint-failed`, and a command that could not be run at all is
@@ -759,15 +759,15 @@ What stays hard is the roadmap itself. Decomposing a design into steps that are 
 
 ## DELIVER runs in parallel
 
-DELIVER is sequential today because one big model holds one context and one linear log. Sequencing is a property of the executor, not the work. Once the roadmap is a DAG in rows and the executor is a scheduler, the frontier is every step whose in-edges are all `accepted`, and the frontier runs concurrently.
+DELIVER is sequential today because one big model holds one context and one linear log. Sequencing is a property of the executor, not the work. Once the roadmap is a DAG in steps and the executor is a scheduler, the frontier is every step whose in-edges are all `accepted`, and the frontier runs concurrently.
 
-This is built, as `src/core/scheduler.ts` plus `examples/nwave/deliver/pipeline.ts`. The scheduler is generic: a row is `{ id, dependencies }`, a run is an injected `runOne`, and the frontier is every row whose dependencies all read `accepted`. The pipeline is the composition: it reads `roadmap_steps` rows out of the artifact store, instantiates the fixed step cycle once per row with that row's obligations, predicted touches and authority, and runs the ready set up to a concurrency limit.
+This is built, as `src/core/scheduler.ts` plus `examples/nwave/deliver/pipeline.ts`. The scheduler is generic: a step is `{ id, dependencies }`, a run is an injected `runOne`, and the frontier is every step whose dependencies all read `accepted`. The pipeline is the composition: it reads `roadmap_steps` rows out of the artifact store, instantiates the fixed step cycle once per step with that step's obligations, predicted touches and authority, and runs the ready set up to a concurrency limit.
 
-State is a projection rather than something the scheduler holds. Each finished run appends a `step_runs` row carrying the step id, the run id, the outcome and a sequence number, and a step's status is read back as the latest of those. The scheduler persists nothing of its own: it asks for each row's status, reports each outcome, and re-reads. That is the stance nwave's `delivery_state.py` takes, where the next step is derived from persisted facts and never decided, and it buys the property that matters here: a scheduler that died mid-feature restarts by reading rather than by remembering. A row in flight has nothing persisted yet, so it reads `pending` and is simply run again.
+State is a projection rather than something the scheduler holds. Each finished run appends a `step_runs` row carrying the step id, the run id, the outcome and a sequence number, and a step's status is read back as the latest of those. The scheduler persists nothing of its own: it asks for each step's status, reports each outcome, and re-reads. That is the stance nwave's `delivery_state.py` takes, where the next step is derived from persisted facts and never decided, and it buys the property that matters here: a scheduler that died mid-feature restarts by reading rather than by remembering. A step in flight has nothing persisted yet, so it reads `pending` and is simply run again.
 
-Resource leases serialize shared test infrastructure and nothing else. A row declares the names it needs, the scheduler takes the whole set atomically before the run and releases it after, and two rows that share one name serialize on that name while two rows that share none run together. Taking the set at once is what makes it deadlock-free, since a run never holds one name while waiting for another.
+Resource leases serialize shared test infrastructure and nothing else. A step declares the names it needs, the scheduler takes the whole set atomically before the run and releases it after, and two steps that share one name serialize on that name while two steps that share none run together. Taking the set at once is what makes it deadlock-free, since a run never holds one name while waiting for another.
 
-A suspended row blocks only its subtree, and that falls out of the frontier rule rather than being enforced: a dependent of a row that is not `accepted` never becomes ready, and every row not downstream of it keeps running. Answering the suspension resumes that row through the framework's own `resume` and re-evaluates the frontier in the same call, so a person's answer continues the feature rather than the row.
+A suspended step blocks only its subtree, and that falls out of the frontier rule rather than being enforced: a dependent of a step that is not `accepted` never becomes ready, and every step not downstream of it keeps running. Answering the suspension resumes that step through the framework's own `resume` and re-evaluates the frontier in the same call, so a person's answer continues the feature rather than the step.
 
 Three things still bound the parallelism. One of them changes how roadmaps should be authored.
 
@@ -853,7 +853,7 @@ convenience.
 **Every call the UI makes is a server function.** The application is TanStack
 Start, and each thing it can ask for — list the graphs with their authored
 projection and input schema, get one, start a run, get a run, answer a
-suspension, read artifact rows, get a pipeline's tree, drive it, answer a row —
+suspension, read artifact rows, get a pipeline's tree, drive it, answer a step —
 is a `createServerFn` whose body runs in the process that holds the
 registrations, called directly and typed end to end. There is no client over an
 API, no origin to configure, and no second definition of what a projection is.
@@ -875,20 +875,20 @@ while it runs.
 snapshots, suspend and resume stay the engine's. What the server adds is the
 half the engine has no opinion about: which graph a person authored, which of
 its nodes a run is on, what each leaf attempt decided and what it cost, which
-artifact rows a run wrote, and which rows of a pipeline are still waiting on
+artifact rows a run wrote, and which steps of a pipeline are still waiting on
 which. All of that is ROWS — one table for runs, one append-only table for the
 events they publish, one for every leaf attempt — so the server is a projection
 of them and a restart shows what the last process did.
 
 **A pipeline is a registered composition that owns no execution.** The roadmap
-is rows, the step cycle is one fixed graph, and the scheduler instantiates it
-once per row — so a pipeline registers as DATA: its rows, each naming a
-registered workflow and the input one run of it takes, plus whether a row may
+is steps, the step cycle is one fixed graph, and the scheduler instantiates it
+once per step — so a pipeline registers as DATA: its steps, each naming a
+registered workflow and the input one run of it takes, plus whether a step may
 run at all and what to persist when one finishes. The SERVER drives the
-frontier and starts each ready row the same way a person's button starts a run.
-So a row's run is an ordinary run: a run id, a live trace, events, and a
-suspension answered in the same place. There is no second way to run a row, and
-that is what makes "starting one row by hand does not escape the precondition
+frontier and starts each ready step the same way a person's button starts a run.
+So a step's run is an ordinary run: a run id, a live trace, events, and a
+suspension answered in the same place. There is no second way to run a step, and
+that is what makes "starting one step by hand does not escape the precondition
 the scheduler enforces" structural rather than duplicated.
 
 **A suspension is answered in the UI.** A parked run raises a notification and
@@ -896,7 +896,7 @@ a dialog whose BUTTONS are the suspend node's own closed enum, read off its
 `resumeSchema` rather than off a second declaration. A person cannot answer
 with something the node would refuse, because nothing else is offered; the
 answer goes back through the same `resume` a second process used to call, and
-the same run continues to a terminal. Answering a pipeline row is answering its
+the same run continues to a terminal. Answering a pipeline step is answering its
 run.
 
 A registration is what a target writes:
@@ -917,20 +917,20 @@ type WorkflowRegistration<S, I> = {
 type PipelineRegistration = {
   id: string;
   title: string;
-  rows: () => PipelineRow[] | Promise<PipelineRow[]>;   // { id, dependencies, workflowId, input }
-  readiness?: (rowId: string) => boolean | Promise<boolean>;
-  record?: (rowId: string, outcome: RunOutcome<unknown>) => void | Promise<void>;
+  steps: () => PipelineStep[] | Promise<PipelineStep[]>; // { id, dependencies, workflowId, input }
+  readiness?: (stepId: string) => boolean | Promise<boolean>;
+  record?: (stepId: string, outcome: RunOutcome<unknown>) => void | Promise<void>;
   concurrency?: number;
-  resourcesFor?: (row: PipelineRow) => string[];
+  resourcesFor?: (step: PipelineStep) => string[];
 };
 ```
 
 The graph is a factory because a `Workflow<S>` has its journal and its observer
 already closed over, and "what did each attempt cost" is exactly what a person
 watching wants. The executor sees the run's input because its two ownership
-options — which oracle this row's crafter is walled off from, which failing
+options — which oracle this step's crafter is walled off from, which failing
 tests it did not cause — are facts about what the run is ABOUT. And a pipeline
-row names a workflow rather than carrying a way to run itself, because a
+step names a workflow rather than carrying a way to run itself, because a
 composition that ran itself is a composition nobody can watch.
 
 One thing the server deliberately does not claim: a suspend node's REASON is

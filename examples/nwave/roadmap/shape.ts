@@ -7,12 +7,12 @@
  * reads on the next iteration: "invalid" alone tells a model nothing it can
  * act on.
  *
- *   duplicate-id           two rows claim the same identity
+ *   duplicate-id           two steps claim the same identity
  *   dangling-dependency    a dependency names no step in the roadmap
  *   cycle                  the dependency graph is not a DAG
  *   no-acceptance          a step declares nothing it must satisfy
  *   empty-authority        a step implements no named design source
- *   no-steps               the roadmap has no rows at all
+ *   no-steps               the roadmap has no steps at all
  *
  * `no-steps` is the sixth, and it is here because the zod schema deliberately
  * admits an empty `steps` array (that is what `cannot-decompose` returns). An
@@ -21,7 +21,7 @@
  * refuses it in the same breath as a missing request (`not items`).
  *
  * The order of the checks is the order defects are reported in, and it is
- * stable: identity first, then the graph, then each row's own obligations.
+ * stable: identity first, then the graph, then each step's own obligations.
  * `decompose`'s requirement rows consume the same predicates through
  * `firstDefectOfKind`, so the step's own mechanical guardrail and the graph's
  * gate cannot drift apart.
@@ -54,9 +54,9 @@ export const MINIMUM_OBSERVATION_CHARACTERS = 40;
 export type ShapeDefectKind = (typeof SHAPE_DEFECT_KINDS)[number];
 
 /**
- * One named defect. Every variant names the row it is about, so the feedback
+ * One named defect. Every variant names the step it is about, so the feedback
  * to `decompose` is addressed rather than general — except `no-steps`, which
- * is about the roadmap, and `cycle`, which is about a set of rows.
+ * is about the roadmap, and `cycle`, which is about a set of steps.
  */
 export type ShapeDefect =
   | { kind: "no-steps" }

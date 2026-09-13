@@ -28,8 +28,8 @@ import {
   listRuns as readRuns,
   listWorkflows as readWorkflows,
   readArtifacts as readArtifactRows,
-  resumeRow as answerRow,
   resumeRun as answerRun,
+  resumeStep as answerStep,
   runPipeline as drivePipeline,
   startRun as beginRun,
 } from "@des/server";
@@ -95,7 +95,7 @@ export const runPipeline = createServerFn({ method: "POST" })
   .validator(ById)
   .handler(({ data }) => drivePipeline(getRegistry(), data.id));
 
-/** Answer a parked row. It is the row's own run that continues. */
-export const resumeRow = createServerFn({ method: "POST" })
-  .validator(z.object({ id: z.string(), rowId: z.string(), answer: z.unknown() }))
-  .handler(({ data }) => answerRow(getRegistry(), data.id, data.rowId, data.answer));
+/** Answer a parked step. It is the step's own run that continues. */
+export const resumeStep = createServerFn({ method: "POST" })
+  .validator(z.object({ id: z.string(), stepId: z.string(), answer: z.unknown() }))
+  .handler(({ data }) => answerStep(getRegistry(), data.id, data.stepId, data.answer));

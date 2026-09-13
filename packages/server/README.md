@@ -8,7 +8,7 @@ import { serve, registration } from "@des/server";
 
 const server = await serve({
   workflows: [registration({ id, title, input, graph, seed, executor, journal })],
-  pipelines: [{ id, title, rows, readiness, record }],
+  pipelines: [{ id, title, steps, readiness, record }],
   artifacts,
   store: openRunDatabase({ path: "runs/first/runs.sqlite" }),
   port: 3000,
@@ -22,7 +22,7 @@ event bus — sets it where a request handler can read it, and mounts
 **Mastra's runtime sits under this rather than beside it.** Runs, snapshots,
 suspend and resume stay the engine's. What this adds is the half the engine
 has no opinion about: which graph a person authored, which of its nodes a run
-is on, what each leaf attempt decided and cost, and which rows of a pipeline
+is on, what each leaf attempt decided and cost, and which steps of a pipeline
 are waiting on which.
 
 **The projection is of the AUTHORED graph.** The compiler emits nested
@@ -46,15 +46,15 @@ is what a unit test here drives.
 | `resumeRun` | Answer a suspension. An answer outside the node's closed enum is refused here, with the enum named. |
 | `readArtifacts` | A table's rows, one of them, or the body one held at a past version. |
 | `listPipelines` | The registered compositions, by name. |
-| `getPipeline` | The run tree: every row, the status it projects, the run it is on, and why the last drive stopped early. |
+| `getPipeline` | The run tree: every step, the status it projects, the run it is on, and why the last drive stopped early. |
 | `runPipeline` | Drive the frontier to quiescence. |
-| `resumeRow` | Answer a parked row — which is answering its run. |
+| `resumeStep` | Answer a parked step — which is answering its run. |
 | `exportRun` | One run as JSON lines: the run, then its attempts, then its events. |
 
 The one thing that is not a function is the event stream. `/api/events` is a
 server ROUTE in `@des/ui`, over `openEvents`'s bus, because a server function
 is one request and one response: `run-started`, `node-entered`, `node-left`,
-`leaf-attempt`, `suspended`, `resumed`, `terminal`, `pipeline-row`.
+`leaf-attempt`, `suspended`, `resumed`, `terminal`, `pipeline-step`.
 
 ## A pipeline is data, and the server schedules it
 
@@ -62,25 +62,25 @@ is one request and one response: `run-started`, `node-entered`, `node-left`,
 type PipelineRegistration = {
   id: string;
   title: string;
-  rows: () => PipelineRow[] | Promise<PipelineRow[]>;   // { id, dependencies, workflowId, input }
-  readiness?: (rowId: string) => boolean | Promise<boolean>;
-  record?: (rowId: string, outcome: RunOutcome<unknown>) => void | Promise<void>;
+  steps: () => PipelineStep[] | Promise<PipelineStep[]>; // { id, dependencies, workflowId, input }
+  readiness?: (stepId: string) => boolean | Promise<boolean>;
+  record?: (stepId: string, outcome: RunOutcome<unknown>) => void | Promise<void>;
   concurrency?: number;
-  resourcesFor?: (row: PipelineRow) => string[];
+  resourcesFor?: (step: PipelineStep) => string[];
 };
 ```
 
-It runs nothing. The server reads the rows, drives the frontier through
-`@des/core`'s own `openScheduler`, and starts each ready row through the same
-`runner.start` a person's button starts a run with — so **a row's run is an
+It runs nothing. The server reads the steps, drives the frontier through
+`@des/core`'s own `openScheduler`, and starts each ready step through the same
+`runner.start` a person's button starts a run with — so **a step's run is an
 ordinary run**: a server run id, a live trace, events, and a suspension
 answered in the same dialog. `readiness` is the precondition the frontier rule
 cannot express (DELIVER's is "this value's oracle has been measured red");
 `record` is the consumer's one write.
 
-A row's STATUS is read off the run the server started for it. `pending` covers
+A step's STATUS is read off the run the server started for it. `pending` covers
 "never started" and "running right now", which is the scheduler's own reading
-of it and is what makes an interrupted row simply run again.
+of it and is what makes an interrupted step simply run again.
 
 ## Two ids per run, and why
 
@@ -110,7 +110,7 @@ whose migrations are two packages' business belongs to neither, and nothing
 has to be atomic across them because no artifact write is part of a run write.
 
 **The guarantee is a restart.** A server started on the same run directory
-shows every prior run, keeps a delivered pipeline row delivered, and answers a
+shows every prior run, keeps a delivered pipeline step delivered, and answers a
 suspension its predecessor produced: the engine's snapshot is on libSQL, the
 run's row carries the input and the engine's id, and the runner holds nothing —
 it rebuilds the graph from the registration. `src/restart.test.ts` drives that
@@ -118,7 +118,7 @@ through two real `serve()` calls over one directory.
 
 The previous cut kept all of this in maps and said losing it cost a reader
 their scroll position rather than a fact. It cost both: a restarted server
-showed no prior run, and a row whose run had settled read `pending` again, so a
+showed no prior run, and a step whose run had settled read `pending` again, so a
 second drive would deliver it twice.
 
 **What is still in memory is a fact about THIS PROCESS**, and a second process

@@ -56,7 +56,7 @@ function Index(): React.ReactElement {
         <section>
           <h1>Pipelines</h1>
           <p className="lede">
-            One fixed graph, instantiated once per row, with the frontier running concurrently.
+            One fixed graph, instantiated once per step, with the frontier running concurrently.
           </p>
           <ul className="cards" data-testid="pipelines">
             {pipelines.map((pipeline) => (

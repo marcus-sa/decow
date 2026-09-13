@@ -7,7 +7,7 @@
  * and the overlapping entries ARE the finding — the tool names them rather
  * than adjudicating which side is wrong. One axis here (`predictedTouches`)
  * against that module's three (touched files, boundary files, consumer
- * symbols), because that is the one axis a roadmap row declares.
+ * symbols), because that is the one axis a roadmap step declares.
  *
  * What is added on top of it is a RESOLUTION, because this graph has somewhere
  * to put the answer. An overlap between two steps with no dependency path
@@ -129,7 +129,7 @@ export const drifts = (roadmap: Roadmap): Drift[] => {
   return found;
 };
 
-/** `to` gains a dependency on `from`, without touching any other row. */
+/** `to` gains a dependency on `from`, without touching any other step. */
 const withEdge = (roadmap: Roadmap, edge: AddedEdge): Roadmap => ({
   ...roadmap,
   steps: roadmap.steps.map((step) =>

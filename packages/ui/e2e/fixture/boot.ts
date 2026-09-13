@@ -11,7 +11,7 @@
  * here has a credential and nothing here needs one.
  *
  * WHAT IS PRE-BAKED, AND WHY. The delivery pipeline is what the last test
- * drives, and a row is only deliverable once its oracle has been measured red
+ * drives, and a step is only deliverable once its oracle has been measured red
  * — so the delivery roadmap, its acceptance facts and its two oracles are
  * driven to that state before the browser opens, through the SAME registry the
  * browser then talks to. The oracle measurement is real: `bun test` runs
@@ -203,13 +203,13 @@ const HAPPY: Partial<Record<LeafId, string>> = {
   commit: "committed",
 };
 
-/** Which method each row rewrites, so `implement` can name a real symbol. */
+/** Which method each step rewrites, so `implement` can name a real symbol. */
 const METHODS: Record<string, string> = { "01-01": "complete", "01-02": "remove" };
 
-const ROW_IDS = ["01-01", "01-02"] as const;
+const STEP_IDS = ["01-01", "01-02"] as const;
 
-/** The row a prompt is about. Every leaf's prompt names it; a model reads it too. */
-const rowIn = (prompt: string): string => ROW_IDS.find((id) => prompt.includes(id)) ?? "01-01";
+/** The step a prompt is about. Every leaf's prompt names it; a model reads it too. */
+const stepIn = (prompt: string): string => STEP_IDS.find((id) => prompt.includes(id)) ?? "01-01";
 
 /** Per-step verdict rows that satisfy `validate-slices`'s own checks. */
 const verdictsFor = (roadmap: Roadmap) =>
@@ -221,14 +221,14 @@ const verdictsFor = (roadmap: Roadmap) =>
  *
  * Which subject a call is about is on the PROMPT, exactly where the model it
  * stands in for would read it: the two roadmaps by their request, the two
- * delivery rows by their step id. Nothing here computes a journal key, and
+ * delivery steps by their step id. Nothing here computes a journal key, and
  * nothing in `.des/` exists so that it could.
  */
-const scriptedModels = (symbolFor: (row: string) => string): Models => {
+const scriptedModels = (symbolFor: (stepId: string) => string): Models => {
   const binding: ModelBinding = scriptedBinding(({ step, prompt }): ScriptedAnswer[] | undefined => {
     if (step.id === "roadmap.decompose") {
       const roadmap = prompt.includes(BROWSER_REQUEST) ? BROWSER_ROADMAP : DELIVERY_ROADMAP();
-      return [{ decision: "proposed", payload: { roadmap, rationale: "one row per value" } }];
+      return [{ decision: "proposed", payload: { roadmap, rationale: "one step per value" } }];
     }
     if (step.id === "roadmap.validate-slices") {
       const roadmap = prompt.includes(BROWSER_REQUEST) ? BROWSER_ROADMAP : DELIVERY_ROADMAP();
@@ -246,7 +246,7 @@ const scriptedModels = (symbolFor: (row: string) => string): Models => {
       return [{ decision: "proposed", payload: { values: MANIFEST, rationale: "stubbed" } }];
     }
     if (step.id === "distill.author-oracle") {
-      const path = (ORACLES[rowIn(prompt) as keyof typeof ORACLES] ?? "").split("::")[0] as string;
+      const path = (ORACLES[stepIn(prompt) as keyof typeof ORACLES] ?? "").split("::")[0] as string;
       return [
         {
           decision: "authored",
@@ -260,15 +260,15 @@ const scriptedModels = (symbolFor: (row: string) => string): Models => {
     const leaf = step.id.slice("deliver.".length) as LeafId;
     const decision = HAPPY[leaf];
     if (decision === undefined) return undefined;
-    const row = rowIn(prompt);
+    const stepId = stepIn(prompt);
     return [
       {
         decision,
         payload: {
           anchor: "",
           rationale: "stubbed",
-          symbolId: symbolFor(row),
-          body: BODIES[row] ?? "",
+          symbolId: symbolFor(stepId),
+          body: BODIES[stepId] ?? "",
           gap: "",
           extra: [],
         },
@@ -326,7 +326,7 @@ const main = async (): Promise<void> => {
   };
   DELIVERY_ROADMAP = () => deliveryRoadmap(project.symbolId);
   const { workflows, pipelines } = todoRegistrations(dir, {
-    models: scriptedModels((row) => project.symbolId("src/todo.ts", METHODS[row] ?? "")),
+    models: scriptedModels((stepId) => project.symbolId("src/todo.ts", METHODS[stepId] ?? "")),
   });
 
   const server = await serve({ port, workflows, pipelines, artifacts, store });
@@ -344,8 +344,8 @@ const main = async (): Promise<void> => {
   await registry.idle();
 
   const oracles = await getPipeline(registry, "oracles");
-  if (!oracles.rows.every((row) => row.status === "accepted")) {
-    throw new Error(`boot: an oracle was not measured red: ${JSON.stringify(oracles.rows)}`);
+  if (!oracles.steps.every((step) => step.status === "accepted")) {
+    throw new Error(`boot: an oracle was not measured red: ${JSON.stringify(oracles.steps)}`);
   }
 
   // The oracles are on disk now, so the impact graph can see them.

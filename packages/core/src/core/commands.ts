@@ -17,7 +17,7 @@
  * A bare `string[]` is the common case and normalises to `{ argv }` with this
  * module's default timeout. The object form is for a command that needs an
  * environment, a longer budget, or a named shared resource the scheduler must
- * serialise two rows on.
+ * serialise two steps on.
  *
  * The runner below is the ONE implementation of "spawn a process and read what
  * it printed" in the repository. Both effect executors call it, because a

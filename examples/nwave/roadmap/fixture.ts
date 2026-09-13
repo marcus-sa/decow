@@ -34,7 +34,7 @@ export const DESIGN_SOURCE =
   "observation-row changes and an unconditional periodic relist.";
 
 /**
- * One PROPOSED row, which is what ROADMAP produces: no obligations, no oracle,
+ * One PROPOSED step, which is what ROADMAP produces: no obligations, no oracle,
  * no supports. Those three are DISTILL's to fill, and a fixture that
  * pre-filled them would be testing a roadmap no decomposer could return.
  */
@@ -151,7 +151,7 @@ export const UNRESOLVABLE: Roadmap = {
 
 /**
  * Every shape defect at once, so one proposal reaches `shape.route`'s
- * `invalid` edge and the defect list has something to say about each row:
+ * `invalid` edge and the defect list has something to say about each step:
  * `03-01` is duplicated and depends on nothing that exists; `03-02` names no
  * authority; the pair `03-03` / `03-04` declare each other, which is a cycle;
  * and every observation here is too short to be worked from, which is the
@@ -193,7 +193,7 @@ export const MALFORMED: Roadmap = {
  * `dangling-dependency` and `cycle` — are the gate's alone, and they are what
  * makes `shape.route`'s `invalid` edge reachable at all.
  *
- * So every row here is well-formed on its own: a unique id, a real authority,
+ * So every step here is well-formed on its own: a unique id, a real authority,
  * an observation past the floor. `04-01` depends on a step nobody declared,
  * and `04-02` / `04-03` declare each other.
  */

@@ -56,7 +56,7 @@ export type AuthoredFile = z.infer<typeof AuthoredFile>;
 
 /** The value this turn is authoring an oracle for. */
 export const ValueUnderOracle = z.object({
-  /** The roadmap row's id. Carried so a journal key cannot be shared. */
+  /** The roadmap step's id. Carried so a journal key cannot be shared. */
   stepId: z.string(),
   observation: z.string(),
   /** Every obligation the oracle has to falsify. The input nwave drops. */

@@ -6,7 +6,7 @@
  * a server ROUTE (`./routes/api.events.ts`) over the registry's own bus.
  *
  * `EventSource` rather than a streamed fetch: it reconnects on its own, and a
- * UI that loses the stream for a second while a DELIVER row is mid-cycle
+ * UI that loses the stream for a second while a DELIVER step is mid-cycle
  * should pick it back up rather than go quiet. What it misses in that second
  * is on the run's record, and every view re-reads that when an event lands —
  * the same List-then-Watch shape the rest of this repository uses when a
@@ -26,7 +26,7 @@ const TYPES = [
   "suspended",
   "resumed",
   "terminal",
-  "pipeline-row",
+  "pipeline-step",
 ] as const;
 
 export const subscribe = (onEvent: (event: ServerEvent) => void): (() => void) => {

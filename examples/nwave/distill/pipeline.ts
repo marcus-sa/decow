@@ -13,7 +13,7 @@
  * STATE IS A PROJECTION, the same stance `deliver/pipeline.ts` takes. Each
  * finished oracle run appends an `oracle_runs` row, and a value's status is
  * read back as the latest of those. That projection is also DELIVER's
- * readiness precondition: a row with no recorded `red` oracle never becomes
+ * readiness precondition: a step with no recorded `red` oracle never becomes
  * ready, which is where "no edge bypasses RED" lives now that the step cycle
  * has no RED node.
  */
@@ -21,7 +21,7 @@
 import type { ArtifactStore } from "@des/core/artifacts";
 import { measurementOf } from "@des/core/effects";
 import type { RunOutcome } from "@des/core/workflow";
-import type { RoadmapRow } from "../deliver/pipeline.ts";
+import type { RoadmapStep } from "../deliver/pipeline.ts";
 import {
   oracleRunsOf,
   ORACLE_RUNS_TABLE,
@@ -82,20 +82,20 @@ export const gitIgnores = (root: string, path: string): boolean => {
 
 /* ----------------------------------------------- DISTILL, second half */
 
-/** One roadmap row as the oracle graph's input. */
-export const valueUnderOracle = (row: RoadmapRow): ValueUnderOracle => {
-  if (row.oracle === undefined) {
+/** One roadmap step as the oracle graph's input. */
+export const valueUnderOracle = (step: RoadmapStep): ValueUnderOracle => {
+  if (step.oracle === undefined) {
     throw new Error(
-      `distill: row ${row.id} declares no oracle. Run the obligations graph before authoring one.`,
+      `distill: step ${step.id} declares no oracle. Run the obligations graph before authoring one.`,
     );
   }
   return {
-    stepId: row.id,
-    observation: row.observation,
-    acceptance: row.acceptance,
-    oracle: row.oracle,
-    supports: row.supports,
-    authority: row.authority,
+    stepId: step.id,
+    observation: step.observation,
+    acceptance: step.acceptance,
+    oracle: step.oracle,
+    supports: step.supports,
+    authority: step.authority,
   };
 };
 

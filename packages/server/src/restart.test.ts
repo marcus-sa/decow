@@ -2,8 +2,8 @@
  * A run outlives the process that started it.
  *
  * This is the claim the three tables exist for, and it is the one the previous
- * cut could not make: runs, traces, attempts and the row-to-run mapping lived
- * in maps, so a restarted server showed no prior run, a delivered pipeline row
+ * cut could not make: runs, traces, attempts and the step-to-run mapping lived
+ * in maps, so a restarted server showed no prior run, a delivered pipeline step
  * read `pending` again, and a suspension nobody had answered yet could not be
  * answered at all — the engine's snapshot was on disk and the server had
  * forgotten which graph it was of.
@@ -56,7 +56,7 @@ const boot = async (dir: string): Promise<Server> => {
   const artifacts = openArtifacts({ path: join(dir, "artifacts.sqlite") });
   const gate = registration({
     id: "gate",
-    title: "a leaf, a person, and a row",
+    title: "a leaf, a person, and a step",
     input: GateInput,
     // `needs-a-person` every time, so the run parks and a person is what
     // continues it.
@@ -74,9 +74,9 @@ const boot = async (dir: string): Promise<Server> => {
     pipelines: [
       {
         id: "gates",
-        title: "one row, one gate",
-        rows: () => [
-          { id: "row-1", dependencies: [], workflowId: "gate", input: { subject: "alphabet" } },
+        title: "one step, one gate",
+        steps: () => [
+          { id: "step-1", dependencies: [], workflowId: "gate", input: { subject: "alphabet" } },
         ],
       },
     ],
@@ -152,9 +152,9 @@ describe("a restarted server", () => {
     });
   }, 30_000);
 
-  test("a pipeline row that was delivered stays delivered", async () => {
-    // The row-to-run mapping is read off the `pipeline-row` events rather than
-    // held in a map, which is what stops a restarted server running a row a
+  test("a pipeline step that was delivered stays delivered", async () => {
+    // The step-to-run mapping is read off the `pipeline-step` events rather than
+    // held in a map, which is what stops a restarted server running a step a
     // second time. Without it `statusOf` reads `pending` and the frontier
     // re-delivers everything the previous process finished.
     const dir = runDirectory();
@@ -164,20 +164,20 @@ describe("a restarted server", () => {
     await first.registry.idle();
 
     const before = await getPipeline(first.registry, "gates");
-    expect(before.rows.map((row) => row.status)).toEqual(["suspended"]);
-    const rowRun = before.rows[0]?.runId;
-    expect(rowRun).toBeDefined();
-    resumeRun(first.registry, rowRun as string, { decision: "approve" });
+    expect(before.steps.map((step) => step.status)).toEqual(["suspended"]);
+    const stepRun = before.steps[0]?.runId;
+    expect(stepRun).toBeDefined();
+    resumeRun(first.registry, stepRun as string, { decision: "approve" });
     await first.registry.idle();
-    expect((await getPipeline(first.registry, "gates")).rows[0]?.status).toBe("accepted");
+    expect((await getPipeline(first.registry, "gates")).steps[0]?.status).toBe("accepted");
     await first.stop();
 
     const second = await boot(dir);
     const after = await getPipeline(second.registry, "gates");
-    expect(after.rows.map((row) => row.status)).toEqual(["accepted"]);
-    expect(after.rows[0]?.runId).toBe(rowRun as string);
+    expect(after.steps.map((step) => step.status)).toEqual(["accepted"]);
+    expect(after.steps[0]?.runId).toBe(stepRun as string);
 
-    // Driving it again starts nothing: the row is accepted, so the frontier
+    // Driving it again starts nothing: the step is accepted, so the frontier
     // is empty and no second run exists.
     runPipeline(second.registry, "gates");
     await second.registry.idle();
