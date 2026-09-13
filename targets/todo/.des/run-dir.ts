@@ -17,7 +17,8 @@
  *   artifacts.sqlite  roadmap rows, roadmap_steps rows, step_runs rows
  *   journal.sqlite    what each step decided, keyed by content
  *   mastra.sqlite     the engine's snapshots, so a parked run survives exit
- *   report.jsonl      one line per leaf call
+ *   runs.sqlite       the runs, their events, and what every leaf call
+ *                     decided and cost
  *
  * The design string handed to `decompose` and to every DELIVER leaf is
  * `design.md` PLUS the VCS symbol inventory. That addition is not decoration:
@@ -31,6 +32,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { openArtifacts, type ArtifactStore } from "@des/core/artifacts";
+import { openRunDatabase, type RunDatabase } from "@des/server";
 import type { Commands } from "@des/core/commands";
 import { openWorkflowRuntime, type WorkflowRuntime } from "@des/core/compile";
 import { sqliteJournal, type Journal } from "@des/core/journal";
@@ -57,6 +59,8 @@ export type RunDir = {
   artifacts: ArtifactStore;
   journal: Journal & { close: () => void };
   runtime: WorkflowRuntime;
+  /** Runs, their events, and every leaf attempt with what it cost. */
+  runs: RunDatabase;
   /** `design.md` plus the VCS symbol inventory. */
   design: string;
   close(): void;
@@ -187,6 +191,10 @@ export const openRunDir = async (name: string, options: OpenRunOptions = {}): Pr
   const artifacts = openArtifacts({ path: join(path, "artifacts.sqlite") });
   const journal = sqliteJournal(join(path, "journal.sqlite"));
   const runtime = openWorkflowRuntime(`file:${join(path, "mastra.sqlite")}`);
+  // A SIBLING of the artifact store rather than a table inside it: the server
+  // owns this schema and `@des/core` owns that one, and a file whose
+  // migrations are two packages' business belongs to neither.
+  const runs = openRunDatabase({ path: join(path, "runs.sqlite") });
 
   return {
     name,
@@ -197,8 +205,10 @@ export const openRunDir = async (name: string, options: OpenRunOptions = {}): Pr
     artifacts,
     journal,
     runtime,
+    runs,
     design: designSource(project, vcs),
     close() {
+      runs.close();
       journal.close();
       artifacts.close();
       vcs.close();

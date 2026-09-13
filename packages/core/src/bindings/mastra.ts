@@ -7,12 +7,12 @@
  *
  * Bindings are consumer-owned per the design's framework/consumer split —
  * "which small models, which validator family" is the consumer's column — so
- * nothing in `core/` imports this file. The examples' smoke scripts do.
+ * nothing in `core/` imports this file. The examples' smoke scripts do, and so
+ * does `targets/todo/.des/models.ts`, which is the one seam a composition has.
  */
 
 import { Agent } from "@mastra/core/agent";
-import type { z } from "zod";
-import type { ModelBinding } from "../core/step.ts";
+import type { GenerateRequest, ModelBinding } from "../core/step.ts";
 
 /**
  * The agent's standing instructions. Every call overrides them with the step's
@@ -27,22 +27,6 @@ export type MastraAgentOptions = {
   model: string;
   /** Reported verbatim as `Attempt.model`. Defaults to `model`. */
   id?: string;
-  /**
-   * Handed whatever the provider layer reported as token usage for this call,
-   * verbatim and unshaped.
-   *
-   * Verbatim because the shape is not ours and has more than one version in
-   * the dependency graph: `@mastra/core`'s own `TokenUsage` is flat
-   * (`promptTokens` / `completionTokens`), while the AI SDK's
-   * `LanguageModelUsage` nests (`inputTokens.total` / `outputTokens.total`).
-   * A binding that picked one would report zero tokens against the other and
-   * say nothing about it. The reader is the consumer's — see
-   * `targets/todo/.des/report.ts`.
-   *
-   * Absent by default: nothing in a step reads usage, so the seam costs
-   * nothing when nobody is measuring.
-   */
-  onUsage?: (usage: unknown) => void;
 };
 
 /**
@@ -53,6 +37,13 @@ export type MastraAgentOptions = {
  * Mastra's model router resolves `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` from
  * the environment itself, so a caller supplies a `provider/model` string and
  * nothing else.
+ *
+ * WHAT A CALL COST IS REPORTED THROUGH THE REQUEST, verbatim and unshaped.
+ * The shape is not ours and has more than one version in the dependency graph:
+ * `@mastra/core`'s own `TokenUsage` is flat, the AI SDK's nests. `runStep`
+ * reads whichever arrived, through `readTokens`, and puts the counts on the
+ * attempt it was making — so the number belongs to one call of one step of one
+ * run by construction rather than by the order a queue happened to drain in.
  */
 export const mastraAgent = (options: MastraAgentOptions): ModelBinding => {
   const agent = new Agent({
@@ -64,7 +55,7 @@ export const mastraAgent = (options: MastraAgentOptions): ModelBinding => {
 
   return {
     id: options.id ?? options.model,
-    async generate<T>(req: { system: string; prompt: string; schema: z.ZodType<T> }): Promise<T> {
+    async generate<T>(req: GenerateRequest<T>): Promise<T> {
       const response = await agent.generate(req.prompt, {
         // Per-call override: the step, not the agent, owns the system prompt.
         instructions: req.system,
@@ -73,7 +64,7 @@ export const mastraAgent = (options: MastraAgentOptions): ModelBinding => {
       });
       // Before the parse, so a call whose output fails the schema still
       // reports what it cost. A refused attempt is spent money too.
-      options.onUsage?.((response as { usage?: unknown }).usage);
+      req.onUsage?.((response as { usage?: unknown }).usage);
       // Mastra validates against the schema, but the step's guarantee is that
       // the output space IS the schema, so re-parse rather than trust the
       // provider layer. A failure throws and runStep records it in the trail.

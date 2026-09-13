@@ -34,6 +34,7 @@ import { journalKey, type StepDef, type StepResult } from "@des/core/step";
 import { openVcs } from "@des/core/vcs";
 import {
   getPipeline,
+  openRunDatabase,
   resumeRun,
   runPipeline,
   serve,
@@ -47,7 +48,6 @@ import { AuthorInput, oracleDefs } from "../../../../examples/nwave/distill/orac
 import { readRoadmap } from "../../../../examples/nwave/deliver/pipeline.ts";
 import { DecomposeInput, roadmapDefs, SlicesInput } from "../../../../examples/nwave/roadmap/steps.ts";
 import type { Roadmap } from "../../../../examples/nwave/roadmap/schema.ts";
-import { openReport } from "../../../../targets/todo/.des/report.ts";
 import { REQUEST } from "../../../../targets/todo/.des/request.ts";
 import { todoRegistrations } from "../../../../targets/todo/.des/registrations.ts";
 import {
@@ -379,6 +379,7 @@ const main = async (): Promise<void> => {
   const journal: Journal & { close: () => void } = { ...rows, close: () => {} };
   const design = designSource(project.root, project.vcs);
 
+  const store = openRunDatabase();
   const dir: RunDir = {
     name: "e2e",
     path: project.root,
@@ -388,13 +389,13 @@ const main = async (): Promise<void> => {
     artifacts,
     journal,
     runtime: openWorkflowRuntime(),
+    runs: store,
     design,
     close: () => {},
   };
-  const report = openReport({ path: join(project.root, "report.jsonl"), run: "e2e", concurrent: true });
-  const { workflows, pipelines } = todoRegistrations(dir, report, { evidence: () => EVIDENCE });
+  const { workflows, pipelines } = todoRegistrations(dir, { evidence: () => EVIDENCE });
 
-  const server = await serve({ port, workflows, pipelines, artifacts });
+  const server = await serve({ port, workflows, pipelines, artifacts, store });
   const registry = server.registry;
 
   // ---- pre-bake, through the server's own registry ------------------------

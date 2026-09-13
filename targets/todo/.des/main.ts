@@ -27,17 +27,17 @@
  * mutated. `runs/<name>/` holds the copied project and the five stores, so two
  * runs of this server against two names cannot see each other's writes.
  *
- * THE REPORT is still written, one JSON line per leaf call, to
- * `runs/<name>/report.jsonl`. Every line carries `concurrent: true`: a server
- * does not serialise its runs, so the DECISION columns are exact and the token
- * columns cannot be attributed to a leaf. That is the honest thing to record
- * rather than numbers nobody can stand behind.
+ * THE DATABASE IS THE SOURCE OF TRUTH. Runs, the events they publish and what
+ * every leaf call decided and cost are rows in `runs/<name>/runs.sqlite`, so a
+ * restarted server shows every prior run, a delivered pipeline row stays
+ * delivered, and a suspension one process produced is answerable by the next.
+ * Token counts are attributed by `runStep` to the call that spent them, so
+ * concurrency costs the numbers nothing.
  */
 
 import { join } from "node:path";
 import { serve } from "@des/server";
 import { describeModels } from "./models.ts";
-import { openReport } from "./report.ts";
 import { todoRegistrations, ROADMAP_ID } from "./registrations.ts";
 import { createRunDir, openRunDir, RUNS, shortPath } from "./run-dir.ts";
 import { existsSync } from "node:fs";
@@ -52,19 +52,14 @@ const main = async (): Promise<void> => {
   if (!existsSync(join(RUNS, name))) createRunDir(name);
   const dir = await openRunDir(name);
 
-  const report = openReport({
-    path: join(dir.path, "report.jsonl"),
-    run: name,
-    concurrent: true,
-  });
-
-  const { workflows, pipelines } = todoRegistrations(dir, report);
+  const { workflows, pipelines } = todoRegistrations(dir);
 
   const server = await serve({
     port,
     workflows,
     pipelines,
     artifacts: dir.artifacts,
+    store: dir.runs,
   });
 
   console.log(describeModels());
@@ -72,7 +67,7 @@ const main = async (): Promise<void> => {
   console.log(`project: ${shortPath(dir.project)}`);
   console.log(`roadmap: ${ROADMAP_ID}`);
   console.log(`design:  ${dir.design.length} chars, including the symbol inventory`);
-  console.log(`report:  ${shortPath(join(dir.path, "report.jsonl"))}`);
+  console.log(`runs:    ${shortPath(join(dir.path, "runs.sqlite"))}`);
   console.log(
     process.env.ANTHROPIC_API_KEY
       ? "\nANTHROPIC_API_KEY is set: a leaf will call a model."

@@ -21,6 +21,7 @@ import { memoryEffects } from "@des/core/effects";
 import { memoryJournal } from "@des/core/journal";
 import type { RunOutcome } from "@des/core/workflow";
 import {
+  exportRun,
   getPipeline,
   getRun,
   getWorkflow,
@@ -194,6 +195,36 @@ describe("the graphs, and one run of one", () => {
     expect(events.seen.map((e) => e.type)).toContain("resumed");
     expect(artifacts.read(ARTIFACT_TABLE, "ship the cut")).toBeDefined();
     events.stop();
+  });
+
+  test("one run exports as JSON lines: the run, its attempts, then its events", async () => {
+    // What `report.jsonl` was FOR, as a read rather than a second writer. The
+    // file was written as a run happened and its token columns could not be
+    // attributed; the rows can, so the export is a projection of them.
+    const { registry } = gateRegistry("ready", "ship the cut");
+    startRun(registry, "gate", { subject: "ship the cut" });
+    await registry.idle();
+
+    const lines = exportRun(registry, "run-1")
+      .split("\n")
+      .map((line) => JSON.parse(line) as { kind: string; event?: string });
+    expect(lines[0]).toMatchObject({ kind: "run", runId: "run-1", status: "accepted" });
+    // The run line carries the record WITHOUT the two projections, because
+    // both are derivable from the lines after it.
+    expect(lines[0]).not.toHaveProperty("trace");
+    expect(lines[0]).not.toHaveProperty("attempts");
+    expect(lines.slice(1).map((line) => line.event ?? line.kind)).toEqual([
+      "run-started",
+      "node-entered",
+      "node-left",
+      "node-entered",
+      "node-left",
+      "node-entered",
+      "node-left",
+      "node-entered",
+      "node-left",
+      "terminal",
+    ]);
   });
 
   test("a run that is not parked has nothing to answer, and says so", async () => {

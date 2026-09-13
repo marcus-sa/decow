@@ -46,6 +46,7 @@ import {
   getPipeline,
   getRun,
   openRegistry,
+  openRunDatabase,
   project,
   runPipeline,
   startRun,
@@ -54,7 +55,6 @@ import {
 import { openWorkflowRuntime } from "@des/core/compile";
 import type { Journal } from "@des/core/journal";
 import { REQUEST } from "./request.ts";
-import { openReport } from "./report.ts";
 import { todoRegistrations } from "./registrations.ts";
 import {
   createRunDir,
@@ -407,6 +407,7 @@ const openStubbedServer = (
   const artifacts = openArtifacts();
   const seeded = memoryJournal();
   const journal: Journal & { close: () => void } = { ...seeded, close: () => {} };
+  const store = openRunDatabase();
   const dir: RunDir = {
     name: "stubbed",
     path: project.root,
@@ -416,16 +417,12 @@ const openStubbedServer = (
     artifacts,
     journal,
     runtime: openWorkflowRuntime(),
+    runs: store,
     design,
     close: () => {},
   };
-  const report = openReport({
-    path: join(project.root, "report.jsonl"),
-    run: "stubbed",
-    concurrent: true,
-  });
-  const { workflows, pipelines } = todoRegistrations(dir, report, { evidence });
-  const registry = openRegistry({ workflows, pipelines, artifacts });
+  const { workflows, pipelines } = todoRegistrations(dir, { evidence });
+  const registry = openRegistry({ workflows, pipelines, artifacts, store });
   return { registry, artifacts, journal, dir };
 };
 
@@ -645,8 +642,7 @@ describe("the todo target, delivered", () => {
     try {
       createRunDir(name);
       const dir = await openRunDir(name);
-      const report = openReport({ path: join(dir.path, "report.jsonl"), run: name, concurrent: true });
-      const { workflows, pipelines } = todoRegistrations(dir, report);
+      const { workflows, pipelines } = todoRegistrations(dir);
 
       expect(workflows.map((w) => w.id)).toEqual(["roadmap", "obligations", "oracle", "deliver"]);
       expect(pipelines.map((p) => p.id)).toEqual(["oracles", "delivery"]);

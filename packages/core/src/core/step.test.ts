@@ -10,9 +10,13 @@ import type { Requirement } from "./requirement.ts";
 import {
   canonicalJson,
   journalKey,
+  readTokens,
   runStep,
   stepOutput,
+  type GenerateRequest,
   type ModelBinding,
+  type StepAttempt,
+  type StepCall,
   type StepDef,
   type Verdict,
 } from "./step.ts";
@@ -40,15 +44,22 @@ const anchorVerbatim: Requirement<Ctx> = {
  * A scripted model. `worker` yields queued outputs in order; `validator`
  * yields queued verdicts in order. Every prompt it sees is recorded.
  */
-const scripted = (script: { outputs: Output[]; verdicts: Verdict[] }) => {
-  const prompts: { model: string; system: string; prompt: string }[] = [];
+const scripted = (script: { outputs: Output[]; verdicts: Verdict[]; usage?: boolean }) => {
+  const prompts: { model: string; system: string; prompt: string; step: StepCall }[] = [];
   let outputIndex = 0;
   let verdictIndex = 0;
+  let calls = 0;
 
   const binding = (id: string, take: () => unknown): ModelBinding => ({
     id,
-    generate: async <T,>(req: { system: string; prompt: string; schema: z.ZodType<T> }): Promise<T> => {
-      prompts.push({ model: id, system: req.system, prompt: req.prompt });
+    generate: async <T,>(req: GenerateRequest<T>): Promise<T> => {
+      prompts.push({ model: id, system: req.system, prompt: req.prompt, step: req.step });
+      calls += 1;
+      // A distinct count per call, so a test can tell which call's numbers
+      // landed on which half of which attempt.
+      if (script.usage === true) {
+        req.onUsage?.({ promptTokens: calls * 10, completionTokens: calls });
+      }
       return take() as T;
     },
   });
@@ -260,5 +271,61 @@ describe("runStep", () => {
     expect(b).toEqual(a);
     expect(models.prompts).toHaveLength(calls);
     await Bun.file(path).delete().catch(() => {});
+  });
+
+  test("a binding is told which call it is answering", async () => {
+    // A binding is shared across steps, so `generate` alone cannot say which
+    // one it is for. `step` says: the id, the version, which half of the pair,
+    // and the attempt — the same number on both halves, so a worker call and
+    // the validator that refuted it are one event rather than two.
+    const models = scripted({
+      outputs: [out("yes", "NOT IN THE INPUT"), out("yes", "quick brown")],
+      verdicts: [PASS],
+    });
+    await runStep(def(models), { text: "the quick brown fox" }, memoryJournal());
+
+    expect(models.prompts.map((p) => `${p.step.id}@${p.step.version} ${p.step.role} ${p.step.attempt}`)).toEqual([
+      // attempt 1's worker was refused mechanically, so no validator ran for it
+      "test.step@1 worker 1",
+      "test.step@1 worker 2",
+      "test.step@1 validator 2",
+    ]);
+  });
+
+  test("what a call cost lands on the attempt that made it, both halves apart", async () => {
+    // Attribution is EXACT rather than order-based: `runStep` hands each call
+    // its own sink and already knows which call it was. Nothing queues, so two
+    // runs in flight cannot swap each other's numbers.
+    const attempts: StepAttempt[] = [];
+    const models = scripted({
+      outputs: [out("yes", "NOT IN THE INPUT"), out("yes", "quick brown")],
+      verdicts: [PASS],
+      usage: true,
+    });
+    await runStep(def(models), { text: "the quick brown fox" }, memoryJournal(), (a) =>
+      attempts.push(a),
+    );
+
+    // Call 1 is attempt 1's worker; a mechanical check refused it, so attempt 1
+    // spent no validator and has no validator tokens at all.
+    expect(attempts[0]?.workerTokens).toEqual({ input: 10, output: 1 });
+    expect(attempts[0]?.validatorTokens).toBeUndefined();
+    // Calls 2 and 3 are attempt 2's worker and its validator.
+    expect(attempts[1]?.workerTokens).toEqual({ input: 20, output: 2 });
+    expect(attempts[1]?.validatorTokens).toEqual({ input: 30, output: 3 });
+  });
+
+  test("a usage shape nobody recognises is empty, never zero", () => {
+    // "The provider did not say" and "the call cost nothing" are different
+    // claims, and a record that conflated them would be lying about the
+    // cheapest thing it measures.
+    expect(readTokens({ promptTokens: 7, completionTokens: 2 })).toEqual({ input: 7, output: 2 });
+    expect(readTokens({ inputTokens: { total: 7 }, outputTokens: { total: 2 } })).toEqual({
+      input: 7,
+      output: 2,
+    });
+    expect(readTokens({ inputTokens: 7, outputTokens: 2 })).toEqual({ input: 7, output: 2 });
+    expect(readTokens({ somethingElse: 1 })).toEqual({});
+    expect(readTokens(undefined)).toEqual({});
   });
 });

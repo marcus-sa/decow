@@ -18,7 +18,7 @@
 import type { RowStatus } from "@des/core/scheduler";
 import { z } from "zod";
 import { asJson, type Json } from "./json.ts";
-import { continueAfterResume, start, tree, type PipelineTree } from "./pipelines.ts";
+import { continueAfterResume, ownerOf, runIdOf, start, tree, type PipelineTree } from "./pipelines.ts";
 import type { GraphProjection, ResumeOptions } from "./projection.ts";
 import type { AnyWorkflowRegistration } from "./registration.ts";
 import type { Registry } from "./registry.ts";
@@ -156,10 +156,33 @@ export const resumeRun = (
   const settled = registry.runner.resume(runId, parsed.data);
   if (settled === undefined) throw new Error(`run ${runId} has no engine run to continue`);
 
-  const owner = registry.rowOwners.get(runId);
+  const owner = ownerOf(registry, runId);
   if (owner !== undefined) continueAfterResume(registry, owner, settled);
 
   return { runId, status: "running" };
+};
+
+/**
+ * One run's rows, as JSON lines. The whole of what `report.jsonl` was for.
+ *
+ * The report was a file written as a run happened, and its token columns
+ * carried `concurrent: true` because a queue drained in call order cannot say
+ * which leaf spent what. The rows say: `runStep` attributes each call to the
+ * attempt that made it. So this is a READ rather than a second writer, and it
+ * emits the one thing a file was better at — a stream a person can grep.
+ *
+ * Three kinds, in one document: the run, then its attempts, then its events.
+ */
+export const exportRun = (registry: Registry, runId: string): string => {
+  const record = getRun(registry, runId);
+  const { trace: _trace, attempts: _attempts, ...run } = record;
+  return [
+    { kind: "run", ...run },
+    ...record.attempts.map((attempt) => ({ kind: "leaf-attempt", runId, ...attempt })),
+    ...registry.runs.db.events.of(runId).map(({ kind, ...event }) => ({ kind: "event", event: kind, ...event })),
+  ]
+    .map((row) => JSON.stringify(row))
+    .join("\n");
 };
 
 /* ----------------------------------------------------------- the artifacts */
@@ -224,7 +247,7 @@ export const resumeRow = (
   answer: unknown,
 ): { runId: string } => {
   const pipeline = pipelineOf(registry, id);
-  const runId = registry.pipelineRuns.get(pipeline.id)?.get(rowId);
+  const runId = runIdOf(registry, pipeline.id, rowId);
   if (runId === undefined) {
     throw new Error(`row ${rowId} of pipeline ${id} has no run, so there is nothing to answer`);
   }

@@ -15,6 +15,7 @@
 
 import type { ArtifactStore } from "@des/core/artifacts";
 import type { EventBus } from "./events.ts";
+import type { RunDatabase } from "./store.ts";
 import type { GraphProjection } from "./projection.ts";
 import type { AnyWorkflowRegistration, PipelineRegistration } from "./registration.ts";
 import { clearRegistry, getRegistry, openRegistry, setRegistry, type Registry } from "./registry.ts";
@@ -39,6 +40,14 @@ export type ServeOptions = {
   runtimeUrl?: string;
   /** Where `upsert-artifact` rows are read back from. */
   artifacts?: ArtifactStore;
+  /**
+   * Where runs, their events and their leaf attempts are kept.
+   *
+   * An in-memory database when absent. A target with a run directory opens one
+   * on a file there and hands it in, which is what makes a restarted server
+   * show every prior run and answer a suspension its predecessor produced.
+   */
+  store?: RunDatabase;
   /** The id a new run is given. Injected so a test can name its runs. */
   mintId?: () => string;
 };
@@ -63,6 +72,7 @@ export const serve = async (options: ServeOptions): Promise<Server> => {
     ...(options.pipelines === undefined ? {} : { pipelines: options.pipelines }),
     ...(options.runtimeUrl === undefined ? {} : { runtimeUrl: options.runtimeUrl }),
     ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
+    ...(options.store === undefined ? {} : { store: options.store }),
     ...(options.mintId === undefined ? {} : { mintId: options.mintId }),
   });
   // Set BEFORE the handler is mounted: a server function reads the registry
@@ -100,6 +110,7 @@ export const serve = async (options: ServeOptions): Promise<Server> => {
 };
 
 export {
+  exportRun,
   getPipeline,
   getRun,
   getWorkflow,
@@ -120,11 +131,14 @@ export {
   openEvents,
   encodeEvent,
   eventStream,
+  EVENT_KINDS,
   type EventBus,
+  type EventKind,
   type ServerEvent,
 } from "./events.ts";
 export {
   drive,
+  ownerOf,
   runIdOf,
   start as startPipeline,
   statusOf as rowStatusOf,
@@ -165,6 +179,7 @@ export {
   openRuns,
   traceEntries,
   RUN_STATUSES,
+  type RunPatch,
   type RunRecord,
   type RunStatus,
   type RunStore,
@@ -172,3 +187,13 @@ export {
   type Suspension,
   type TraceEntry,
 } from "./runs.ts";
+export {
+  openRunDatabase,
+  type AttemptRows,
+  type EventRows,
+  type RunDatabase,
+  type RunDatabaseOptions,
+  type RunRows,
+  type StoredEvent,
+  type StoredRun,
+} from "./store.ts";

@@ -25,7 +25,10 @@ import {
 const Answer = stepOutput(["yes", "no"] as const, { anchor: z.string() });
 type Answer = z.infer<typeof Answer>;
 
-const REQ = { system: "You answer yes or no.", prompt: "Is the sky blue?", schema: Answer };
+/** Which call a binding is answering. Fixed here: this file is about the SDK. */
+const CALL = { id: "fixture.answer", version: 1, role: "worker" as const, attempt: 1 };
+
+const REQ = { step: CALL, system: "You answer yes or no.", prompt: "Is the sky blue?", schema: Answer };
 const GOOD: Answer = { decision: "yes", payload: { anchor: "the sky" } };
 
 /** A result message carrying a structured output. */
@@ -222,7 +225,7 @@ describe("claudeCode, the proposal shape", () => {
     reason: z.string(),
     proposal: z.array(z.custom<Effect>(() => true)).optional(),
   });
-  const AUTHOR_REQ = { system: "Write the oracle.", prompt: "value 01-01", schema: Authored };
+  const AUTHOR_REQ = { step: CALL, system: "Write the oracle.", prompt: "value 01-01", schema: Authored };
 
   /** A source tree with one production file and one existing test. */
   const source = () => {
@@ -383,6 +386,7 @@ describe("the proposal diff, as the pure function it is", () => {
         query,
         proposal: { source: root, allowed: ["test"] },
       }).generate({
+        step: CALL,
         system: "s",
         prompt: "p",
         schema: stepOutput(["authored"] as const, {

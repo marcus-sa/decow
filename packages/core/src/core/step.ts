@@ -15,16 +15,94 @@ import { filterKnown } from "../checks/id-in-set.ts";
 import type { Requirement, Violation } from "./requirement.ts";
 
 /**
+ * Which call a binding is being asked to make.
+ *
+ * A binding is shared across steps — one worker binding answers every leaf a
+ * consumer points at it — so `generate` alone cannot say which step it is
+ * answering for. This says. Two things need it and neither is optional: a
+ * scripted binding has to refuse a step it has no script for BY NAME, and an
+ * attempt's cost has to be attributable to the step that spent it.
+ *
+ * `attempt` is the same number on both calls of one attempt, so a worker call
+ * and the validator call that refutes it are one pair rather than two events.
+ */
+export type StepCall = {
+  /** The `StepDef` id. */
+  id: string;
+  /** The `StepDef` version, so a prompt change is visible to a binding too. */
+  version: number;
+  role: "worker" | "validator";
+  /** 1-based. An escalation is the last worker attempt. */
+  attempt: number;
+};
+
+/**
+ * One call, as a binding receives it.
+ *
+ * `onUsage` is supplied by `runStep` and is closed over the attempt being
+ * made, which is what makes token attribution EXACT rather than order-based:
+ * the binding reports what one call cost, and the caller already knows which
+ * call it was. Nothing queues, so nothing interleaves, so concurrency costs
+ * the numbers nothing.
+ */
+export type GenerateRequest<T> = {
+  step: StepCall;
+  system: string;
+  prompt: string;
+  schema: z.ZodType<T>;
+  /** Where THIS call reports what the provider said it cost. */
+  onUsage?: (usage: unknown) => void;
+};
+
+/**
  * The seam between a step and a model. Production binds this to a Mastra
- * Agent (see examples/nwave/deliver/smoke.ts); tests bind a fake, so the
- * test suite never constructs an agent, reads an API key, or opens a socket.
+ * Agent (see examples/nwave/deliver/smoke.ts); tests bind `scriptedBinding`,
+ * so the test suite never constructs an agent, reads an API key, or opens a
+ * socket.
  *
  * Replaces the design's `LanguageModel` slot from the Vercel AI SDK.
  */
 export type ModelBinding = {
   /** Reported verbatim as `Attempt.model`. */
   id: string;
-  generate<T>(req: { system: string; prompt: string; schema: z.ZodType<T> }): Promise<T>;
+  generate<T>(req: GenerateRequest<T>): Promise<T>;
+};
+
+/** Input and output token counts, when the provider layer reported them. */
+export type Tokens = { input?: number; output?: number };
+
+/**
+ * Token counts out of whichever usage shape the provider layer returned.
+ *
+ * There are two live shapes in this dependency graph and they disagree:
+ * `@mastra/core`'s `TokenUsage` is flat (`promptTokens` / `completionTokens`),
+ * and the AI SDK's `LanguageModelUsage` nests (`inputTokens.total` /
+ * `outputTokens.total`); an older AI SDK shape has `inputTokens` as a plain
+ * number. All three are read here, and anything else yields an EMPTY object
+ * rather than a zero — "the provider did not say" and "the call cost nothing"
+ * are different claims and a record that conflated them would be lying about
+ * the cheapest thing it measures.
+ */
+export const readTokens = (usage: unknown): Tokens => {
+  if (usage === null || typeof usage !== "object") return {};
+  const u = usage as Record<string, unknown>;
+
+  const nested = (value: unknown): number | undefined => {
+    if (typeof value === "number") return value;
+    if (value !== null && typeof value === "object") {
+      const total = (value as { total?: unknown }).total;
+      if (typeof total === "number") return total;
+    }
+    return undefined;
+  };
+
+  const input = typeof u.promptTokens === "number" ? u.promptTokens : nested(u.inputTokens);
+  const output = typeof u.completionTokens === "number" ? u.completionTokens : nested(u.outputTokens);
+
+  return {
+    ...(input === undefined ? {} : { input }),
+    ...(output === undefined ? {} : { output }),
+  };
 };
 
 /**
@@ -109,6 +187,13 @@ export type StepAttempt = {
   error?: string;
   /** True when this attempt's output was the one accepted and journaled. */
   accepted: boolean;
+  /**
+   * What the worker call reported it cost, when the provider layer reported
+   * anything. Absent means "nobody said", never "it was free".
+   */
+  workerTokens?: Tokens;
+  /** What the validator call cost. Absent when no validator ran. */
+  validatorTokens?: Tokens;
 };
 
 /** Where attempts are reported. Optional; the framework never reads one back. */
@@ -170,13 +255,24 @@ export async function runStep<I, O>(
     const feedback = trail.at(-1)?.violations ?? [];
     const attempt = trail.length + 1;
 
+    /**
+     * What this attempt's two calls cost. Captured per call rather than
+     * queued, so two runs in flight cannot swap each other's numbers.
+     */
+    let workerTokens: Tokens | undefined;
+    let validatorTokens: Tokens | undefined;
+
     let output: O;
     try {
       // guardrail 3: the output space is the schema
       output = await model.generate({
+        step: { id: def.id, version: def.version, role: "worker", attempt },
         system: def.worker.system,
         prompt: def.worker.prompt(input) + feedbackSuffix(feedback),
         schema: def.output,
+        onUsage: (usage) => {
+          workerTokens = readTokens(usage);
+        },
       });
     } catch (err) {
       trail.push({ model: model.id, violations: [], error: String(err) });
@@ -187,6 +283,7 @@ export async function runStep<I, O>(
         violations: [],
         error: String(err),
         accepted: false,
+        ...(workerTokens === undefined ? {} : { workerTokens }),
       });
       continue;
     }
@@ -199,7 +296,15 @@ export async function runStep<I, O>(
       .filter((v): v is Violation => v !== null);
     if (mechanical.length) {
       trail.push({ model: model.id, output, violations: mechanical });
-      report({ attempt, model: model.id, ...decision, mechanical, violations: [], accepted: false });
+      report({
+        attempt,
+        model: model.id,
+        ...decision,
+        mechanical,
+        violations: [],
+        accepted: false,
+        ...(workerTokens === undefined ? {} : { workerTokens }),
+      });
       continue;
     }
 
@@ -207,6 +312,7 @@ export async function runStep<I, O>(
     let verdict: Verdict;
     try {
       verdict = await def.validator.model.generate({
+        step: { id: def.id, version: def.version, role: "validator", attempt },
         system: VALIDATOR_SYSTEM,
         prompt: canonicalJson({
           requirements: def.requirements.map(({ id, text }) => ({ id, text })),
@@ -214,6 +320,9 @@ export async function runStep<I, O>(
           output,
         }),
         schema: Verdict,
+        onUsage: (usage) => {
+          validatorTokens = readTokens(usage);
+        },
       });
     } catch (err) {
       trail.push({ model: model.id, output, violations: [], error: String(err) });
@@ -225,6 +334,8 @@ export async function runStep<I, O>(
         violations: [],
         error: String(err),
         accepted: false,
+        ...(workerTokens === undefined ? {} : { workerTokens }),
+        ...(validatorTokens === undefined ? {} : { validatorTokens }),
       });
       continue;
     }
@@ -245,6 +356,8 @@ export async function runStep<I, O>(
         verdict: verdict.verdict,
         violations,
         accepted: true,
+        ...(workerTokens === undefined ? {} : { workerTokens }),
+        ...(validatorTokens === undefined ? {} : { validatorTokens }),
       });
       return result;
     }
@@ -257,6 +370,8 @@ export async function runStep<I, O>(
       verdict: verdict.verdict,
       violations,
       accepted: false,
+      ...(workerTokens === undefined ? {} : { workerTokens }),
+      ...(validatorTokens === undefined ? {} : { validatorTokens }),
     });
   }
 

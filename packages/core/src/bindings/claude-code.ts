@@ -73,7 +73,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { z } from "zod";
 import type { Effect } from "../core/effects.ts";
-import type { ModelBinding } from "../core/step.ts";
+import type { GenerateRequest, ModelBinding } from "../core/step.ts";
 
 /** Which filesystem settings the run loads. `"project"` loads `.claude/agents`. */
 export type SettingSource = "user" | "project" | "local";
@@ -354,7 +354,7 @@ export const claudeCode = (options: ClaudeCodeOptions): ModelBinding => {
 
   return {
     id,
-    async generate<T>(req: { system: string; prompt: string; schema: z.ZodType<T> }): Promise<T> {
+    async generate<T>(req: GenerateRequest<T>): Promise<T> {
       // Unrepresentable constructs widen to `{}` rather than throwing: the zod
       // re-parse below is the real gate, so a looser JSON Schema costs a retry
       // at worst and never fails the call before the agent has answered.

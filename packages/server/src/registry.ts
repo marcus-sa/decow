@@ -14,10 +14,13 @@
  * correctness boundary. A well-known symbol is a slot two copies of this
  * module agree about; a module-level `let` is one two copies do not.
  *
- * Everything else here is in memory on purpose. The durable half of a run is
- * already durable somewhere better — the engine's snapshot, the journal, the
- * VCS event log, the consumer's own artifact rows — and losing this costs a
- * reader their scroll position rather than a fact.
+ * WHAT IS STILL IN MEMORY, AND WHY IT IS THE RIGHT SET. Three things:
+ * `driving`, which is "a drive is happening in THIS process right now";
+ * `errors`, which is what refused the last drive; and `leases`, which is who
+ * holds which shared resource right now. Every one of them is a fact about
+ * this process rather than about the work, and a second process has its own
+ * answer to each. Everything else — which runs exist, what they decided, which
+ * row is on which run — is in `runs.sqlite` and is read back.
  */
 
 import type { ArtifactStore } from "@des/core/artifacts";
@@ -28,6 +31,7 @@ import { project, type GraphProjection } from "./projection.ts";
 import type { AnyWorkflowRegistration, PipelineRegistration } from "./registration.ts";
 import { openRunner, type Runner } from "./runner.ts";
 import { openRuns, type RunStore } from "./runs.ts";
+import { openRunDatabase, type RunDatabase } from "./store.ts";
 
 /** Which pipeline row a run belongs to, for a run that is one. */
 export type RowOwner = { pipelineId: string; rowId: string };
@@ -45,10 +49,6 @@ export type Registry = {
   /** Where `upsert-artifact` rows are read back from, when a target has one. */
   artifacts?: ArtifactStore;
 
-  /** Per pipeline, per row, the latest run the server started for it. */
-  pipelineRuns: Map<string, Map<string, string>>;
-  /** The row a run belongs to, for the runs that are rows. */
-  rowOwners: Map<string, RowOwner>;
   /** Pipelines being driven right now, so a second request starts no second. */
   driving: Set<string>;
   /** Why a pipeline's last drive stopped early, when one did. */
@@ -69,6 +69,12 @@ export type RegistryOptions = {
   runtimeUrl?: string;
   /** Where `upsert-artifact` rows are read back from. */
   artifacts?: ArtifactStore;
+  /**
+   * Where runs, their events and their leaf attempts are kept. An in-memory
+   * database when absent, which is right for a server whose runs are not meant
+   * to outlive it and wrong for a target with a run directory.
+   */
+  store?: RunDatabase;
   /** The id a new run is given. Injected so a test can name its runs. */
   mintId?: () => string;
 };
@@ -80,8 +86,9 @@ export const openRegistry = (options: RegistryOptions): Registry => {
   const workflows = options.workflows;
   const pipelines = options.pipelines ?? [];
   const runtime: WorkflowRuntime = openWorkflowRuntime(options.runtimeUrl);
-  const events = openEvents();
-  const runs = openRuns();
+  const store = options.store ?? openRunDatabase();
+  const events = openEvents(store);
+  const runs = openRuns(store);
   const runner = openRunner({
     workflows,
     runs,
@@ -112,8 +119,6 @@ export const openRegistry = (options: RegistryOptions): Registry => {
     events,
     ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
 
-    pipelineRuns: new Map(),
-    rowOwners: new Map(),
     driving: new Set(),
     errors: new Map(),
     leases: inMemoryLeases(),

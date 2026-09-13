@@ -37,8 +37,7 @@
  */
 
 import { mastraAgent } from "@des/core/bindings/mastra";
-import type { ModelBinding } from "@des/core/step";
-import type { z } from "zod";
+import type { GenerateRequest, ModelBinding } from "@des/core/step";
 import { deliverDefs, LEAF_IDS, type DeliverDefs, type LeafId } from "../../../examples/nwave/deliver/steps.ts";
 import { obligationsDefs, type ObligationsDefs } from "../../../examples/nwave/distill/obligations/steps.ts";
 import { oracleDefs, type OracleDefs } from "../../../examples/nwave/distill/oracle/steps.ts";
@@ -82,7 +81,7 @@ export type ModelsOptions = {
  */
 const credentialed = (binding: ModelBinding): ModelBinding => ({
   id: binding.id,
-  generate: async <T>(req: { system: string; prompt: string; schema: z.ZodType<T> }): Promise<T> => {
+  generate: async <T>(req: GenerateRequest<T>): Promise<T> => {
     if (!process.env.ANTHROPIC_API_KEY) {
       throw new Error(
         `${binding.id}: ANTHROPIC_API_KEY is not set, so this leaf cannot call a model. ` +

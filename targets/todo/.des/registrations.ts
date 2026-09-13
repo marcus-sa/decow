@@ -66,7 +66,6 @@ import {
   todoOracleDefs,
   todoRoadmapDefs,
 } from "./models.ts";
-import type { Reporter } from "./report.ts";
 import { REQUEST } from "./request.ts";
 import { runSuite, type RunDir } from "./run-dir.ts";
 
@@ -122,23 +121,10 @@ const rows = (dir: RunDir): RoadmapRow[] => {
 
 export const todoRegistrations = (
   dir: RunDir,
-  report: Reporter,
   options: RegistrationOptions = {},
 ): TodoRegistrations => {
-  const models = { onUsage: report.onUsage };
+  const models = {};
   const evidence = options.evidence ?? (() => runSuite(dir.project).output);
-
-  /**
-   * The run report's own sink, per graph.
-   *
-   * The server records every attempt on the run it belongs to; this is the
-   * other reader — one JSON line per model call in the run directory, which is
-   * what outlives the process. A standalone run is labelled with the GRAPH
-   * that ran, because a registration's observer is built before the input that
-   * names a row is; the pipelines label theirs with the row, because they know
-   * it.
-   */
-  const observeAs = (graph: string) => report.observerFor(graph);
 
   /** One executor per run, so the event log's task id is the run's own. */
   const executorFor = (session: string, description: string) => () =>
@@ -165,7 +151,6 @@ export const todoRegistrations = (
     graph: (ctx) => roadmapGraph(ctx.journal, todoRoadmapDefs(models), ctx.observe),
     seed: (input) => seedRoadmap(input.request, dir.design),
     executor: executorFor(`roadmap:${dir.name}`, "author the roadmap"),
-    observe: observeAs("roadmap"),
     runtime: dir.runtime,
   });
 
@@ -214,7 +199,6 @@ export const todoRegistrations = (
       });
     },
     executor: executorFor(`distill:${ROADMAP_ID}`, "state the acceptance facts"),
-    observe: observeAs("obligations"),
     runtime: dir.runtime,
   });
 
@@ -249,7 +233,6 @@ export const todoRegistrations = (
         },
         artifacts: dir.artifacts,
       }),
-    observe: observeAs("oracle"),
     runtime: dir.runtime,
   });
 
@@ -304,7 +287,6 @@ export const todoRegistrations = (
         ...(row.oracle === undefined ? {} : { protected: [parseOracleLocator(row.oracle).path] }),
       });
     },
-    observe: observeAs("deliver"),
     runtime: dir.runtime,
   });
 

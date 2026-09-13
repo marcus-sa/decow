@@ -25,7 +25,7 @@
 import { openScheduler, type RowStatus, type SchedulerRow } from "@des/core/scheduler";
 import type { RunOutcome } from "@des/core/workflow";
 import type { PipelineRegistration, PipelineRow } from "./registration.ts";
-import type { Registry } from "./registry.ts";
+import type { Registry, RowOwner } from "./registry.ts";
 
 /** One row, with what the server knows about the run it last started for it. */
 export type PipelineRowView = PipelineRow & {
@@ -44,9 +44,35 @@ export type PipelineTree = {
   error?: string;
 };
 
-/** The run this pipeline last started for this row, if it started one. */
-export const runIdOf = (registry: Registry, pipelineId: string, rowId: string): string | undefined =>
-  registry.pipelineRuns.get(pipelineId)?.get(rowId);
+/**
+ * The run this pipeline last started for this row, if it started one.
+ *
+ * READ OFF THE EVENT LOG rather than off a map, which is what makes a row
+ * survive a restart. A `pipeline-row` event names the pipeline, the row and
+ * the run the server attached to it, and the log is append-only and ordered —
+ * so the last one that named a run IS the run the row is on, in this process
+ * or in the next one over the same directory.
+ */
+export const runIdOf = (registry: Registry, pipelineId: string, rowId: string): string | undefined => {
+  for (const event of [...registry.runs.db.events.byKind("pipeline-row")].reverse()) {
+    const payload = event.payload as { pipelineId?: unknown; rowId?: unknown; runId?: unknown };
+    if (payload.pipelineId !== pipelineId || payload.rowId !== rowId) continue;
+    if (typeof payload.runId === "string") return payload.runId;
+  }
+  return undefined;
+};
+
+/** The pipeline row a run belongs to, for a run that is one. */
+export const ownerOf = (registry: Registry, runId: string): RowOwner | undefined => {
+  for (const event of [...registry.runs.db.events.byKind("pipeline-row")].reverse()) {
+    const payload = event.payload as { pipelineId?: unknown; rowId?: unknown; runId?: unknown };
+    if (payload.runId !== runId) continue;
+    if (typeof payload.pipelineId === "string" && typeof payload.rowId === "string") {
+      return { pipelineId: payload.pipelineId, rowId: payload.rowId };
+    }
+  }
+  return undefined;
+};
 
 /**
  * A row's status, read off the run the server started for it.
@@ -71,12 +97,12 @@ export const statusOf = (registry: Registry, pipelineId: string, rowId: string):
   }
 };
 
-/** Remember which run a row is on, and say so. */
+/**
+ * Say which run a row is on. The saying IS the remembering: the event is
+ * appended before it is published, so the attachment is durable by the time
+ * anybody hears about it.
+ */
 const attach = (registry: Registry, pipelineId: string, row: PipelineRow, runId: string): void => {
-  const rows = registry.pipelineRuns.get(pipelineId) ?? new Map<string, string>();
-  registry.pipelineRuns.set(pipelineId, rows);
-  rows.set(row.id, runId);
-  registry.rowOwners.set(runId, { pipelineId, rowId: row.id });
   registry.events.emit({
     type: "pipeline-row",
     pipelineId,
