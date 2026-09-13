@@ -379,7 +379,7 @@ export async function runStep<I, O>(
 }
 
 /**
- * The `decision` field of a step output, for the report.
+ * The `decision` field of a step output, for the attempt record.
  *
  * `O` is caller-defined, and the ONE thing every step output is guaranteed to
  * carry is `decision` — that is `stepOutput`'s whole contract and the only

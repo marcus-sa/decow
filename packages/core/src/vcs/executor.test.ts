@@ -8,7 +8,7 @@
  *
  * So the graph here is deliberately the smallest one that has the shape of
  * DELIVER's `implement`: one leaf that emits a `replace-symbol`, and a branch
- * that routes the write outcome. The leaf's model is a stub journal hit, so no
+ * that routes the write outcome. The leaf's model is a scripted binding, so no
  * model is called; the verifier's stages are injected, so no compiler runs.
  * Everything between the effect and the file on disk is real.
  */

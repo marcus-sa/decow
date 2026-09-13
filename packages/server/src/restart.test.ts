@@ -1,12 +1,11 @@
 /**
  * A run outlives the process that started it.
  *
- * This is the claim the three tables exist for, and it is the one the previous
- * cut could not make: runs, traces, attempts and the step-to-run mapping lived
- * in maps, so a restarted server showed no prior run, a delivered pipeline step
- * read `pending` again, and a suspension nobody had answered yet could not be
- * answered at all — the engine's snapshot was on disk and the server had
- * forgotten which graph it was of.
+ * This is the claim the three tables exist for. With runs, traces, attempts
+ * and the step-to-run mapping in maps, a restarted server shows no prior run,
+ * a delivered pipeline step reads `pending` again, and a suspension nobody has
+ * answered yet cannot be answered at all — the engine's snapshot is on disk
+ * and the server has forgotten which graph it is of.
  *
  * So the test is the whole loop through the real `serve()`, twice, over ONE
  * directory: start a run, park it for a person, stop the server, start a second
@@ -153,10 +152,10 @@ describe("a restarted server", () => {
   }, 30_000);
 
   test("a pipeline step that was delivered stays delivered", async () => {
-    // The step-to-run mapping is read off the `pipeline-step` events rather than
-    // held in a map, which is what stops a restarted server running a step a
-    // second time. Without it `statusOf` reads `pending` and the frontier
-    // re-delivers everything the previous process finished.
+    // The step-to-run mapping is read off the `pipeline-step` events rather
+    // than held in a map, which is what stops a restarted server running a
+    // step a second time. Without it `statusOf` reads `pending` and the
+    // frontier re-delivers everything the last process finished.
     const dir = runDirectory();
 
     const first = await boot(dir);

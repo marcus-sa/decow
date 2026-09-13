@@ -7,7 +7,7 @@
  * what one step's run is seeded with, what its outcome is persisted as, and how
  * a step's status is derived from what was persisted.
  *
- * NOTHING HERE SCHEDULES ANYTHING, and that is the shape of this cut. A
+ * NOTHING HERE SCHEDULES ANYTHING, and that is the shape of the split. A
  * pipeline registration is data plus two hooks; the SERVER drives the frontier
  * through `@des/core`'s scheduler and starts each ready step as an ordinary run
  * of the registered `deliver` graph. So a step has a run id, a live trace,
@@ -15,8 +15,8 @@
  * other run in — none of which a composition that called `run()` itself could
  * offer.
  *
- * STATE IS A PROJECTION, and it still is where it matters. Each finished run
- * appends a `step_runs` row and a step's history is read back as those rows;
+ * STATE IS A PROJECTION. Each finished run appends a `step_runs` row and a
+ * step's history is read back as those rows;
  * that is the durable record of what this roadmap has been through, and it is
  * what `runsOf` answers "did it ever fail" from.
  */

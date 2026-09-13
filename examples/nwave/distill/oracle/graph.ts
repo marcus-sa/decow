@@ -1,13 +1,13 @@
 /**
  * DISTILL, second half: the oracle is authored, and SOFTWARE measures it.
  *
- * `des oracle --value N` is two things and one step, and the third was
- * deliberately retired. Between authoring and measuring RED the caller has no
- * decision to make. It did have one between MEASURED and JUDGED, and the
- * delivered step denies it by not buying a pre-craft judge: that was a fourth
- * model boundary, and a judge that approved a broken oracle in 27 seconds is
- * what the measurement replaced. The oracle's independent judgement is the
- * whole-diff review at the end, which sees oracle and implementation together.
+ * `des oracle --value N` is two things and one step. Between authoring and
+ * measuring RED the caller has no decision to make, and between MEASURED and
+ * JUDGED it deliberately buys no pre-craft judge: that would be a fourth model
+ * boundary, and the incident that would justify one — a judge approving a
+ * broken oracle in 27 seconds — is answered by a measurement that is software
+ * and free. The oracle's independent judgement is the whole-diff review at the
+ * end, which sees oracle and implementation together.
  *
  *   author = loop(body: author-oracle, until: red or blocked, max: 2)
  *   |

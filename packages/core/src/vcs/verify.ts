@@ -16,13 +16,12 @@
  * its interesting answer is a failure. It lives on the verifier because this
  * is the module's one place that knows what running a test MEANS.
  *
- * EVERY STAGE IS A COMPOSITION OF `run-command`, and that is the change this
- * file exists to carry. It used to spawn `bunx tsc --noEmit` and
- * `bun test <file> -t <name>` itself, which made the verifier a thing only a
- * bun project could be verified by. Now the four jobs are the framework's and
- * the four COMMANDS are the consumer's (`src/core/commands.ts`): a stage
- * builds the declared command into a `run-command` effect and hands it to the
- * injected executor. Nothing here spawns anything.
+ * EVERY STAGE IS A COMPOSITION OF `run-command`. A verifier that spawned
+ * `bunx tsc --noEmit` and `bun test <file> -t <name>` itself would be a thing
+ * only a bun project could be verified by; the four jobs are the framework's
+ * and the four COMMANDS are the consumer's (`src/core/commands.ts`), so a
+ * stage builds the declared command into a `run-command` effect and hands it
+ * to the injected executor. Nothing here spawns anything.
  *
  * That seam is also what makes the write path assertable without a process. A
  * test injects an executor that answers each effect from a script, and the
@@ -77,8 +76,7 @@ export type StageName = (typeof STAGE_NAMES)[number];
  * What a rejected write was rejected by. `structural` is "the edit did not
  * parse"; `contract` is "the edit parsed, and it did something other than what
  * was declared" (§ 4.5, § 5.4). `lint` is the repository's own declared rules
- * refusing the bytes, which used to be the stubbed `policy` stage and is now
- * a command a consumer names.
+ * refusing the bytes, through a command a consumer names.
  */
 export type RejectedBy = "structural" | "contract" | "typecheck" | "lint" | "tests";
 
@@ -170,10 +168,10 @@ export type MeasureContext = {
 export type Verifier = {
   typecheck: (ctx: StageContext) => Promise<StageOutcome>;
   /**
-   * The repository's own declared rules over the files a write touched. This
-   * replaces the `policy` stage, which was a stub that passed because neither
-   * of § 6.1's policy mechanisms was built; a declared lint command is one
-   * that is.
+   * The repository's own declared rules over the files a write touched. A
+   * declared command rather than one of § 6.1's two policy mechanisms, because
+   * neither of those is built and a declared command is one a consumer can
+   * name.
    */
   lint: (ctx: StageContext) => Promise<StageOutcome>;
   tests: (ctx: TestStageContext) => Promise<StageOutcome>;
@@ -453,9 +451,8 @@ const COMPLETED_EXITS = new Set([0, 1]);
  * records neither a failure nor an error is a world this cannot describe, and
  * answering `red` there would be a silent-wrong pass into a paid craft turn.
  *
- * The rule is unchanged by the move from a runner's stdout to a JUnit report.
- * What changed is where the counts come from, which is the whole point: the
- * verdict no longer depends on one runner's human output.
+ * The counts come from a JUnit report rather than a runner's stdout, which is
+ * what keeps the verdict from depending on one runner's human output.
  */
 export const oracleVerdict = (
   exitCode: number | undefined,

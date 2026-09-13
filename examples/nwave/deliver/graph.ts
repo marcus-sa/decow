@@ -45,7 +45,7 @@
  *
  * A still-red suite is classified before it is retried. `diagnose` answers
  * with the cause, and each cause goes to whoever owns it: `impl-wrong` is the
- * implement loop as it always was, `at-wrong` corrects the acceptance test and
+ * plain implement loop, `at-wrong` corrects the acceptance test and
  * re-runs the suite without re-implementing, `design-missing` leaves the cycle
  * for the architect and then a person, and `harness-failed` is the block it
  * already was one leaf up.
@@ -106,18 +106,14 @@ import {
  * verdict, so the body runs once whatever the bound says (see
  * `ExhaustibleLoopId`).
  *
- * It was a budget decision with a measurement behind it while the mutation
- * gate existed, and the measurement is kept because the day a consumer
- * declares a mutation command the decision comes back with it. `select-tests`
- * sits inside `test-loop`, which sits inside `cycle`, so its multiplier
- * compounds once per (cycle x test) iteration. Measured on the walk, with the
- * other two bounds at 2: cutting `MAX_CYCLES` to 1 gave 450 paths in ~4.5 s;
- * cutting `MAX_GATE_ATTEMPTS` to 1 instead gave 5615 paths in ~254 s, because
- * it is not one of the two loops the new leaf is inside; cutting
- * `MAX_TEST_ATTEMPTS` to 1 would also work on time (285 paths, ~2 s) and is
- * the most expensive in signal — five tests depend on the test loop running
- * twice, including the whole `at-wrong` re-run-without-re-implementing claim
- * and both write-retry claims. So the cycle is the one that gave way.
+ * It is also the bound to cut the day one is declared, and the reason is the
+ * multiplier. `select-tests` sits inside `test-loop`, which sits inside
+ * `cycle`, so it compounds once per (cycle x test) iteration and three bounds
+ * at 2 puts the walk past 7000 paths. `MAX_GATE_ATTEMPTS` does not reach far
+ * enough, because the gates loop is not one of the two loops `select-tests` is
+ * inside; `MAX_TEST_ATTEMPTS` is the most expensive in signal, because five
+ * tests depend on the test loop running twice, including the whole `at-wrong`
+ * re-run-without-re-implementing claim and both write-retry claims.
  */
 export const MAX_TEST_ATTEMPTS = 2;
 export const MAX_GATE_ATTEMPTS = 2;
@@ -138,11 +134,11 @@ export type LoopId = (typeof LOOP_IDS)[number];
  * never what stops the cycle, and a `cycle-exhausted` reason would be a word
  * nothing produces.
  *
- * It was produced once. `mutation-below-gate` routed to an `add-test` leaf
- * that invalidated the green verdict and sent the run round again, and both
- * are gone with the model that classified a gate run. The loop NODE stays,
- * because the day a consumer declares a mutation command the second pass comes
- * back with it.
+ * What would produce one is a `mutation-below-gate` verdict routing to an
+ * `add-test` leaf that invalidated the green verdict and sent the run round
+ * again; no declared command produces a mutation kill rate, so neither exists.
+ * The loop NODE stays, because the day a consumer declares a mutation command
+ * the second pass comes back with it.
  */
 export type ExhaustibleLoopId = Exclude<LoopId, "cycle">;
 
@@ -759,8 +755,8 @@ export const deliverGraph = (
 
     diagnose: leafNode("diagnose", defs, journal, { next: "diagnose.route" }, observe),
 
-    // Each cause routes to whoever owns it. `impl-wrong` is the loop it always
-    // was. `at-wrong` corrects the test. `design-missing` and `harness-failed`
+    // Each cause routes to whoever owns it. `impl-wrong` is the plain loop.
+    // `at-wrong` corrects the test. `design-missing` and `harness-failed`
     // are blocks: `blockedReason` sees them, every enclosing `until` goes true,
     // and the run unwinds to `cycle.verdict` rather than jumping out of the
     // body, which the boundary rule does not allow.

@@ -154,8 +154,8 @@ export const UNRESOLVABLE: Roadmap = {
  * `invalid` edge and the defect list has something to say about each step:
  * `03-01` is duplicated and depends on nothing that exists; `03-02` names no
  * authority; the pair `03-03` / `03-04` declare each other, which is a cycle;
- * and every observation here is too short to be worked from, which is the
- * defect that replaced `no-acceptance` when obligations became DISTILL's.
+ * and every observation here is too short to be worked from, which is what
+ * ROADMAP can ask about a step whose obligations are DISTILL's to state.
  */
 const malformed = (
   id: string,

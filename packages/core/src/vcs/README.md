@@ -18,8 +18,7 @@ framework.
 and hands it to an injected executor. In production that executor is the one
 that spawns; in a test it is a script, and the whole verification pipeline runs
 in microseconds. That is also what makes the module usable by a project that is
-not a bun project, which the hardcoded `bunx tsc` and `bun test` it used to
-spawn never were.
+not a bun project: nothing here knows what a consumer's toolchain is.
 
 **174 tests, 2.3 s, no network, no key, no model.** The stages are injected or
 scripted everywhere except three files: `verify.test.ts` drives every stage
@@ -54,11 +53,11 @@ export), § 9.2 (cross-repository), § 9.4 (authorization).
 
 `tree-sitter` + `tree-sitter-typescript`, the native Node bindings.
 
-`web-tree-sitter` with wasm grammars was tried first, because a wasm grammar is
-the more portable artifact. It does not load under bun: the published
-`tree-sitter-wasms` grammars and the current `web-tree-sitter` runtime disagree
-on the dylink ABI, and `Language.load` throws inside the emscripten module
-loader before any of our code runs. The native bindings ship prebuilt binaries
+A wasm grammar is the more portable artifact, and `web-tree-sitter` with one
+does not load under bun: the published `tree-sitter-wasms` grammars and the
+current `web-tree-sitter` runtime disagree on the dylink ABI, and
+`Language.load` throws inside the emscripten module loader before any of our
+code runs. The native bindings ship prebuilt binaries
 for darwin, linux and win32 on both arm64 and x64, so nothing compiles at
 install time; they parse synchronously, so a parse can sit inside the write path
 with no `await`; and they typecheck against a real `.d.ts`.
@@ -84,10 +83,11 @@ What the inventory recognises, which is exactly what a lease can be taken on:
 **The walk stops at a function-like symbol and descends into a class.** A
 function's body is its content, not a container of separately addressable
 symbols; a class's methods are addressable in their own right. That boundary is
-load-bearing rather than tidy, and the real-tool test is what found it:
-descending into function bodies made every local `const` a tracked symbol, so
-replacing a body with one that introduced a local changed the file's identity
-set and the structural stage correctly refused an edit that was perfectly fine.
+load-bearing rather than tidy, and `real-tools.test.ts` is what holds it:
+descending into function bodies would make every local `const` a tracked symbol,
+so replacing a body with one that introduced a local would change the file's
+identity set and the structural stage would correctly refuse an edit that is
+perfectly fine.
 
 A symbol's range is its whole declaration, `export` keyword included, so a body
 replacement is a self-contained unit. Its name range is the name token on its
@@ -179,9 +179,9 @@ source, what identity delta they declare, and what lease mode they require.
    the file that consumes the symbol rather than the one that defines it.
    `rejected: typecheck`.
 8. **Lint stage.** The consumer's declared `commands.lint`, over the file the
-   write touched. `rejected: lint`. This replaced a `policy` stage that was a
-   stub returning "passed" because neither of § 6.1's policy mechanisms was
-   built; a declared lint command is one that is. It is scoped to the write
+   write touched. `rejected: lint`. It is a declared command rather than one of
+   § 6.1's two policy mechanisms, because neither of those is built and a
+   declared command is one a consumer can name. It is scoped to the write
    rather than to the project because it runs INSIDE the write path and the
    question it answers is whether THESE bytes broke a rule.
 9. **Tests stage.** The consumer's declared `commands.tests`, once per
@@ -267,10 +267,9 @@ failures > 0                            -> red,           axis "counts"
 otherwise                               -> indeterminate, axis "counts"
 ```
 
-The rule is unchanged from the cut that scraped bun's stdout. What changed is
-where the counts come from: the declared oracle command is told where to write
-a JUnit report and `junit.ts` reads it, so the verdict is no longer a function
-of one runner's human output.
+The counts come from a report rather than from a runner's prose: the declared
+oracle command is told where to write a JUnit report and `junit.ts` reads it,
+so the verdict is not a function of one runner's human output.
 
 `junit.ts` keeps two absences apart, and that is what lets the rule stay as it
 is. **No report at all** means the runner never got as far as writing one, so
@@ -281,10 +280,9 @@ either. **A report no reader can count** is different: the runner wrote
 something, so nothing was ESTABLISHED rather than nothing having run, the
 counts are zeros, and a non-zero exit over them is `indeterminate`.
 
-One reading moved, and it got sharper. A selector naming no test was `broken`
-on `no-summary`, because bun printed no summary. Its JUnit report says two
-tests existed and both were skipped, and it exits non-zero anyway: that is the
-definition of `indeterminate`, and it is now what it is called.
+A selector naming no test is `indeterminate`. Its JUnit report says two tests
+existed and both were skipped, and it exits non-zero anyway: a non-zero exit
+that establishes nothing is exactly what that word names.
 
 `errored` is failures-versus-errors, which is the whole reason the counts are
 read rather than the exit status. bun does not distinguish them and emits
@@ -309,8 +307,8 @@ The tests stage's question is "did you break something ELSE". It already
 excludes every test the BATCH is rewriting (deviation 14). Once oracles are
 live files rather than pending markers that is not wide enough: a value is only
 ready to be delivered once its own oracle has been measured red, so a module
-with two undelivered values always has a live failing test in it, and the gate
-was refusing a sibling's correct write for it.
+with two undelivered values always has a live failing test in it, and a gate
+that stopped there would refuse a sibling's correct write for it.
 
 `replaceSymbolBody` and `runTests` therefore take `knownRed`: tests the caller
 knows were already failing for a reason this write did not cause. The caller
@@ -725,12 +723,11 @@ not be writing lease ids into effect payloads.
 ## Not built yet
 
 - **The ast-grep pattern and rewrite layer (§ 4.2, § 9.3).** The rule checks
-  § 6.1 put in a policy stage are a declared lint command now, so the stage is
-  no longer a stub; what is still missing is the pattern layer inside the VCS.
-  It is also what the design's `checks/symbol-diff.ts` wants, and what would
-  make "implement to the design, never invent public API" a set difference over
-  exported symbols rather than a model refuting prose. The symbol inventory it
-  needs now exists.
+  § 6.1 puts in a policy stage are a declared lint command; what is missing is
+  the pattern layer inside the VCS. It is also what the design's
+  `checks/symbol-diff.ts` wants, and what would make "implement to the design,
+  never invent public API" a set difference over exported symbols rather than a
+  model refuting prose. The symbol inventory it needs exists.
 - **The MCP tool surface (§ 4.5).** See deviation 3. The intent payload is
   built; the tools that would deliver it to a free agent are not.
 - **The LSP layer (§ 4.6, § 7.3).** No cross-file reference resolution, no

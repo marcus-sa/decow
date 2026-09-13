@@ -24,8 +24,9 @@
  * roadmaps in `./fixture.ts`. Enumerating a graph whose decisions are
  * functions of its data means enumerating enough data to reach every edge.
  *
- * Zero model calls, no API key, no network. The stub journal throws on a miss
- * and the model bindings throw if called at all.
+ * Zero model calls, no API key, no network. Every leaf is stubbed at the
+ * BINDING, a scripted worker with no entry for a step throws by name, and the
+ * journal answers nothing, so a walk replays nothing.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -196,8 +197,8 @@ describe("roadmap graph", () => {
     // `duplicate-id` as mechanical checks. A proposal breaking one is refused
     // before a validator is spent, and a worker that keeps proposing it
     // exhausts its budget at the LEAF — which is a different block from the
-    // gate's, and one a seeded journal could not tell apart because it never
-    // ran the check.
+    // gate's, and one a seeded journal could not tell apart because it would
+    // never run the check.
     const outcome = await start({ decompose: "malformed", slices: "is-slice" });
 
     expect(outcome.kind).toBe("suspended");
@@ -316,12 +317,11 @@ describe("roadmap graph, exhaustively", () => {
 
     // The bound is what makes this a number rather than an infinity.
     //
-    // It was 169 when every leaf answered from a seeded journal, which skipped
-    // the six mechanical checks `decompose` carries and the three
-    // `validate-slices` does. Stubbing at the binding runs them, and the walk
-    // gained a fifth proposal so the gate's own `invalid` edge stays
-    // reachable — `MALFORMED` breaks three rules the LEAF owns, so it exhausts
-    // there, and `UNSHAPED` breaks only the two the gate owns alone.
+    // Stubbing at the binding runs the six mechanical checks `decompose`
+    // carries and the three `validate-slices` does, so the walk draws from a
+    // fifth proposal to keep the gate's own `invalid` edge reachable —
+    // `MALFORMED` breaks three rules the LEAF owns, so it exhausts there, and
+    // `UNSHAPED` breaks only the two the gate owns alone.
     expect(paths).toHaveLength(176);
 
     // Every node the graph declares was exercised. Nothing is excused here:
@@ -379,9 +379,8 @@ describe("validate-shape names its defects", () => {
   });
 
   test("an observation too short to be worked from is named, with its length", () => {
-    // The check that replaced `no-acceptance` when obligations became
-    // DISTILL's. What ROADMAP can still ask is whether the observation says
-    // enough to decide anything about.
+    // Obligations are DISTILL's to state, so what ROADMAP asks is whether the
+    // observation says enough to decide anything about.
     const terse = {
       ...KNOWN_GOOD,
       steps: [{ ...(stepAt(KNOWN_GOOD, 0)), observation: "it works" }, ...KNOWN_GOOD.steps.slice(1)],

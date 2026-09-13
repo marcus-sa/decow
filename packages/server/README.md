@@ -116,10 +116,9 @@ run's row carries the input and the engine's id, and the runner holds nothing â€
 it rebuilds the graph from the registration. `src/restart.test.ts` drives that
 through two real `serve()` calls over one directory.
 
-The previous cut kept all of this in maps and said losing it cost a reader
-their scroll position rather than a fact. It cost both: a restarted server
-showed no prior run, and a step whose run had settled read `pending` again, so a
-second drive would deliver it twice.
+Maps in their place cost more than a reader's scroll position: a restarted
+server would show no prior run, and a step whose run had settled would read
+`pending` again, so a second drive would deliver it twice.
 
 **What is still in memory is a fact about THIS PROCESS**, and a second process
 has its own answer to each: which pipelines are being driven right now, what

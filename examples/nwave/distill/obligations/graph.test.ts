@@ -10,9 +10,9 @@
  * BINDING rather than at the journal, so the output schema, the ten mechanical
  * checks and the validator all run on every path.
  *
- * That change surfaced something the seeded journal was hiding. The leaf
- * carries the same manifest rules as mechanical checks that the gate carries
- * as a total function — deliberately, "so a rule cannot hold at one and not
+ * That is what makes the walk's shape the graph's own. The leaf carries the
+ * same manifest rules as mechanical checks that the gate carries as a total
+ * function — deliberately, "so a rule cannot hold at one and not
  * the other" — so a proposal breaking one of them never REACHES the gate: the
  * check refuses it, the worker is re-driven with the defect named, and a
  * worker that keeps proposing it exhausts. The gate's `invalid` edge is
@@ -177,8 +177,8 @@ describe("the obligations graph", () => {
     // so a proposal that breaks one is refused before a validator is spent and
     // the worker is re-driven with the defect named. A worker that keeps
     // proposing it exhausts its attempt budget at the LEAF, which is a
-    // different block from the gate's — and the seeded journal this test used
-    // to run on could not tell them apart, because it never ran the check.
+    // different block from the gate's. A seeded journal could not tell them
+    // apart, because it would never run the check.
     const outcome = await start("no-obligations");
 
     expect(outcome.kind).toBe("suspended");
@@ -366,11 +366,9 @@ describe("the obligations graph, exhaustively", () => {
 /**
  * The count the walk produces, pinned so a graph change has to restate it.
  *
- * It was 55 when every leaf answered from a seeded journal, which skipped the
- * ten mechanical checks the leaf carries. Stubbing at the binding runs them, so
- * nine of the proposals now exhaust at the leaf rather than iterating the loop
- * through the gate — and the paths that disappeared were ones production could
- * not take.
+ * Stubbing at the binding runs the ten mechanical checks the leaf carries, so
+ * nine of the proposals exhaust at the leaf rather than iterating the loop
+ * through the gate. Every path in the count is one production can take.
  */
 const EXPECTED_PATHS = 28;
 
@@ -383,8 +381,7 @@ const EXPECTED_PATHS = 28;
  *
  * Consulted once per INVOCATION rather than per call — `scriptedBinding` holds
  * the chosen answers across a leaf's retries — so a leaf that a mechanical
- * check refused and re-drove is one choice point, exactly as it was when the
- * journal answered.
+ * check refused and re-drove is one choice point.
  */
 const chooseBinding = (choose: Choose): ModelBinding =>
   scriptedBinding(({ step }) => {

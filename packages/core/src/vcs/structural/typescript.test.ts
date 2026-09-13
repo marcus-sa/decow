@@ -131,10 +131,10 @@ describe("tree-sitter TypeScript inventory", () => {
   });
 
   test("a function body holds no symbols, which is what keeps a body rewrite legal", () => {
-    // The real-tool test found this. Inventorying locals made every edit that
-    // introduced one a change to the file's identity set, so the structural
-    // stage refused body rewrites that were perfectly fine. The registry
-    // addresses what a lease can be taken on; a local is not that.
+    // Inventorying locals would make every edit that introduced one a change
+    // to the file's identity set, so the structural stage would refuse body
+    // rewrites that are perfectly fine. The registry addresses what a lease
+    // can be taken on; a local is not that.
     const source = `export function outer(): number {
   const local = 1;
   function inner(): number {

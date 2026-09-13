@@ -1,7 +1,7 @@
 /**
  * The one stub mechanism, tested where it lives.
  *
- * Four claims, and each is the reason something upstream got simpler: an
+ * Four claims, and each is a property the rest of the suite leans on: an
  * answer is validated against the leaf's OWN schema, the worker's answers are
  * per attempt and the last one repeats, a step with no script refuses by name,
  * and the validator half always passes so a scripted worker's decision is the

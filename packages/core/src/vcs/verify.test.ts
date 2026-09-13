@@ -1,11 +1,11 @@
 /**
  * The verification stages, driven without a process.
  *
- * Every stage is now a composition of `run-command` over a consumer's declared
+ * Every stage is a composition of `run-command` over a consumer's declared
  * `Commands`, which means the seam a test needs is one function: the executor
  * the stage hands its effect to. `scriptedCommands` is that function, and with
  * it the whole pipeline is assertable in microseconds — including the two
- * things that used to need a compiler and a test runner on disk.
+ * stages that otherwise need a compiler and a test runner on disk.
  *
  * What this file pins, and `real-tools.test.ts` then confirms against the real
  * tools once:

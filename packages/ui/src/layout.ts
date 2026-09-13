@@ -13,9 +13,9 @@
  * EDGE LABELS ARE A DAGRE PROBLEM, not a painting one. Given an edge's label
  * dimensions, dagre reserves a rank for it, routes the edge through it, and
  * hands back the point it chose as `edge.x` / `edge.y`. The drawing then puts
- * the label THERE rather than at the edge's midpoint — which is what was
- * putting `exhausted`, `cannot-decompose` and `invalid` in the same place, all
- * three edges running between the same pair of ranks at the same x.
+ * the label THERE rather than at the edge's midpoint — which would put
+ * `exhausted`, `cannot-decompose` and `invalid` in the same place, all three
+ * edges running between the same pair of ranks at the same x.
  *
  * Its own module, with no JointJS in it: this is arithmetic over the
  * projection, it runs without a DOM, and a test can therefore assert that a

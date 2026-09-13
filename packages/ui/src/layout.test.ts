@@ -118,11 +118,11 @@ describe("the layout", () => {
   });
 
   test("two edges out of one node do not share a label position", () => {
-    // This is the defect. `spin` sends `body` one way and `done` the other,
-    // and both used to be painted at their own edge's midpoint — which, for
-    // edges that share an endpoint and run between the same two ranks, is the
-    // same place. Several graphs here have three such edges converging on one
-    // loop node, and all three labels landed on top of each other.
+    // `spin` sends `body` one way and `done` the other, and an edge's own
+    // midpoint is the same place for both — edges that share an endpoint and
+    // run between the same two ranks coincide there. Several graphs here have
+    // three such edges converging on one loop node, so all three labels would
+    // land on top of each other.
     const placed = layout(projection);
     const from = (id: string) =>
       projection.edges

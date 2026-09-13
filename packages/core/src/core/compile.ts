@@ -134,13 +134,13 @@ export type WorkflowRuntime = Mastra;
  *
  * `:memory:` is the default and is what the whole test suite runs on: a run
  * parked and resumed inside one process needs no file. A `file:` URL is what
- * makes a suspension survive a process boundary — the human-review gate in the
- * roadmap workflow is answered by a SECOND command, so the run that parked is
- * long gone by the time the answer arrives.
+ * makes a suspension survive a process boundary — a server restarted against
+ * the same run directory answers a suspension its predecessor produced, and
+ * the run that parked is long gone by the time the answer arrives.
  *
  * TWO ADAPTERS, and the split is measured rather than stylistic. Running the
  * whole suite on `LibSQLStore({ url: ":memory:" })` also works and takes
- * **20.6 s** against **4.6 s** on `InMemoryStore`: the 781 enumerated paths
+ * **20.6 s** against **4.6 s** on `InMemoryStore`: the 972 enumerated paths
  * write a snapshot per step, and a SQL round trip per write is 4.5x the cost
  * of a map write. The durable path is the one that needs a database; the
  * in-memory one needs a map. So `:memory:` stays a map and a URL opens libSQL.

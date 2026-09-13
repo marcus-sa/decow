@@ -3,14 +3,13 @@
  *
  * These are the bodies `@des/ui` wraps in `createServerFn`, so driving them
  * here is driving what a browser reaches, minus the RPC. No model: the one
- * leaf in the fixture answers from a stub journal and its bindings throw if
- * anything reaches them.
+ * leaf in the fixture answers from a scripted binding.
  *
  * What is asserted is the thing a UI depends on — that a run announces itself,
  * reports the nodes it enters as it enters them, parks with the closed enum a
  * person has to choose from, refuses an answer outside that enum by NAMING it,
- * and continues the SAME run to a terminal — plus the half this cut moved:
- * that a pipeline's steps are ordinary runs of registered graphs, driven by the
+ * and continues the SAME run to a terminal — plus the pipeline half: that a
+ * pipeline's steps are ordinary runs of registered graphs, driven by the
  * server's own scheduler, each with a run id, a trace and a suspension a
  * person answers in the same place.
  */
@@ -202,9 +201,9 @@ describe("the graphs, and one run of one", () => {
   });
 
   test("one run exports as JSON lines: the run, its attempts, then its events", async () => {
-    // What `report.jsonl` was FOR, as a read rather than a second writer. The
-    // file was written as a run happened and its token columns could not be
-    // attributed; the rows can, so the export is a projection of them.
+    // A read of the rows rather than a second writer beside them. A file
+    // written as a run happens cannot attribute its token columns; the rows
+    // can, so the export is a projection of them.
     const { registry } = gateRegistry("ready", "ship the cut");
     startRun(registry, "gate", { subject: "ship the cut" });
     await registry.idle();

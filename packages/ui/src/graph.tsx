@@ -12,8 +12,8 @@
  *
  * AN EDGE LABEL GOES WHERE DAGRE PUT IT, not at the edge's midpoint. Several
  * edges routinely share an endpoint — every loop-exit edge converges on the
- * loop node — and their midpoints then coincide, which is how `exhausted`,
- * `cannot-decompose` and `invalid` ended up painted on top of one another.
+ * loop node — and their midpoints then coincide, which paints `exhausted`,
+ * `cannot-decompose` and `invalid` on top of one another.
  * `layout.ts` gives dagre each label's size, dagre reserves a rank for it and
  * answers with a point, and `getLabelPosition` turns that point into the
  * distance-and-offset a JointJS label is addressed by.

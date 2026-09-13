@@ -1,8 +1,8 @@
 /**
  * The delivery pipeline, driven from the browser.
  *
- * The claim under test is the one this cut is for: a pipeline step is an
- * ORDINARY RUN. The tree shows two steps whose oracles DISTILL already measured
+ * The claim under test is that a pipeline step is an ORDINARY RUN. The tree
+ * shows two steps whose oracles DISTILL already measured
  * red; pressing one button drives the frontier through the server's own
  * scheduler; each step becomes a run with a server id, and the step links to it;
  * and opening that link is the same run page every other run is drawn on,

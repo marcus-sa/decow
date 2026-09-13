@@ -10,12 +10,10 @@
  * The walk is enumerating what the graph does with each answer, so replay is
  * the one thing that must be off.
  *
- * It replaced `stubJournal`, which seeded `StepResult`s per step id so a leaf
- * never reached a model at all. Nothing seeds a journal any more: a leaf is
- * stubbed at the binding (`./scripted-binding.ts`), which is the seam
- * production has, so everything between the seam and the decision — the output
- * schema, the mechanical checks, the validator — runs for real on every path.
- * What survived is the half that was never about seeding.
+ * Nothing seeds a journal: a leaf is stubbed at the binding
+ * (`./scripted-binding.ts`), which is the seam production has, so everything
+ * between the seam and the decision — the output schema, the mechanical
+ * checks, the validator — runs for real on every path.
  *
  * It is NOT a way to stub a leaf. A run over this journal calls whatever
  * bindings its steps were built with, every time.

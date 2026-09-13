@@ -95,7 +95,7 @@ export type VcsExecutorOptions = {
    * Where `upsert-artifact` lands. The VCS is the data plane for CODE and it
    * is not becoming the data plane for artifact rows: the store is a separate
    * module with its own database, and this executor routes to it rather than
-   * answering `infra-failed` for a write it now has somewhere to put. Absent
+   * answering `infra-failed` for a write it has somewhere to put. Absent
    * store, `upsert-artifact` is still `infra-failed`, because an executor with
    * nowhere to write must not pretend otherwise.
    */

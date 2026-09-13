@@ -86,8 +86,8 @@ describe("the verdict rule", () => {
 });
 
 /**
- * The five shapes, against the real runner. Every expectation here was
- * measured against bun 1.3.12 before the rule above was written.
+ * The five shapes, against the real runner. Every expectation here is measured
+ * against bun 1.3.12 rather than assumed.
  */
 describe("the real runner", () => {
   const PROJECT = {
@@ -155,12 +155,10 @@ describe("the real runner", () => {
   }, 30_000);
 
   test("a selector naming no test is indeterminate: it failed, and nothing failed", async () => {
-    // Under a JUnit report this is `indeterminate` rather than `broken`, and
-    // that is the reading getting SHARPER rather than a rule changing. bun
-    // does write a report for a selector that matched nothing — two tests, two
-    // skipped, no failure and no error — and exits non-zero anyway. That is
-    // exactly what `indeterminate` is defined as, and answering `red` there
-    // would be a silent-wrong pass into a paid craft turn.
+    // bun writes a report for a selector that matched nothing — two tests,
+    // two skipped, no failure and no error — and exits non-zero anyway. That
+    // is exactly what `indeterminate` is defined as, and answering `red`
+    // there would be a silent-wrong pass into a paid craft turn.
     const measured = await measure("green.test.ts::no such test");
     expect(measured).toMatchObject({ verdict: "indeterminate", axis: "counts", exitCode: 1 });
     expect(measured.counts).toEqual({ passed: 0, failed: 0, errored: 0 });
@@ -183,8 +181,8 @@ describe("the real runner", () => {
   test("a runner that cannot start is infra-failed rather than a verdict", async () => {
     // Nothing about the oracle was observed, so nothing about it is claimed —
     // and in particular the defect is not the author's. The effect names only
-    // the oracle now, so what makes the runner unstartable is the DECLARED
-    // command naming a binary that is not there.
+    // the oracle, so what makes the runner unstartable is the DECLARED command
+    // naming a binary that is not there.
     const root = tempProject(PROJECT);
     const vcs = openVcs({
       root,

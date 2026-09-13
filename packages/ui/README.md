@@ -60,7 +60,7 @@ midpoint lands on its neighbour's. `layout.ts` gives dagre each label's size,
 dagre reserves a rank for it and answers with a point, and the link's own view
 converts that point into the distance-and-offset a JointJS label is addressed
 by. `layout.test.ts` asserts that two edges out of one node do not share a
-position; the screenshots are where it was seen going wrong.
+position.
 
 JointJS is imported inside the effect that draws. Every route is
 server-rendered, and a drawing library that wants a document has nothing to do

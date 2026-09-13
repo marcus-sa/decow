@@ -151,9 +151,9 @@ export const openRunner = (options: RunnerOptions): Runner => {
    * Fold a finished run into its record and say so.
    *
    * The engine's own trace is not written back: the run's `node-entered`
-   * events ARE the trace now, and they were appended as they happened. The two
-   * agreed in every case observed while both existed; keeping the log as the
-   * one that answers is what stops a second copy drifting from it.
+   * events ARE the trace, and they were appended as they happened. Keeping the
+   * log as the one that answers is what stops a second copy drifting from
+   * it.
    */
   const settle = (runId: string, graph: Workflow<unknown>, outcome: RunOutcome<unknown>): void => {
     if (outcome.kind === "suspended") {

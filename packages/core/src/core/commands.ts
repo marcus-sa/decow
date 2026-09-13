@@ -2,14 +2,14 @@
  * Declared commands: how a consumer's project is typechecked, linted, tested,
  * and how one oracle is executed.
  *
- * Every process this framework runs used to be hardcoded to bun. The verifier
- * spawned `bunx tsc --noEmit`, the tests stage spawned `bun test <file> -t
- * <name>`, an oracle locator derived a `bun test` argv, and lint did not exist
- * at all. A consumer whose project uses a different typechecker, a different
- * runner, or any linter had no way to say so.
+ * A framework that spawned `bunx tsc --noEmit` and `bun test <file> -t <name>`
+ * itself could check no project whose typechecker or test runner is anything
+ * else, and could carry no lint stage at all, because nothing would declare
+ * one.
  *
- * `Commands` is that way. It is four functions from typed arguments to a
- * command, declared in the consumer's own source and read by the framework.
+ * `Commands` is where a consumer says. It is four functions from typed
+ * arguments to a command, declared in the consumer's own source and read by
+ * the framework.
  * The framework knows the four JOBS; the consumer knows the four COMMANDS. The
  * shape is nwave-experimental's, where the design declares the argv forms and
  * the runner uses them rather than baking in what they declare.

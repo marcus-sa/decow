@@ -163,13 +163,13 @@ export const resumeRun = (
 };
 
 /**
- * One run's rows, as JSON lines. The whole of what `report.jsonl` was for.
+ * One run's rows, as JSON lines.
  *
- * The report was a file written as a run happened, and its token columns
- * carried `concurrent: true` because a queue drained in call order cannot say
- * which leaf spent what. The rows say: `runStep` attributes each call to the
- * attempt that made it. So this is a READ rather than a second writer, and it
- * emits the one thing a file was better at — a stream a person can grep.
+ * A second writer beside the rows — a file written as the run happens — cannot
+ * attribute its token columns, because a queue drained in call order cannot
+ * say which leaf spent what. The rows can: `runStep` attributes each call to
+ * the attempt that made it. So this is a READ, and it emits the one thing a
+ * file is better at — a stream a person can grep.
  *
  * Three kinds, in one document: the run, then its attempts, then its events.
  */

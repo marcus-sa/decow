@@ -2,14 +2,12 @@
  * What the server knows about a run — as a PROJECTION of the three tables in
  * `./store.ts`, never as a second copy of them.
  *
- * The previous cut kept this in a `Map` and said so out loud: everything
- * durable about a run was already durable somewhere better, and losing the map
- * cost a reader their scroll position rather than a fact. Both halves of that
- * were wrong. The engine's snapshot knows where a run stopped and not which
- * graph it was of; the journal knows what a step decided and not which run
- * decided it; the VCS log knows what changed and not why. The one table that
- * joined them was the map, so a restarted server showed no prior run at all and
- * a delivered pipeline step read `pending` again.
+ * A `Map` in their place costs more than a reader's scroll position. The
+ * engine's snapshot knows where a run stopped and not which graph it was of;
+ * the journal knows what a step decided and not which run decided it; the VCS
+ * log knows what changed and not why. The table that joins them is the one
+ * that would be the map, so a restarted server would show no prior run at all
+ * and a delivered pipeline step would read `pending` again.
  *
  * So the database is the source of truth and this is a read of it:
  *

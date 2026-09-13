@@ -348,7 +348,7 @@ export type Command =
 export type Commands = { [K in keyof CommandArgs]: (args: CommandArgs[K]) => Command };
 ```
 
-The framework knows the four jobs; the consumer knows the four commands. That split is the point. Every process this framework ran used to be hardcoded to one runner, so a project whose typechecker, linter or test runner was anything else had no way to be checked at all, and lint did not exist because no declaration could carry it. A bare `string[]` normalises to the object form at the framework's default timeout, and the object form exists for the three things an argv cannot say: an environment overlay, a budget, and a named shared resource.
+The framework knows the four jobs; the consumer knows the four commands. That split is the point: a framework that hardcoded one runner could check no project whose typechecker, linter or test runner was anything else, and could carry no lint stage at all, because nothing would declare it. A bare `string[]` normalises to the object form at the framework's default timeout, and the object form exists for the three things an argv cannot say: an environment overlay, a budget, and a named shared resource.
 
 The result mapping is deliberately coarse, because a branch should read a verdict and not a transcript. A process that could not be spawned, or that was killed at its timeout, is `infra-failed`. Exit zero is `committed`. Any other exit is `rejected { by: "command" }`. The output rides on the result as `command` for a person, a correction turn and the event log to read, capped per channel; the exit and the outcome are the only things a branch reads. A stage that interprets a non-zero exit reports its own name instead, so `tsc` saying no is `rejected { by: "typecheck" }` and the linter saying no is `rejected { by: "lint" }`.
 
@@ -386,7 +386,7 @@ There is one real fork: is a workflow graph generated TypeScript, or rows?
 
 Take the middle. Nodes, edges, and requirement bindings are rows. Exhaustiveness is a query: every value in `requirement.decisions` must have an edge row, or the graph is invalid. Path enumeration reads the graph from the database. The pure functions that compute a decision from state stay in TypeScript, referenced by id from the branch row. Only the decision functions deserve a typed language, and they are small. Everything else is queryable, versioned in one store, and the authoring workflow writes rows instead of source files.
 
-The cost of this choice: the compiler no longer proves exhaustiveness, a query does. The query runs in CI and in the harness, so the guarantee holds at the same points. What is lost is the red squiggle in the editor.
+The cost of this choice: the compiler does not prove exhaustiveness, a query does. The query runs in CI and in the harness, so the guarantee holds at the same points. What is lost is the red squiggle in the editor.
 
 This fork is already built downstream, which changes what has to be invented. Mastra's dynamic workflows are workflow definitions expressed as JSON: schemas plus a step graph over registered agents, tools, and nested workflows, validated on registration, persisted, and run through the same execution API as a code-defined workflow. They are beta, and they do not carry a decision function, which is the half that should stay in TypeScript anyway. So the middle path is: nodes, edges, and requirement bindings are rows; the pure decision functions stay in source and are referenced by id; and emitting a dynamic-workflow definition from a `Workflow<S>` is the authoring workflow's natural output format. That is a serializer over a graph the runtime already knows how to run, not a second execution engine.
 
@@ -405,7 +405,7 @@ The one cost is one-time. A consumer with existing prose rules migrates them to 
 nWave's DISTILL wave turns an ordered graph of values into two things: what
 each value must be *observed* to do, and the executable oracle that will
 observe it. Those are two disjoint steps in the shipped runner, and reading
-them as one is how this document got them wrong the first time.
+them as one is the mistake the split exists to prevent.
 
 ### `des distill` is provider-free
 
@@ -515,10 +515,10 @@ legitimately reach a green oracle before a craft turn; a graph that runs one
 value once with nothing behind it reaches none of them, so parking is the
 honest answer here.
 
-The pre-craft oracle reviewer is **retired**, and this is where the
+There is **no pre-craft oracle reviewer**, and this is where the
 `accepted | rejected` outcome earns its keep. A judge between "measured" and
-"judged" was a fourth model boundary, and the incident it existed for — an
-approving review of a broken oracle, in 27 seconds — is answered by a
+"judged" is a fourth model boundary, and the incident that would justify one —
+an approving review of a broken oracle, in 27 seconds — is answered by a
 measurement that is software and free. The oracle's independent judgement is
 the whole-diff review at the end, which sees the oracle and the implementation
 together.
@@ -556,13 +556,13 @@ verdicts from the same `scriptedExecutor` seam it gets a write outcome from.
 
 ## The agent-native VCS is the effect executor and mechanical verifier
 
-This is now built, as `src/vcs/` in this repo. It is a library rather than the separate Rust CLI its own design plans, because the caller here is the workflow runner and not a free agent: there is no bash to drift to, so the tool surface and the preference experiment that motivated a CLI are moot, and a coordinator in another language would need an IPC protocol before it could be used at all. The seam is one function, `vcsExecutor({ vcs, session, intent, protected, knownRed })`, which returns an `EffectExecutor`. The dependency runs one way: `src/core` imports nothing from `src/vcs`, and `src/vcs/executor.ts` imports the `Effect` and `EffectResult` types and nothing else from the framework. Four of the five things listed under "what needs changing" below are closed by it. Typed effect results are closed: `outcome` is a decision value and the write path's own result union is the same shape, so the mapping between them is the identity function. The gate separating "you broke it" from "the harness broke" is closed by the three failure categories, `contract`, `verification` and `infrastructure`, each routed to a different edge, with `contract` and `structural` added to `rejected.by` so the first of them is representable at all. Per-symbol leases in fanout are closed by atomic multi-acquire: a batch takes one write lease covering every symbol it names, which is also why holding a lease and asking for more can be refused. Two provenance stores drifting is closed by the task id on every event, so the journal's answer to "what did this step decide" and the log's answer to "what changed" join on one key. What remains open is the fifth, the symbol-set difference that would make "implement to the design, never invent public API" mechanical: the symbol inventory it needs exists, and the check that consumes it does not.
+This is built, as `src/vcs/` in this repo. It is a library rather than the separate Rust CLI its own design plans, because the caller here is the workflow runner and not a free agent: there is no bash to drift to, so the tool surface and the preference experiment that motivated a CLI are moot, and a coordinator in another language would need an IPC protocol before it could be used at all. The seam is one function, `vcsExecutor({ vcs, session, intent, protected, knownRed })`, which returns an `EffectExecutor`. The dependency runs one way: `src/core` imports nothing from `src/vcs`, and `src/vcs/executor.ts` imports the `Effect` and `EffectResult` types and nothing else from the framework. Four of the five things listed under "what needs changing" below are closed by it. Typed effect results are closed: `outcome` is a decision value and the write path's own result union is the same shape, so the mapping between them is the identity function. The gate separating "you broke it" from "the harness broke" is closed by the three failure categories, `contract`, `verification` and `infrastructure`, each routed to a different edge, with `contract` and `structural` added to `rejected.by` so the first of them is representable at all. Per-symbol leases in fanout are closed by atomic multi-acquire: a batch takes one write lease covering every symbol it names, which is also why holding a lease and asking for more can be refused. Two provenance stores drifting is closed by the task id on every event, so the journal's answer to "what did this step decide" and the log's answer to "what changed" join on one key. What remains open is the fifth, the symbol-set difference that would make "implement to the design, never invent public API" mechanical: the symbol inventory it needs exists, and the check that consumes it does not.
 
 A separate design (agent-native version control: symbol-level granularity via tree-sitter, stable symbol identity across renames, optimistic concurrency with leases, verification at write boundaries via typecheck and a test-impact graph, an immutable event log keyed by task and intent) fits this framework as its data plane for code. The framework is the control plane: what happens, in what order, validated how. The VCS is how writes land, under what concurrency, with what provenance. Neither needs the other, but together they close a loop each leaves open alone.
 
 What works:
 
-- **The verifier runs declared commands, and owns one JUnit parser.** The four stages are structural, typecheck, lint and tests, in that order, and every one after the first is a `run-command` effect built from the consumer's declared command and handed to an injected executor. Lint replaced a `policy` stage that was a stub returning "passed" because neither of the design's policy mechanisms was built; a declared lint command is one that is. The verdict a test run produces no longer comes from scraping a runner's stdout: the declared command is told where to write a JUnit report, and `src/vcs/junit.ts` is the one place in the repository that reads one. The four-word verdict rule is unchanged by that move, and what changed is where the counts come from, which is the whole point. Two absences are kept apart because they are opposite claims: no report at all means the runner ran nothing, which is `broken`; a report no reader can count means nothing was established, which a non-zero exit reads as `indeterminate`.
+- **The verifier runs declared commands, and owns one JUnit parser.** The four stages are structural, typecheck, lint and tests, in that order, and every one after the first is a `run-command` effect built from the consumer's declared command and handed to an injected executor. Lint is a declared command rather than a policy stage, because neither of the design's policy mechanisms is built and a declared command is one a consumer can name. The verdict a test run produces does not come from scraping a runner's stdout: the declared command is told where to write a JUnit report, and `src/vcs/junit.ts` is the one place in the repository that reads one. That is what keeps the four-word verdict rule independent of which runner produced the counts. Two absences are kept apart because they are opposite claims: no report at all means the runner ran nothing, which is `broken`; a report no reader can count means nothing was established, which a non-zero exit reads as `indeterminate`.
 - **`replace-symbol` is the code effect, and `write-file` is the one that can create.** The runner hands either to the VCS, which does the lease, the version check or the path-scope check, and the verification gate. The workflow never touches a file. A symbol write claims an optimistic version; a whole-file write claims a **path scope**, because a file has no version to be optimistic about before it exists, and the structural question it answers is weaker by exactly the right amount: what appears is the author's business, what vanishes is not.
 - **Verification at boundaries is the strongest mechanical check.** Typecheck plus impact-scoped tests run synchronously before commit. That is a `Requirement.check` with no model in it. The validator chain for a code-writing step becomes: schema, then VCS gate, then a small model refuting against requirements. The expensive stochastic check runs last and only on outputs that already compile.
 - **Provenance links two logs instead of merging them.** The journal answers what each step decided. The VCS event log answers what changed and why. Every effect carries the journal key and step id as intent. Blame on a symbol resolves to which workflow, which step, which requirement, which model, which validator passed it.
@@ -676,8 +676,8 @@ than a judgement.
 What the crafter may do with that oracle is bounded by the executor rather than
 by the graph: the step's oracle file is a protected scope, so a `replace-symbol`
 or a `write-file` landing in it is `rejected: contract` before a lease is
-asked for. RED to GREEN is bought by production, and that is now a property of
-the data plane instead of a rule a reviewer applies.
+asked for. RED to GREEN is bought by production, and that is a property of
+the data plane rather than a rule a reviewer applies.
 
 `gates` is not a leaf either, and for the same reason. Whether the quality gate
 found anything is what RUNNING it answers, so the node emits a `run-command`
@@ -690,13 +690,12 @@ The gate's own output becomes the evidence, so `fix-lint` reads the linter's
 words rather than a paraphrase of them, and `fix-lint` stays a leaf because
 writing the fix is judgement.
 
-One thing went with the model that used to classify a gate run. The mutation
-gate was a verdict a model reported, and no command produces it yet, so
-`mutation-below-gate` and the `add-test` leaf it routed to are gone. That was
-the only way anything inside the cycle could invalidate a green verdict, so the
-cycle now runs exactly once and cannot run out. The loop node stays, because
-the day a consumer declares a mutation command the second pass comes back
-with it.
+There is no `mutation-below-gate` verdict, because a mutation kill rate is a
+verdict no declared command produces yet, and therefore no `add-test` leaf for
+one to route to. That leaf is the only way anything inside the cycle could
+invalidate a green verdict, so the cycle runs exactly once and cannot run out.
+The loop node stays, because the day a consumer declares a mutation command the
+second pass comes back with it.
 
 `run-tests` is not a leaf either, and the reason is sharper. Whether the suite
 passed is what running it answers, so the node emits a `run-tests` effect and
@@ -798,10 +797,10 @@ A composition's only injection point is the one production already has: which
 model runs which leaf. A test stubs a leaf at that binding and at nothing else,
 because a stub anywhere else is a hole in the thing under test — and a hole the
 composition has to be shaped around is worse, since the shape outlives the
-test. The precedent is `targets/todo/.des/registrations.ts`'s `evidence` hook,
-which existed so a test could compute the journal key `runStep` would compute
-against runner output that carries its own timings; it is removed, and every
-leaf is stubbed with `scriptedBinding` through `models` instead.
+test. The shape to watch for is a composition growing a hook so a test can
+compute something the runtime computes — a journal key against runner output
+that carries its own timings, say. Every leaf is stubbed with `scriptedBinding`
+through `models`, and a composition offers nothing else.
 
 ### Package layout
 
@@ -895,7 +894,7 @@ the scheduler enforces" structural rather than duplicated.
 a dialog whose BUTTONS are the suspend node's own closed enum, read off its
 `resumeSchema` rather than off a second declaration. A person cannot answer
 with something the node would refuse, because nothing else is offered; the
-answer goes back through the same `resume` a second process used to call, and
+answer goes back through the same `resume` any other process would call, and
 the same run continues to a terminal. Answering a pipeline step is answering its
 run.
 
@@ -948,4 +947,4 @@ These are the places where the design is a hypothesis, not a finding.
 - **Derived dependency edges assume declared symbol touches.** An AC or step that under-declares produces a false independence. The failure is bounded (a conflict or a wrong-reason `still-red`), but how often it happens in practice determines whether the scheduler's parallelism is real or nominal.
 - **The authoring workflow's validator is the compiler and the enumeration test.** That proves the graph is well-formed. It does not prove the graph encodes the rule correctly. The known-good hand-written graph is the only oracle for that, and there is one of it.
 - **Whether an oracle authored by a model is an oracle worth measuring.** The framework can prove a test was executed, that it failed on its assertion rather than on its scaffolding, and that the crafter never touched it. It cannot prove the test asserts the *right* thing. The rules bound to that leaf — a total relation in both directions, the declared public port, no invented expected result — are prose refuted by a small model, which is exactly the class this design is least confident about elsewhere.
-- **None of it has been run against a real model.** Every graph is enumerated, every gate is real, and the worked example is delivered end to end — with the inference removed. As of this cut no Anthropic credential was available in the environment: `ANTHROPIC_API_KEY` is unset and there is no `ant` CLI to check, so every leaf that would call a model refuses by name rather than proceeding, and nothing here fabricates a transcript. Every number in this document is a path count, a test count or a wall clock. None of them is a token count, an acceptance rate, or a cost, and none of the three questions above can be answered until one is.
+- **None of it has been run against a real model.** Every graph is enumerated, every gate is real, and the worked example is delivered end to end — with the inference removed. No Anthropic credential is available in this environment: `ANTHROPIC_API_KEY` is unset and there is no `ant` CLI to check, so every leaf that would call a model refuses by name rather than proceeding, and nothing here fabricates a transcript. Every number in this document is a path count, a test count or a wall clock. None of them is a token count, an acceptance rate, or a cost, and none of the three questions above can be answered until one is.

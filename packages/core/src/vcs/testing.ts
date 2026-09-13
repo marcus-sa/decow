@@ -7,8 +7,8 @@
  * verifier whose stages are supplied per test makes "typecheck failed" an
  * input rather than a four-second subprocess.
  *
- * This is the VCS's counterpart to `src/harness/stub-journal.ts`: committed,
- * not a test file, and imported only by tests.
+ * This is the VCS's counterpart to `src/harness/`: committed, not a test
+ * file, and imported only by tests.
  *
  * No nondeterminism lives in this file. No Date.now, no Math.random, no
  * new Date, no randomUUID. src/harness/no-nondeterminism.test.ts enforces that
@@ -87,7 +87,7 @@ export const measuresAs = (
  *
  * The same shape `targets/todo/commands.ts` declares, kept here so a VCS test
  * that wants the REAL stages does not have to reach into a target directory
- * for them. The JUnit flags were measured against bun 1.3.12, not assumed:
+ * for them. The JUnit flags are measured against bun 1.3.12, not assumed:
  * `--reporter=junit --reporter-outfile=<path>` writes a `<testsuites>`
  * document, and a run whose file never parses writes none at all.
  */
@@ -118,7 +118,7 @@ export type ScriptedRun = (effect: RunCommandEffect) => EffectResult;
 /**
  * A command executor that answers from a script and never spawns.
  *
- * This is the seam the whole verification pipeline now hangs off: every stage
+ * This is the seam the whole verification pipeline hangs off: every stage
  * composes a declared command into a `run-command` effect and hands it to an
  * executor, so a test that supplies this one drives typecheck, lint, tests and
  * the oracle measurement without a process. `calls` is what ran, in order, for

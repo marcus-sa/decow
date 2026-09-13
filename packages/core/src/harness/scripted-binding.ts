@@ -1,14 +1,14 @@
 /**
  * The one way a test stubs a leaf: a `ModelBinding` that answers from a script.
  *
- * It replaced seeding the journal, and the reason is not convenience. A seeded
- * journal short-circuits `runStep` before any model is reached, so a test that
- * used one exercised neither the output schema, nor the mechanical checks, nor
- * the validator — and, worse, the composition under test had to grow a hook so
- * the test could compute the journal key `runStep` would compute. That is
- * production shaped by its tests. A binding is the seam production already
- * has: the script goes in through `models`, the graph is the graph, and
- * everything between the seam and the decision runs for real.
+ * The alternative is seeding the journal, and it is not merely less
+ * convenient. A seeded journal short-circuits `runStep` before any model is
+ * reached, so a test using one exercises neither the output schema, nor the
+ * mechanical checks, nor the validator — and, worse, the composition under
+ * test has to grow a hook so the test can compute the journal key `runStep`
+ * would compute. That is production shaped by its tests. A binding is the seam
+ * production already has: the script goes in through `models`, the graph is
+ * the graph, and everything between the seam and the decision runs for real.
  *
  * WHAT A SCRIPT SAYS. Per step id, the answers that step's WORKER gives, one
  * per attempt. An entry is either a decision plus its payload — validated

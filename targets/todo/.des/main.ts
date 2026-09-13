@@ -4,12 +4,12 @@
  *   bun targets/todo/.des/main.ts              # the run directory `first`
  *   ANTHROPIC_API_KEY=... bun targets/todo/.des/main.ts second
  *
- * This replaced six commands. They were six processes over one run directory,
- * each one holding nothing and reading everything back out of five files,
- * because a suspension had to survive the exit of the process that produced
- * it. A server is one process that stays up, so a suspension is answered where
- * it is read — in the UI, from the closed enum the node itself declares — and
- * the run continues without anybody quoting a run id back at a shell.
+ * ONE PROCESS, not a command per wave. A command per wave is a process per
+ * wave over one run directory, each one holding nothing and reading everything
+ * back out of five files, because a suspension has to survive the exit of the
+ * process that produced it. A server stays up, so a suspension is answered
+ * where it is read — in the UI, from the closed enum the node itself declares
+ * — and the run continues without anybody quoting a run id back at a shell.
  *
  * WHAT IT SERVES. Four graphs and two pipelines (`./registrations.ts`) and the
  * application that draws them. `serve` mounts `@des/ui`'s built request
@@ -23,7 +23,7 @@
  * where a person reads it, and the server stays up — which is the difference
  * between a tool that tells you what is missing and one that exits.
  *
- * THE RUN DIRECTORY is still a copy: `targets/todo` is a template and is never
+ * THE RUN DIRECTORY is a copy: `targets/todo` is a template and is never
  * mutated. `runs/<name>/` holds the copied project and the five stores, so two
  * runs of this server against two names cannot see each other's writes.
  *

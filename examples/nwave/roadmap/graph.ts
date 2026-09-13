@@ -184,7 +184,7 @@ const PERSIST_BLOCK: Record<Exclude<PersistOutcome, "committed">, BlockReason> =
 
 export type State = {
   request: string;
-  /** The design source `decompose` reads. A string in this cut. */
+  /** The design source `decompose` reads. A string here. */
   design: string;
   /** The optimistic version the artifact rows claim. 0 for a new roadmap. */
   expectedVersion: number;

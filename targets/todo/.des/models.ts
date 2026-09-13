@@ -23,8 +23,8 @@
  *   validators   haiku    every step's adversarial reviewer
  *
  * NO ESCALATION IS WIRED, deliberately. `escalateTo` fires once after the
- * attempt budget, and leaving it unset is what makes the report's exhaustion
- * count mean something: it is the number of decisions the SMALL models could
+ * attempt budget, and leaving it unset is what makes the exhaustion count
+ * mean something: it is the number of decisions the SMALL models could
  * not get past their own validators, which is the open question this run
  * exists to produce evidence for. A Sonnet backstop would answer a different
  * question and hide that one.
@@ -84,10 +84,10 @@ export type Models = {
 /**
  * The credential, refused at the LEAF rather than at the door.
  *
- * The six commands this target used to have checked for a key and exited.
- * A server cannot: the graphs, the projections, the rows and the event stream
- * are all readable without one, and a process that refused to start would make
- * every one of them unreadable to say one thing about a leaf.
+ * A command could check for a key and exit. A server cannot: the graphs, the
+ * projections, the rows and the event stream are all readable without one, and
+ * a process that refused to start would make every one of them unreadable to
+ * say one thing about a leaf.
  *
  * So the refusal is where the need is. A leaf that reaches a model with no key
  * throws this, `runStep` records it as a trail entry — which is what it does

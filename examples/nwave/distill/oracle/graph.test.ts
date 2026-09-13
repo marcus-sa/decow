@@ -10,8 +10,8 @@
  *
  * Zero model calls, no API key, no network. The leaf is stubbed at the
  * BINDING rather than at the journal, so its three mechanical checks and its
- * validator run on every path — the scripted payloads below satisfy them,
- * which is what "the author declared exactly these paths" now means here.
+ * validator run on every path, and the scripted payloads below satisfy them.
+ * That is what "the author declared exactly these paths" means here.
  */
 
 import { describe, expect, test } from "bun:test";

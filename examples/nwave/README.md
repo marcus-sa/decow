@@ -57,12 +57,11 @@ declared: a real `bunx tsc --noEmit` and a real `bunx biome check` at every
 write gate, a real `bun test` at every measurement and at the quality gate's
 own impact-scoped runs. That is what lets the harness enumerate every path.
 
-Running the checks changed two of the four counts, and the change is the
-finding. A leaf carries the same rules as mechanical checks that its gate
-carries as a total function — deliberately, so a rule cannot hold at one and
-not the other — so a proposal breaking one never REACHES the gate: the check
-refuses it and the worker is re-driven. The paths that disappeared were ones
-production could not take, and the ones that remain are reachable.
+Running the checks is what makes every enumerated path one production can take.
+A leaf carries the same rules as mechanical checks that its gate carries as a
+total function — deliberately, so a rule cannot hold at one and not the other —
+so a proposal breaking one never REACHES the gate: the check refuses it and the
+worker is re-driven.
 
 ## `roadmap/` — the authoring workflow whose output is steps
 
@@ -104,19 +103,16 @@ The boundary is enforced twice: `acceptanceIsDistills` is a mechanical check on
 `decompose`'s own output, so a proposal that filled the three fields in is
 refused before a validator is spent.
 
-176 paths, about 0.68 s. It was 169 when the two leaves answered from a seeded
-journal, which skipped the six mechanical checks `decompose` carries and the
-three `validate-slices` does. The walk gained a fifth proposal to keep the
-gate's `invalid` edge reachable: `MALFORMED` breaks three rules the LEAF owns,
-so it exhausts there, and `UNSHAPED` breaks only the dangling dependency and
-the cycle, which are the gate's alone. The known-good fixture is what the
-enumeration seeds
-`decompose` with.
+176 paths, about 0.68 s. The walk draws from five proposals, and the fifth is
+there to keep the gate's `invalid` edge reachable: `MALFORMED` breaks three
+rules the LEAF owns, so it exhausts there, and `UNSHAPED` breaks only the
+dangling dependency and the cycle, which are the gate's alone. The known-good
+fixture is what the enumeration seeds `decompose` with.
 
 ## `distill/` — what each value must be observed to do, and the oracle that observes it
 
-DISTILL is **two disjoint steps**, and reading them as one is how the previous
-cut of this repo got them wrong.
+DISTILL is **two disjoint steps**, and reading them as one is the mistake the
+split exists to prevent.
 
 Files: `manifest.ts` (the pure rule set), `obligations/` (the first step),
 `oracle/` (the second), `pipeline.ts` (the composition), `runs.ts` (the
@@ -157,12 +153,11 @@ in the test.
 this step can refuse is a named defect a proposal can be re-driven against, so
 a review gate would be a person re-reading what a total function decided.
 
-28 paths, about 0.09 s. It was 55 when the leaf answered from a seeded
-journal: nine of the proposals the walk draws from break one of the ten
-manifest rules the leaf carries as a mechanical check, so they exhaust at the
-LEAF rather than iterating the loop through the gate. `support-ignored` is the
-one rule the leaf cannot carry — it is a question about the repository — and it
-is therefore the only route to the gate's own `invalid` edge.
+28 paths, about 0.09 s. Nine of the proposals the walk draws from break one of
+the ten manifest rules the leaf carries as a mechanical check, so they exhaust
+at the LEAF rather than iterating the loop through the gate. `support-ignored`
+is the one rule the leaf cannot carry — it is a question about the repository —
+and it is therefore the only route to the gate's own `invalid` edge.
 
 ### `oracle/` — the oracle, authored and then measured by software
 
@@ -183,10 +178,10 @@ That last part is the whole arrangement. The two roles that hold an oracle —
 its author, `Read, Edit`, and its reviewer, an enforced empty tool set —
 *cannot run it*, so "this oracle fails on its assertion and not on its
 scaffolding" is a property the runner owns and measures. The shipped code names
-it `boundary:software-measures-model-decides`, and the pre-craft oracle
-reviewer that used to sit between authoring and judging is retired: it was a
-fourth model boundary, and the incident it existed for — a judge approving a
-broken oracle in 27 seconds — is answered by a measurement that is free.
+it `boundary:software-measures-model-decides`. There is no pre-craft oracle
+reviewer between authoring and judging: that is a fourth model boundary, and
+the incident that would justify one — a judge approving a broken oracle in 27
+seconds — is answered by a measurement that is free.
 
 | verdict | route | why |
 |---|---|---|
@@ -279,17 +274,16 @@ What is a model call and what is not:
   subagents through the `claudeCode` binding.
 - **Steps, no model:** `run-tests` and `gates` each emit an effect and a pure
   branch routes its typed outcome.
-- **The gate verdict is the declared lint command's exit status.** `gates` used
-  to be a leaf classifying lint output into four words; it emits a
-  `run-command` built from `commands.lint` over the files the step writes, and
-  `clean | lint-failed | infra-failed` is a pure function of the result. The
+- **The gate verdict is the declared lint command's exit status.** `gates`
+  emits a `run-command` built from `commands.lint` over the files the step
+  writes, and `clean | lint-failed | infra-failed` is a pure function of the
+  result — three verdicts, because three are what a lint run can produce. The
   gate's own output becomes the evidence `fix-lint` reads, so the fixing leaf
-  answers the linter's words rather than a paraphrase. Two verdicts went with
-  the model: `out-of-scope-structural` had no producer left, and
-  `mutation-below-gate` has none until a consumer declares a mutation command,
-  so the `add-test` leaf it reached is deleted. With `add-test` gone nothing
-  inside the cycle can invalidate a green verdict, so the cycle runs exactly
-  once and `cycle-exhausted` is gone with it.
+  answers the linter's words rather than a paraphrase. There is no
+  `mutation-below-gate`, because nothing produces a mutation kill rate until a
+  consumer declares the command, and therefore no `add-test` leaf for one to
+  reach. Nothing inside the cycle can invalidate a green verdict, so the cycle
+  runs exactly once and there is no `cycle-exhausted` reason.
 - **The test verdict is the effect's outcome.** `committed` is green.
   `rejected: tests` is `still-red` when every failing test is one of the step's
   own oracle's and `broke-other` otherwise. `rejected: contract` means the
@@ -299,9 +293,10 @@ What is a model call and what is not:
   the VCS runs the impact floor plus `extra` and refuses any selection that
   omits a floor test.
 
-347 paths, about 1.8 s. `MAX_CYCLES` is 1 because the two-cycle walk measured
-at over 7,000 paths and 544 s when the cycle could still iterate; it cannot
-now, so the bound is inert until a mutation command is declared.
+347 paths, about 1.8 s. `MAX_CYCLES` is 1 because `select-tests` compounds once
+per (cycle × test) iteration and three bounds at 2 puts the walk past 7,000
+paths. The bound is inert while nothing can invalidate a green verdict, and it
+matters again the day a mutation command is declared.
 
 ## `targets/todo/.des/` — the waves pointed at a real project
 
@@ -313,11 +308,11 @@ request, the four graphs and the two pipelines, as the server holds them),
 **Nothing in it exists for a test.** `todoRegistrations(dir, { models })` takes
 one thing, and `models` is a `ModelBinding` per leaf ROLE — `decompose`,
 `authorOracle`, `implement`, `other`, `validator`. Production passes
-`todoModels()`; `todo.test.ts` and the browser fixture pass scripted ones. There
-used to be a second option, an `evidence` override, and it existed so a test
-could compute the journal key `runStep` would compute against runner output
-that carries its own timings. That was the composition shaped by its tests; it
-is gone, and what the suite actually printed is what every DELIVER run quotes.
+`todoModels()`; `todo.test.ts` and the browser fixture pass scripted ones.
+Nothing else is injectable — an override letting a test compute the journal key
+`runStep` computes, against runner output carrying its own timings, would be
+the composition shaped by its tests — so what the suite actually printed is
+what every DELIVER run quotes.
 
 ### The target
 
@@ -383,8 +378,8 @@ bun run todo [run-name]               # http://localhost:3000, run directory `fi
 ```
 
 `main.ts` opens the run directory, builds the registrations, and serves them.
-There is no command per wave any more: six of them were six processes over one
-run directory, each holding nothing, because a suspension had to survive the
+There is no command per wave: a command per wave is a process per wave over one
+run directory, each holding nothing, because a suspension has to survive the
 exit of the process that produced it. A server stays up, so a suspension is
 answered where it is read — in the UI, from the closed enum the node declares.
 
@@ -470,8 +465,8 @@ how you find out.
 ## Not built on the consumer side
 
 - A declared MUTATION command. `commands.ts` has four keys. The quality gate
-  runs lint and nothing else, so `mutation-below-gate` has no producer and the
-  `add-test` leaf that answered it is gone. Adding the key is additive: a fifth
+  runs lint and nothing else, so `mutation-below-gate` has no producer and
+  there is no `add-test` leaf to answer it. Adding the key is additive: a fifth
   `CommandArgs` member, a second effect from `gates`, and a fourth gate
   verdict — and the outer cycle gets its second pass back with it.
 - DISTILL's obligations leaf reads the roadmap and the design source. It does

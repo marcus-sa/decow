@@ -95,12 +95,11 @@ export type RegistrationOptions = {
   /**
    * Which binding runs which leaf. THE ONLY THING A CALLER INJECTS.
    *
-   * Production passes `todoModels()`; a test passes scripted ones. There used
-   * to be a second option here — an `evidence` override — and it existed so a
-   * test could compute the journal key `runStep` would compute, against runner
-   * output that carries its own timings. That was the composition shaped by
-   * its tests, and it is gone: a leaf is stubbed at this seam, so what the
-   * suite actually printed is what every run quotes.
+   * Production passes `todoModels()`; a test passes scripted ones. Nothing
+   * else is injectable — an override letting a test compute the journal key
+   * `runStep` computes, against runner output carrying its own timings, would
+   * be the composition shaped by its tests. A leaf is stubbed at this seam, so
+   * what the suite actually printed is what every run quotes.
    */
   models: Models;
 };

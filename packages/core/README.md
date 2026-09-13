@@ -35,22 +35,21 @@ script refuses by name. So a stubbed leaf runs the WHOLE step: the schema, the
 mechanical checks, and a validator that passes, because the scripted worker's
 answer is the decision under test.
 
-It replaced a stub journal, and the reason is not convenience. A seeded journal
-short-circuits `runStep` before any model is reached, so a test using one
-exercised none of the three — and, worse, the composition had to grow a hook so
-the test could compute the journal key `runStep` would compute. That is
+The alternative is seeding the journal, and it is not merely less convenient. A
+seeded journal short-circuits `runStep` before any model is reached, so a test
+using one exercises none of the three — and, worse, the composition has to grow
+a hook so the test can compute the journal key `runStep` would compute. That is
 production shaped by its tests. A binding is the seam production already has.
 
-Running the checks is not free of consequence: see the README's
-[worked examples](../../README.md#the-four-worked-examples) for the two graphs
-whose enumerated path counts MOVED when the checks their leaves carry started
-firing.
+Running the checks shapes the path space: see the README's
+[worked examples](../../README.md#the-four-worked-examples) for what the
+enumerated counts mean.
 
-`noReplayJournal()` is what survived the stub journal, and it is the half that
-was never about seeding. `enumeratePaths` re-runs a workflow once per path, and
-a leaf inside a bounded loop is a choice point — a real journal would replay
-its first answer and delete every path below it. Replay is the one thing a walk
-must have off, and that is journal-level control a binding cannot give.
+`noReplayJournal()` is journal-level control, which is the half a binding
+cannot give. `enumeratePaths` re-runs a workflow once per path, and a leaf
+inside a bounded loop is a choice point — a real journal would replay its first
+answer and delete every path below it. Replay is the one thing a walk must have
+off.
 
 The exports map is over the TypeScript sources: bun runs `.ts` directly, so
 there is no build step and no compiled copy between a stack trace and its

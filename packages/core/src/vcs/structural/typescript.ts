@@ -2,9 +2,9 @@
  * The tree-sitter TypeScript parser (ai-vcs.md § 4.1).
  *
  * Native `tree-sitter` plus `tree-sitter-typescript`, not `web-tree-sitter`
- * plus wasm grammars. Both were tried under bun; the wasm pair fails to load
- * because the published grammar wasm and the current `web-tree-sitter` runtime
- * disagree on the dylink ABI. The native bindings ship prebuilt binaries for
+ * plus wasm grammars: under bun the wasm pair fails to load, because the
+ * published grammar wasm and the current `web-tree-sitter` runtime disagree on
+ * the dylink ABI. The native bindings ship prebuilt binaries for
  * every platform this runs on, parse synchronously, and need no init step, so
  * a parse can happen inside the write path without an await.
  *
@@ -33,12 +33,13 @@
  * function's body is its *content*, not a container of separately addressable
  * symbols. A class body is descended, because its methods are addressable.
  *
- * That boundary is load-bearing rather than tidy, and the real-tool test is
- * what found it. Descending into function bodies made every local `const` a
- * tracked symbol, so replacing a body with one that introduced a local changed
- * the file's identity set, and the structural stage correctly refused an edit
- * that was perfectly fine. The registry addresses what a lease can be taken on
- * and a version can be bumped for; a local is neither.
+ * That boundary is load-bearing rather than tidy, and `real-tools.test.ts` is
+ * what holds it. Descending into function bodies would make every local
+ * `const` a tracked symbol, so replacing a body with one that introduced a
+ * local would change the file's identity set, and the structural stage would
+ * correctly refuse an edit that is perfectly fine. The registry addresses what
+ * a lease can be taken on and a version can be bumped for; a local is
+ * neither.
  *
  * No nondeterminism lives in this file. No Date.now, no Math.random, no
  * new Date, no randomUUID. src/harness/no-nondeterminism.test.ts enforces that

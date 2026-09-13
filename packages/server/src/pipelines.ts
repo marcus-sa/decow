@@ -2,13 +2,13 @@
  * A pipeline, driven. The steps are the consumer's; the scheduling is the
  * server's; every step's run is an ordinary run.
  *
- * This is the half that moved. A pipeline registration used to own `run` and
- * `resume` and call `@des/core`'s `run` itself, which meant a step's run had no
- * server run id, published no events, and parked where no dialog could reach
- * it — a run nobody could watch and a suspension nobody could answer. Now the
- * server schedules: `openScheduler` over the declared steps, `runOne` is
+ * A pipeline registration owns no execution. A registration that called
+ * `@des/core`'s `run` itself would give its steps no server run id, publish no
+ * events, and park where no dialog could reach it — a run nobody can watch and
+ * a suspension nobody can answer. So the server schedules: `openScheduler`
+ * over the declared steps, `runOne` is
  * `runner.start(step.workflowId, step.input)`, and the scheduler awaits that
- * run's terminal or suspension exactly as it awaited a direct call.
+ * run's terminal or suspension exactly as it would a direct call.
  *
  * WHAT A STEP'S STATUS IS, AND WHERE IT COMES FROM. The scheduler needs a
  * status per step; the server has one, because it started the run and holds its

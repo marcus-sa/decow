@@ -64,7 +64,7 @@ export type DecomposeOutcome = (typeof DECOMPOSE_OUTCOMES)[number];
  */
 export const DecomposeInput = z.object({
   request: z.string(),
-  /** The design source, a string in this cut. */
+  /** The design source, a string here. */
   design: z.string(),
   /** Named shape defects the last proposal had. */
   defects: z.array(z.custom<ShapeDefect>(() => true)),

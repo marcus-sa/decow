@@ -2,12 +2,11 @@
  * One JUnit XML reader, for every place a verdict is read off a test run.
  *
  * The tests stage and the oracle measurement both ask "what did the runner
- * do", and both used to answer by scraping the runner's stdout for bun's own
- * summary lines. That worked and it was wrong in one specific way: it made the
- * verdict a function of one runner's human output, so a consumer with any
- * other runner had no way to be measured at all. A JUnit report is the
- * interchange format every test runner already writes, so the consumer's
- * declared command names where to put one and this module reads it.
+ * do". Scraping a runner's stdout for its own summary lines would make the
+ * verdict a function of one runner's human output, leaving a consumer with any
+ * other runner unmeasurable. A JUnit report is the interchange format every
+ * test runner already writes, so the consumer's declared command names where
+ * to put one and this module reads it.
  *
  * Deliberately regex over a tag stream rather than a real XML parser. The
  * shape is fixed and tiny — a `<testsuites>` element with four count

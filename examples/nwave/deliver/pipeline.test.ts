@@ -544,8 +544,8 @@ describe("the pipeline: roadmap steps in, two DELIVER runs out", () => {
   });
 
   test("a step's history is derived from what was persisted, not remembered", async () => {
-    // The `delivery_state.py` stance, on the half that is still durable: the
-    // `step_runs` steps are append-only, so "did it ever fail" is a read.
+    // The `delivery_state.py` stance, on the durable half: the `step_runs`
+    // rows are append-only, so "did it ever fail" is a read.
     const artifacts = openArtifacts();
     expect(statusOf(artifacts, "01-01")).toBe("pending");
 
@@ -572,8 +572,8 @@ describe("the pipeline: roadmap steps in, two DELIVER runs out", () => {
   });
 
   test("a step with no red oracle never becomes ready, and it blocks its dependents", async () => {
-    // This is where "no edge bypasses RED" lives now that the step cycle has
-    // no RED node. `canonical_next`'s own precondition, as a readiness rule:
+    // This is where "no edge bypasses RED" lives, the step cycle having no
+    // RED node. `canonical_next`'s own precondition, as a readiness rule:
     // with no recorded oracle the next step for a value is `des oracle`.
     const project = openProject();
     const artifacts = openArtifacts();

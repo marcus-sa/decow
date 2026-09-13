@@ -123,7 +123,7 @@ export type SchedulerSpec<S> = {
    *
    * Read once per refresh, beside `statusOf`, so `ready` stays synchronous and
    * a consumer's answer is a projection like every other fact here. Absent:
-   * every step is eligible, which is the behaviour before this existed.
+   * every step is eligible.
    */
   eligible?: (stepId: string) => Promise<boolean>;
   /** How many steps may be in flight at once. At least 1. */

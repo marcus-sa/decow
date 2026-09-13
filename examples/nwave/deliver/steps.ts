@@ -17,19 +17,17 @@
  * not a closed-enum decision — so their decision space is a singleton and the
  * routable outcome downstream is the effect's result or the validator's.
  *
- * There is no leaf for "did the suite pass". There used to be, classifying
- * runner output the caller had seeded, and it was the wrong shape: a suite's
- * outcome is the outcome of running it, so the graph asks for a `run-tests`
- * effect and routes the typed result. A model is not needed to read an exit
- * code, and one that could disagree with it is a second source of truth for a
- * fact the runner already answered.
+ * There is no leaf for "did the suite pass". A suite's outcome is the outcome
+ * of running it, so the graph asks for a `run-tests` effect and routes the
+ * typed result. A model is not needed to read an exit code, and one that could
+ * disagree with it is a second source of truth for a fact the runner already
+ * answered.
  *
  * There is no leaf for THE QUALITY GATE either, and it is the same argument
  * one node over. A gate run is a declared lint command, and whether it found
  * anything is its exit status. So `gates` is a step that emits a `run-command`
- * effect and a pure branch reads the result; the model that used to classify
- * that output now only ever sees it in order to FIX it, which is judgement and
- * stays a leaf.
+ * effect and a pure branch reads the result. The only model that sees that
+ * output sees it in order to FIX it, which is judgement and stays a leaf.
  *
  * There is no leaf for RED either, for the same reason one layer further out.
  * `des oracle` authored the oracle and SOFTWARE executed it: the two roles that

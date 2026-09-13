@@ -1,8 +1,8 @@
 /**
  * The todo target, delivered end to end, with no model calls.
  *
- * This is the stubbed twin of the five commands, and everything they do is
- * done here except the inference:
+ * The stubbed twin of the served target: everything a run through the server
+ * does, except the inference.
  *
  *   ROADMAP    two steps, persisted through the roadmap workflow's own `persist`
  *   DISTILL    the obligations graph fills in their acceptance facts; the
@@ -250,12 +250,11 @@ const HAPPY: Partial<Record<LeafId, string>> = {
  *
  * Keyed by STEP ID, not by journal key — so nothing here computes what
  * `runStep` will compute, and the composition needs no hook to make that
- * computation possible. The `evidence` override this file used to pass existed
- * for exactly that reason and is gone: what the suite actually printed is what
- * every DELIVER run now quotes.
+ * computation possible. What the suite actually printed is what every DELIVER
+ * run quotes.
  *
  * The payloads have to be RIGHT rather than merely well-typed, because every
- * mechanical check runs now. `select-tests` answers `no-extra` with an empty
+ * mechanical check runs. `select-tests` answers `no-extra` with an empty
  * list, because `deliver.selection-matches-its-decision` refuses a decision
  * its own payload contradicts.
  */
@@ -365,7 +364,7 @@ const openStubbedServer = (
   const artifacts = openArtifacts();
   // A REAL journal: production replay, nothing seeded. Two runs of the same
   // step on the same input replay here exactly as they would in a run
-  // directory, which is one more thing this test no longer has to pretend.
+  // directory.
   const seeded = memoryJournal();
   const journal: Journal & { close: () => void } = { ...seeded, close: () => {} };
   const store = openRunDatabase();

@@ -1,10 +1,10 @@
 /**
  * A suspension survives the runtime that produced it.
  *
- * `resume` already rebuilds the graph rather than holding a live handle, so
- * the only thing standing between "a parked run is resumable from a fresh
- * compile" and "a parked run is resumable from a fresh PROCESS" was where the
- * snapshot lived. `InMemoryStore` kept it in a map that dies with the process;
+ * `resume` rebuilds the graph rather than holding a live handle, so the only
+ * thing standing between "a parked run is resumable from a fresh compile" and
+ * "a parked run is resumable from a fresh PROCESS" is where the snapshot
+ * lives. `InMemoryStore` keeps it in a map that dies with the process;
  * `openWorkflowRuntime("file:…")` keeps it in libSQL.
  *
  * The test that proves it cannot be two `run`/`resume` calls in one process

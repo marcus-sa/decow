@@ -2,12 +2,11 @@
  * Runs, the events they published, and what every leaf attempt decided — in a
  * database, which is the source of truth the rest of this package projects.
  *
- * This reverses the previous cut. Runs, traces, attempts and events lived in
- * maps, and the comment above them said losing that cost a reader their scroll
- * position rather than a fact. That was wrong twice over: a restarted server
- * showed no prior run at all, and a pipeline step whose run had settled read
- * `pending` again, so a second drive would deliver it a second time. The facts
- * were on disk in four other stores and the one thing that joined them was not.
+ * Runs, traces, attempts and events in maps would cost more than a reader's
+ * scroll position, twice over: a restarted server would show no prior run at
+ * all, and a pipeline step whose run had settled would read `pending` again,
+ * so a second drive would deliver it a second time. The facts are on disk in
+ * four other stores, and this is the one thing that joins them.
  *
  * A SIBLING FILE, not the artifact store's. `runs.sqlite` sits beside
  * `artifacts.sqlite` in the same run directory, and the reason is ownership
@@ -184,7 +183,8 @@ export const openRunDatabase = (options: RunDatabaseOptions = {}): RunDatabase =
 
   // Append-only. `seq` orders attempts within a run, and the token columns
   // are what one call of one step of THIS run cost — exact, because `runStep`
-  // attributed them rather than a queue draining in call order.
+  // attributes them to the attempt that made the call rather than draining a
+  // queue in call order.
   db.run(`CREATE TABLE IF NOT EXISTS leaf_attempts (
     seq              INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id           TEXT NOT NULL,

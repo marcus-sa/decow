@@ -5,8 +5,8 @@
  *
  * DISTILL is two disjoint steps. The first runs ONCE per roadmap and fills in
  * the acceptance facts; the second runs once per VALUE, authors that value's
- * oracle, and lets software measure it. Both are registered GRAPHS now, and
- * the second is registered as a pipeline over them — so the ordering, the
+ * oracle, and lets software measure it. Both are registered GRAPHS, and the
+ * second is registered as a pipeline over them — so the ordering, the
  * concurrency and the leases are the server's, and what is left here is the
  * projection each of them reads and writes.
  *
@@ -14,8 +14,8 @@
  * finished oracle run appends an `oracle_runs` row, and a value's status is
  * read back as the latest of those. That projection is also DELIVER's
  * readiness precondition: a step with no recorded `red` oracle never becomes
- * ready, which is where "no edge bypasses RED" lives now that the step cycle
- * has no RED node.
+ * ready, which is where "no edge bypasses RED" lives, the step cycle having no
+ * RED node.
  */
 
 import type { ArtifactStore } from "@des/core/artifacts";

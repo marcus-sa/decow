@@ -7,21 +7,26 @@
  * reads on the next iteration: "invalid" alone tells a model nothing it can
  * act on.
  *
+ *   no-steps               the roadmap has no steps at all
  *   duplicate-id           two steps claim the same identity
  *   dangling-dependency    a dependency names no step in the roadmap
  *   cycle                  the dependency graph is not a DAG
- *   no-acceptance          a step declares nothing it must satisfy
+ *   observation-too-short  a step says too little to be worked from
  *   empty-authority        a step implements no named design source
- *   no-steps               the roadmap has no steps at all
  *
- * `no-steps` is the sixth, and it is here because the zod schema deliberately
- * admits an empty `steps` array (that is what `cannot-decompose` returns). An
- * empty roadmap passes all five of the others vacuously and would otherwise
- * reach `human-review` as a proposal worth approving. nwave's own validator
- * refuses it in the same breath as a missing request (`not items`).
+ * `no-steps` is here because the zod schema deliberately admits an empty
+ * `steps` array (that is what `cannot-decompose` returns). An empty roadmap
+ * passes all five of the others vacuously and would otherwise reach
+ * `human-review` as a proposal worth approving. nwave's own validator refuses
+ * it in the same breath as a missing request (`not items`).
+ *
+ * What a value must be OBSERVED to do is DISTILL's act, so there is no
+ * obligations defect here: a shape check demanding them at ROADMAP time would
+ * refuse every roadmap for not having done a later wave's job.
+ * `observation-too-short` is what ROADMAP can ask instead.
  *
  * The order of the checks is the order defects are reported in, and it is
- * stable: identity first, then the graph, then each step's own obligations.
+ * stable: identity first, then the graph, then each step's own text.
  * `decompose`'s requirement rows consume the same predicates through
  * `firstDefectOfKind`, so the step's own mechanical guardrail and the graph's
  * gate cannot drift apart.

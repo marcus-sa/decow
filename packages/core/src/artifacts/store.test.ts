@@ -2,10 +2,10 @@
  * The artifact store: versions, the conflict that is a decision rather than an
  * exception, the append-only log, and the time-travel read that log buys.
  *
- * Plus the two executors' routing, which is the reason the store exists: the
- * design's `upsert-artifact` effect used to land in a `Map` under one executor
- * and come back `infra-failed` under the other, so a roadmap died with the
- * process.
+ * Plus the two executors' routing, which is the reason the store exists: an
+ * `upsert-artifact` effect that landed in a `Map` under one executor and came
+ * back `infra-failed` under the other would leave a roadmap dying with the
+ * process that authored it.
  */
 
 import { describe, expect, test } from "bun:test";

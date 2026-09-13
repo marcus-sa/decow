@@ -295,8 +295,8 @@ export const executeCommand = async (
 export type Artifact = { version: number; row: unknown };
 
 /**
- * The read surface the artifact `Map` had, over a store that is now a
- * database. Read-only and live: every call projects the store's own event log
+ * The read surface over the artifact store, which is a database rather than a
+ * map. Read-only and live: every call projects the store's own event log
  * rather than answering from a copy, so there is no second bookkeeping
  * structure to drift from the rows.
  */

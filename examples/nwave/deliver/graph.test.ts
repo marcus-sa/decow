@@ -9,8 +9,9 @@
  * bound. **347 paths**, and the count is finite only because every loop
  * carries one.
  *
- * Zero model calls, no API key, no network. The stub journal throws on a miss
- * and the model bindings throw if called at all.
+ * Zero model calls, no API key, no network. Every leaf is stubbed at the
+ * BINDING, a scripted worker with no entry for a step throws by name, and the
+ * journal answers nothing, so a walk replays nothing.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -404,8 +405,8 @@ describe("deliver graph", () => {
   });
 
   test("the gates loop fixes lint inside its bound, then hands the bound to a person", async () => {
-    // The gate is a declared command now, so what makes it fail is the
-    // command's exit status rather than a leaf's word for it.
+    // The gate is a declared command, so what makes it fail is the command's
+    // exit status rather than a leaf's word for it.
     const outcome = await start({ ...HAPPY, "fix-lint": "fixed" }, lintsLike(["found", "found"]));
 
     expect(outcome.kind).toBe("suspended");
@@ -586,7 +587,7 @@ describe("deliver graph, the diagnosis branch", () => {
 
     expect(outcome.kind === "suspended" && outcome.reason).toBe("test-loop-exhausted");
     expect(visitCount(outcome.trace, "diagnose")).toBe(MAX_TEST_ATTEMPTS);
-    // The implement loop ran again, which is the pre-diagnosis behaviour.
+    // The implement loop ran again, which is what `impl-wrong` means.
     expect(visitCount(outcome.trace, "implement")).toBe(MAX_TEST_ATTEMPTS);
     expect(visited(outcome.trace, "fix-acceptance-test")).toBe(false);
   });

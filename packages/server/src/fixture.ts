@@ -163,7 +163,7 @@ export const gateGraph = (
  * Both slots are the same scripted binding: it dispatches on the call's role,
  * so the worker answers from the script and the validator passes. The anchor
  * must be a verbatim substring of the subject, because the leaf's own
- * mechanical check runs for real now — which is the point of stubbing at the
+ * mechanical check runs for real — which is the point of stubbing at the
  * binding rather than at the journal.
  */
 export const gateModels = (decision: ClassifyDecision, anchor: string): GateModels => {

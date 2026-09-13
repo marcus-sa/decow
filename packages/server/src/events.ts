@@ -3,10 +3,10 @@
  * one SSE endpoint over it.
  *
  * Every event names the run it belongs to, because the UI draws one graph per
- * run and a browser holding two of them open subscribes once. What changed in
- * this cut is what happens before a subscriber sees one: the event is APPENDED
- * FIRST, to `run_events`, and published second. So the log is what a run's
- * trace is read off, a subscriber that arrives mid-run reads the run's record
+ * run and a browser holding two of them open subscribes once. Before a
+ * subscriber sees one, the event is APPENDED FIRST, to `run_events`, and
+ * published second. So the log is what a run's trace is read off, a
+ * subscriber that arrives mid-run reads the run's record
  * for where it is and takes the stream from there, and a subscriber that
  * arrives after a RESTART reads a record that still exists.
  *

@@ -156,8 +156,8 @@ describe("the default verification stages, run for real", () => {
   });
 
   test("a change that typechecks but breaks a declared lint rule is rejected by biome", async () => {
-    // The stage that replaced the `policy` stub. It is a real linter over the
-    // file the write touched, and the exit status is the whole verdict.
+    // The lint stage: a real linter over the file the write touched, and the
+    // exit status is the whole verdict.
     const { vcs, addId, read } = open();
     const result = await write(
       vcs,
