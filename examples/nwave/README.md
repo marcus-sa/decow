@@ -25,7 +25,7 @@ deliver/   the scheduler reads the rows, refuses any value whose oracle is not r
            GREEN is bought by production. Each outcome is a step_runs row.
                                         │
 targets/todo/.des/  the composition that points all of it at a real project — `targets/todo`, copied
-                    into a run directory — registered with one server, with a run report.
+                    into a run directory — registered with one server, whose runs are rows.
 ```
 
 An agent never writes a workflow. It fills in leaves. The graphs below are
@@ -49,13 +49,20 @@ Three kinds of node matter when reading one:
 A `suspend` parks the run for a person and resumes on a closed decision enum. A
 `loop` repeats a body up to a required bound. There are no back-edges anywhere.
 
-In `bun test`, no leaf ever reaches a model: every answer is pre-seeded in the
-journal, keyed by content exactly as production keys it. The mechanical half
-runs for real, including the VCS, the artifact store, and every command the
-target declared: a real `bunx tsc --noEmit` and a real `bunx biome check` at
-every write gate, a real `bun test` at every measurement and at the quality
-gate's own impact-scoped runs. That is what lets the harness enumerate every
-path.
+In `bun test`, no leaf ever reaches a model: every WORKER answers from a
+`scriptedBinding` script keyed by step id, and the leaf's own output schema,
+mechanical checks and validator run for real around it. The rest runs for real
+too, including the VCS, the artifact store, and every command the target
+declared: a real `bunx tsc --noEmit` and a real `bunx biome check` at every
+write gate, a real `bun test` at every measurement and at the quality gate's
+own impact-scoped runs. That is what lets the harness enumerate every path.
+
+Running the checks changed two of the four counts, and the change is the
+finding. A leaf carries the same rules as mechanical checks that its gate
+carries as a total function — deliberately, so a rule cannot hold at one and
+not the other — so a proposal breaking one never REACHES the gate: the check
+refuses it and the worker is re-driven. The paths that disappeared were ones
+production could not take, and the ones that remain are reachable.
 
 ## `roadmap/` — the authoring workflow whose output is rows
 
@@ -97,7 +104,13 @@ The boundary is enforced twice: `acceptanceIsDistills` is a mechanical check on
 `decompose`'s own output, so a proposal that filled the three fields in is
 refused before a validator is spent.
 
-169 paths, about 0.45 s. The known-good fixture is what the enumeration seeds
+176 paths, about 0.68 s. It was 169 when the two leaves answered from a seeded
+journal, which skipped the six mechanical checks `decompose` carries and the
+three `validate-slices` does. The walk gained a fifth proposal to keep the
+gate's `invalid` edge reachable: `MALFORMED` breaks three rules the LEAF owns,
+so it exhausts there, and `UNSHAPED` breaks only the dangling dependency and
+the cycle, which are the gate's alone. The known-good fixture is what the
+enumeration seeds
 `decompose` with.
 
 ## `distill/` — what each value must be observed to do, and the oracle that observes it
@@ -144,7 +157,12 @@ in the test.
 this step can refuse is a named defect a proposal can be re-driven against, so
 a review gate would be a person re-reading what a total function decided.
 
-55 paths, about 0.13 s.
+28 paths, about 0.09 s. It was 55 when the leaf answered from a seeded
+journal: nine of the proposals the walk draws from break one of the ten
+manifest rules the leaf carries as a mechanical check, so they exhaust at the
+LEAF rather than iterating the loop through the gate. `support-ignored` is the
+one rule the leaf cannot carry — it is a question about the repository — and it
+is therefore the only route to the gate's own `invalid` edge.
 
 ### `oracle/` — the oracle, authored and then measured by software
 
@@ -190,7 +208,7 @@ default and only the craft path populates it, so the acceptance author receives
 the obligation *ids* and not the stimulus/expected pairs `des distill`
 produced. Here they are an input.
 
-421 paths, about 0.97 s. The third axis is the interesting one: the verdict is
+421 paths, about 1.3 s. The third axis is the interesting one: the verdict is
 an **effect outcome** rather than a leaf decision, so the walk gets all four
 verdicts from the same `scriptedExecutor` seam it gets a write outcome from.
 
@@ -281,16 +299,25 @@ What is a model call and what is not:
   the VCS runs the impact floor plus `extra` and refuses any selection that
   omits a floor test.
 
-347 paths, about 1.2 s. `MAX_CYCLES` is 1 because the two-cycle walk measured
+347 paths, about 1.8 s. `MAX_CYCLES` is 1 because the two-cycle walk measured
 at over 7,000 paths and 544 s when the cycle could still iterate; it cannot
 now, so the bound is inert until a mutation command is declared.
 
 ## `targets/todo/.des/` — the waves pointed at a real project
 
-Files: `request.ts`, `run-dir.ts` (the run directory, the design source and the
-suite runner), `models.ts` (which model runs which leaf), `report.ts` (the run
-report), `registrations.ts` (the four graphs and the two pipelines, as the
-server holds them), `main.ts` (the server), and `todo.test.ts`.
+Files: `run-dir.ts` (the run directory, the design source and the suite
+runner), `models.ts` (which binding runs which leaf), `registrations.ts` (the
+request, the four graphs and the two pipelines, as the server holds them),
+`main.ts` (the server), and `todo.test.ts`.
+
+**Nothing in it exists for a test.** `todoRegistrations(dir, { models })` takes
+one thing, and `models` is a `ModelBinding` per leaf ROLE — `decompose`,
+`authorOracle`, `implement`, `other`, `validator`. Production passes
+`todoModels()`; `todo.test.ts` and the browser fixture pass scripted ones. There
+used to be a second option, an `evidence` override, and it existed so a test
+could compute the journal key `runStep` would compute against runner output
+that carries its own timings. That was the composition shaped by its tests; it
+is gone, and what the suite actually printed is what every DELIVER run quotes.
 
 ### The target
 
@@ -327,13 +354,15 @@ runs/<name>/
   artifacts.sqlite   roadmaps, roadmap_steps, oracle_runs, step_runs
   journal.sqlite     what each step decided, keyed by content
   mastra.sqlite      engine snapshots, so a parked run survives exit
-  report.jsonl       one line per leaf call
+  runs.sqlite        the runs, their events, and every leaf attempt with what
+                     it cost
 ```
 
-Four stores, all files rather than `:memory:`, so a server restarted against
-the same run directory continues rather than beginning again. `runs/` is
-gitignored. `test/` is tracked only once it exists, because the oracle is what
-creates it.
+Five stores, all files rather than `:memory:`, so a server restarted against
+the same run directory continues rather than beginning again: it shows every
+prior run, keeps a delivered row delivered, and answers a suspension its
+predecessor produced. `runs/` is gitignored. `test/` is tracked only once it
+exists, because the oracle is what creates it.
 
 Every command the framework runs against the copy comes from that copy's own
 `commands.ts`, loaded by `loadCommands` and refused BY NAME when absent. The
@@ -388,22 +417,24 @@ escapes what the other enforces — the readiness precondition is the pipeline's
 
 **It starts without a key.** Everything is readable; a leaf refuses by name on
 the attempt, the message lands in the run's trail, and the server stays up. No
-escalation is wired, deliberately: `escalateTo` is unset, so the report's
-exhaustion count is the number of decisions the *small* models could not get
+escalation is wired, deliberately: `escalateTo` is unset, so the count of
+exhausted leaves is the number of decisions the *small* models could not get
 past their own validators.
 
-### The report
+### What every leaf call cost
 
-Every leaf call appends one line to `report.jsonl` — run, row, step, attempt,
-model, decision, whether it was accepted, the validator's verdict and
-violations, the mechanical-check failures, and the token counts. A journal HIT
-writes nothing, because no model was called.
+One `leaf_attempts` row per model-call pair, in `runs.sqlite` — run, step,
+attempt, model, decision, whether it was accepted, the validator's verdict and
+violations, the mechanical-check failures, and the worker and validator token
+counts. A journal HIT writes nothing, because no model was called; that is what
+makes a count of rows a count of INFERENCE.
 
 The gap between the calls a leaf made and the decisions it produced is the
 number worth reading: it is what the validator and the mechanical checks cost,
-in inference, to keep the graph honest. Every line a server writes carries
-`concurrent: true`, because a server does not serialise its runs: the decision
-columns are exact and the token columns are not attributable.
+in inference, to keep the graph honest. The UI shows it per run, and
+`exportRun(runId)` emits the same facts as JSON lines. The counts are exact
+whatever the concurrency, because `runStep` attributes each call to the attempt
+that made it rather than draining a queue in call order.
 
 ## Running things
 
@@ -418,6 +449,10 @@ bun run todo                    # the four waves, served, against a copy of the 
 The smoke scripts refuse to run without `ANTHROPIC_API_KEY`. The server does
 not: it starts, everything is readable, and the refusal is at the leaf.
 
+Every leaf in `bun test` and `bun run e2e` is stubbed with `scriptedBinding`,
+which answers the WORKER and lets the leaf's own output schema, mechanical
+checks and validator run for real. Nothing seeds a journal.
+
 **Nothing in this directory has been run against a real model.** The server
 exists, a browser has driven it, and a leaf refuses without a key.
 `todo.test.ts` drives all three waves against a real checkout — through the
@@ -425,11 +460,12 @@ server, as `startRun` and `runPipeline` — through the target's own declared
 commands
 — a real `write-file`, a real measurement, a real `bunx tsc --noEmit`, a real
 `bunx biome check` and a real impact-scoped `bun test` at every write gate, and
-a real `bunx biome check` at the quality gate — in about 2.2 s with zero model
+a real `bunx biome check` at the quality gate — in about 3.6 s with zero model
 calls. What is untested is the inference itself: whether a
 real model, given these prompts and schemas, gives useful answers at an
 acceptable rate. Expect the prompts in `steps.ts` to need a round of tuning the
-first time real output comes back, and expect the report to be how you find out.
+first time real output comes back, and expect the `leaf_attempts` rows to be
+how you find out.
 
 ## Not built on the consumer side
 

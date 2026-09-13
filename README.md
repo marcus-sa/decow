@@ -2,7 +2,7 @@
 
 A prototype of the framework described in [`DETERMINISTIC-WORKFLOWS.md`](./DETERMINISTIC-WORKFLOWS.md): a finite graph owns control flow, small models own one decision each, and the whole path space is enumerable before anything runs.
 
-The property the rest of the design rests on is testable in this repo right now, on four graphs: **169 paths through the roadmap authoring workflow, 55 through DISTILL's obligations graph, 421 through its oracle graph, and 347 through the DELIVER step cycle — zero model calls, no API key, no network.** The whole suite — 503 tests, including all 992 of those walked paths through the real Mastra engine — takes **about 13.3 s**. Beside it, six Playwright tests drive a real server in a real browser in **about 5.5 s**, also with no model.
+The property the rest of the design rests on is testable in this repo right now, on four graphs: **176 paths through the roadmap authoring workflow, 28 through DISTILL's obligations graph, 421 through its oracle graph, and 347 through the DELIVER step cycle — zero model calls, no API key, no network.** The whole suite — 522 tests, including all 972 of those walked paths through the real Mastra engine — takes **about 13.9 s**. Beside it, six Playwright tests drive a real server in a real browser in **about 5.5 s**, also with no model.
 
 All four have cycles in them. Their path spaces are two and three figures rather than infinite because every repetition is a `loop` node with a required bound.
 
@@ -14,7 +14,7 @@ Every process the framework runs is a **declared command**. The consumer says ho
 
 The second half of the repo is the [VCS module](#vcs-module): `replace-symbol`, `write-file`, `run-tests` and `measure-oracle` execute for real, under a lease, through a verification gate, into an append-only event log. `run-tests` is a **union**: the VCS owns the impact floor and the workflow owns selection above it, so a leaf may add a test and can never subtract one. Artifact rows have [a real database](#artifact-rows) behind them, so a roadmap outlives the process that authored it.
 
-There is something to deliver *to*: [`targets/todo/`](#the-todo-target), a small TypeScript project with two stubbed methods and **no test file at all**, plus [one server](#the-server-and-the-ui) that registers all four graphs against a copy of it and [a run report](#the-run-report) that records what every leaf call decided and cost. A suspension is answered in the UI, from the closed enum the node itself declares; suspensions are also [durable](#durable-snapshots), so a run parked by one process can be answered by another. A browser has [driven all of it](#a-browser-has-rendered-it), and the screenshots are in the repository. **No real-model run has been performed yet** — see [The real run](#the-real-run).
+There is something to deliver *to*: [`targets/todo/`](#the-todo-target), a small TypeScript project with two stubbed methods and **no test file at all**, plus [one server](#the-server-and-the-ui) that registers all four graphs against a copy of it. [Runs, their events and every leaf attempt are rows](#runs-are-rows) in the run directory, so a restarted server shows what the last one did and can answer the suspension it left. A suspension is answered in the UI, from the closed enum the node itself declares; suspensions are also [durable](#durable-snapshots), so a run parked by one process can be answered by another. A browser has [driven all of it](#a-browser-has-rendered-it), and the screenshots are in the repository. **No real-model run has been performed yet** — see [The real run](#the-real-run).
 
 ## Install, test, run
 
@@ -22,7 +22,7 @@ There is something to deliver *to*: [`targets/todo/`](#the-todo-target), a small
 bun install
 bunx playwright install chromium   # once, for the browser tests
 
-bun run test      # 503 tests, no network, no key, no model, ~13.3 s
+bun run test      # 522 tests, no network, no key, no model, ~13.9 s
 bun run typecheck # tsc --noEmit, over every package at once
 bun run check     # both
 bun run ui:build  # the application the server mounts
@@ -82,15 +82,15 @@ It starts **without a key**: the graphs, the projections, the artifact rows and 
 | `packages/core/src/artifacts/` | § Artifacts are typed rows, not documents. The store: one version column, one append-only event log, one time-travel read. |
 | `packages/core/src/bindings/` | § Framework versus consumer → "model bindings: which small models, which validator family". `mastra.ts` is one model call; `claude-code.ts` is a Claude Code subagent. |
 | `packages/core/src/checks/` | § Framework versus consumer → "a library of mechanical checks": `verbatim.ts`, `enum-member.ts`, `id-in-set.ts`. |
-| `packages/core/src/harness/` | § Framework versus consumer → "test harness": `stub-journal.ts`, `enumerate-paths.ts` (the graph inspector, the reachable-path walker, and the effect-outcome axis), `matchers.ts`. |
+| `packages/core/src/harness/` | § Framework versus consumer → "test harness": `scripted-binding.ts` (the one way a test stubs a leaf), `no-replay.ts`, `enumerate-paths.ts` (the graph inspector, the reachable-path walker, and the effect-outcome axis), `matchers.ts`. |
 | `examples/nwave/distill/` | § DISTILL is two graphs. `manifest.ts` is `des distill`'s closed rule set as a pure function; `obligations/` is the graph around it; `oracle/` is `des oracle --value N`, where the acceptance designer authors and software measures. Bootstrap steps 2 and 3. |
 | `examples/nwave/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops, starting at `implement` because RED is a row it reads. `pipeline.ts` is bootstrap step 7's second half: one roadmap row as one run's seed, and what a finished run is persisted as. The scheduling is the server's. |
 | `examples/nwave/roadmap/` | § DELIVER is two graphs → the roadmap half, and § Framework versus consumer → the authoring workflow. Bootstrap step 7's first half — the roadmap as rows, with two pure decision functions and no generator. |
-| `targets/todo/.des/` | The composition that points all four graphs and the two pipelines at a real project: `registrations.ts` declares them, `main.ts` serves them, and the run report records what every leaf call decided and cost. Not a wave: the consumer's own composition. |
+| `targets/todo/.des/` | The composition that points all four graphs and the two pipelines at a real project: `registrations.ts` declares them and `main.ts` serves them. Its one injection point is `models`. Not a wave: the consumer's own composition. |
 | `targets/todo/` | The delivery target. A template project with two stubbed methods and no test file, copied into a run directory and never mutated in place. The oracle is authored into it, not shipped with it. |
 | `packages/core/src/vcs/` | § The agent-native VCS is the effect executor and mechanical verifier, and the whole of [`ai-vcs.md`](./ai-vcs.md) phases 2 to 4. See [`packages/core/src/vcs/README.md`](./packages/core/src/vcs/README.md). |
-| `packages/server/` | § The server and the UI are the entrypoint. `registration.ts` is what a target declares; `projection.ts` reads the AUTHORED graph off the node map; `runner.ts` drives one and watches it; `pipelines.ts` schedules the rows a pipeline declares; `api.ts` is the surface, and `registry.ts` is where a request handler finds it. |
-| `packages/ui/` | § The server and the UI are the entrypoint → the application. `server/functions.ts` wraps every call as a server function; `routes/` are the pages and the one event route; `layout.ts` is dagre, `graph.tsx` is JointJS, `suspension.tsx` is the dialog whose buttons are a node's closed enum; `e2e/` is a browser driving all of it. |
+| `packages/server/` | § The server and the UI are the entrypoint. `registration.ts` is what a target declares; `projection.ts` reads the AUTHORED graph off the node map; `runner.ts` drives one and watches it; `pipelines.ts` schedules the rows a pipeline declares; `store.ts` is the three tables runs, events and attempts are rows in; `api.ts` is the surface, and `registry.ts` is where a request handler finds it. |
+| `packages/ui/` | § The server and the UI are the entrypoint → the application. `server/functions.ts` wraps every call as a server function; `routes/` are the pages and the one event route; `layout.ts` is dagre — including where every edge label goes — `graph.tsx` is JointJS, `suspension.tsx` is the dialog whose buttons are a node's closed enum; `e2e/` is a browser driving all of it. |
 
 The model bindings live under `packages/core/src/bindings/` and nothing in `core/` imports them: the design's framework/consumer table puts "which small models, which validator family" on the consumer side, and the smoke scripts are where a consumer picks.
 
@@ -255,6 +255,15 @@ Mastra's model router takes a `provider/model` string (`anthropic/claude-haiku-4
 |---|---|---|
 | `mastraAgent({ model, id? })` | a Mastra Agent, structured output, temperature 0 | the model router id, e.g. `anthropic/claude-haiku-4-5` |
 | `claudeCode({ agent, cwd, model?, maxTurns?, … })` | a Claude Code subagent, through the Claude Agent SDK's `query()` | `claude-code:<agent>`, so `Attempt.model` in a trail names the agent |
+| `scriptedBinding(script)` | a script keyed by step id, per attempt. The ONE way a test stubs a leaf | `scripted` |
+
+A call carries `step` — the step id, its version, which half of the pair, and
+the attempt — because a binding shared across steps could not otherwise say
+which one it was answering for, and because what a call cost has to land on the
+step that spent it. It also carries an `onUsage` sink supplied by `runStep`,
+closed over the attempt being made: that is what makes token attribution exact
+rather than order-based, and it is why the run report's old
+"concurrent: true, not attributable" caveat is gone along with the flag.
 
 ### Opaque and proposal
 
@@ -398,11 +407,13 @@ They live under `examples/nwave/`, together, because they are waves of one consu
 | Shape | one bounded loop, two leaves, three non-model steps, eight branches, two suspend nodes | one bounded loop, ONE leaf, two non-model steps, four branches | one bounded loop, one leaf, two non-model steps, four branches | three nested bounded loops, eight leaves, two non-model steps, eleven branches |
 | Cycles | `author`, bounded at 2 | `obligations`, at 2 | `author`, at 2 | `cycle` ⊃ `test-loop`, `gates-loop` |
 | Decision space | a sequence, and a choice of *data*: two branches read pure functions of the roadmap | a choice of *manifest*: the branch after the leaf reads a pure function of it | a decision, a write outcome, and an *effect verdict* the runner produced | a sequence, and every effect it asks for has its own outcome space |
-| Enumerated by | `enumeratePaths`, resuming every suspension it reaches | `enumeratePaths`, resuming | `enumeratePaths` + `scriptedExecutor`, resuming | `enumeratePaths` + `scriptedExecutor` |
-| Paths | **169** | **55** | **421** | **347** |
-| Wall clock | ~0.45 s | ~0.13 s | ~0.97 s | ~1.2 s |
+| Enumerated by | `enumeratePaths` over `scriptedBinding`, resuming every suspension it reaches | the same, resuming | the same + `scriptedExecutor`, resuming | the same + `scriptedExecutor` |
+| Paths | **176** | **28** | **421** | **347** |
+| Wall clock | ~0.68 s | ~0.09 s | ~1.3 s | ~1.8 s |
 
 Two of them are worth a second look for opposite reasons. The obligations graph is the smallest thing in the repo that still earns a graph: one leaf, a total function, and no person on the happy path. The oracle graph is the only one whose decisive input is neither a model's answer nor a person's — it is a verdict software measured, and the walk gets it through the same `scriptedExecutor` seam it gets a write outcome from.
+
+**Two of the four counts MOVED when the leaves stopped being stubbed at the journal**, and the move is the finding rather than a regression. A seeded journal short-circuits `runStep` before any model is reached, so the leaf's own mechanical checks never ran; `scriptedBinding` answers the worker instead, and everything between the seam and the decision runs. A leaf carries the same rules as mechanical checks that its gate carries as a total function — deliberately, "so a rule cannot hold at one and not the other" — so a proposal breaking one never REACHES the gate: the check refuses it and the worker is re-driven with the defect named. The obligations walk fell from 55 to 28; the roadmap walk moved from 169 to 176, because it gained a fifth proposal carrying ONLY the two defects the leaf cannot see, which is what keeps `shape.route`'s `invalid` edge reachable at all. The paths that disappeared were ones production could not take.
 
 ### The `run-tests` union
 
@@ -550,7 +561,7 @@ That is a stronger guarantee than an edge, not a weaker one. An edge could be re
 
 Three nodes are **not** leaves: [`run-tests`](#run-tests-is-effect-driven) and [`gates`](#gates-is-effect-driven-too) read an effect's result, and `test-loop.head` is a pure branch. A node whose answer a cheaper thing already produces does not get a model, and "cheaper" now includes "a command's exit status" and "a measurement another wave already took".
 
-Nothing in the DELIVER *walk* runs a test or writes a symbol: the leaves answer from a stub journal and `scriptedExecutor` answers the effects, because the walk is a control-flow test and giving it a filesystem would make it something else. `memoryEffects()` returns `infra-failed` for `replace-symbol` and that outcome is **routed, not hidden** — a test drives it through the real graph and asserts the run parks. The same graph against a real checkout is [the pipeline](#the-scheduler-and-the-pipeline), which does run `bun test` and does write symbols.
+Nothing in the DELIVER *walk* runs a test or writes a symbol: the leaves answer from a `scriptedBinding` script and `scriptedExecutor` answers the effects, because the walk is a control-flow test and giving it a filesystem would make it something else. `memoryEffects()` returns `infra-failed` for `replace-symbol` and that outcome is **routed, not hidden** — a test drives it through the real graph and asserts the run parks. The same graph against a real checkout is [the pipeline](#the-scheduler-and-the-pipeline), which does run `bun test` and does write symbols.
 
 **347 paths** is every leaf decision, every effect outcome, and every loop count up to its bound, with unreachable combinations never run. Coverage is asserted, not assumed: the walk visits every node the graph declares except `human.route` (reachable only by answering a suspension, which the resume tests cover), produces all seven declared `HUMAN_REASONS`, and produces both terminal kinds. It went from 443 to 347 when `gates` stopped being a leaf: five leaf decisions plus an exhaustion became three effect outcomes, and one leaf and its branch edges went away with `add-test`.
 
@@ -676,11 +687,11 @@ That is a position rather than an omission. Every route into `human` is a block 
 
 #### The walk resumes, and it chooses data
 
-169 paths, ~0.6 s, and two things make it unlike DELIVER's.
+176 paths, ~0.7 s, and two things make it unlike DELIVER's.
 
 **It resumes.** DELIVER's person sits outside all three loops, so its walk stops at the suspension and leaves `human.route` to the resume tests. Here the review is in the middle, and `persist`, `accept`, `review.route` and `human.route` are only reachable through an answer. So the walk answers: while a run is parked it chooses from that node's own closed enum and resumes. The walker allows it because the choice point's id is `resume:${reason}`, and the reason is a function of the choices already made, which is the walker's one requirement. The coverage assertion is therefore stronger than DELIVER's: **every node the graph declares is visited, with nothing excused.**
 
-**It chooses data, not just decisions.** Two branches read pure functions of the roadmap, so to reach `shape.route`'s `invalid` edge or `disjointness.route`'s `consistent` and `drift-unresolvable` edges the walk has to vary the *roadmap*. The choice point at `decompose` is therefore a choice of **proposal**, drawn from the hand-written roadmaps in `examples/nwave/roadmap/fixture.ts`: `KNOWN_GOOD` (three steps, one declared dependency, one deliberate overlap → `edges-added`), `DISJOINT` (→ `consistent`), `UNRESOLVABLE` (→ `drift-unresolvable`), `MALFORMED` (every shape defect at once), plus `cannot-decompose` and the exhausted validator. Enumerating a graph whose decisions are functions of its data means enumerating enough data to reach every edge.
+**It chooses data, not just decisions.** Two branches read pure functions of the roadmap, so to reach `shape.route`'s `invalid` edge or `disjointness.route`'s `consistent` and `drift-unresolvable` edges the walk has to vary the *roadmap*. The choice point at `decompose` is therefore a choice of **proposal**, drawn from the hand-written roadmaps in `examples/nwave/roadmap/fixture.ts`: `KNOWN_GOOD` (three steps, one declared dependency, one deliberate overlap → `edges-added`), `DISJOINT` (→ `consistent`), `UNRESOLVABLE` (→ `drift-unresolvable`), `MALFORMED` (every shape defect at once, three of which the LEAF's own checks catch — so it exhausts there and never reaches the gate), `UNSHAPED` (only the dangling dependency and the cycle, which are the gate's alone → `invalid`), plus `cannot-decompose` and a worker that never answers. Enumerating a graph whose decisions are functions of its data means enumerating enough data to reach every edge.
 
 `KNOWN_GOOD` is also the known-good artifact in the framework/consumer sense: the harness proves a roadmap is well-formed, and a hand-written one is the only thing that says a well-formed one is *right*. `KNOWN_GOOD_RESOLVED` beside it is the expected output rows, which is what makes "the resolution is not advice" a testable claim rather than a comment.
 
@@ -727,7 +738,7 @@ Two things the DELIVER registration builds per row are about OWNERSHIP rather th
 
 That second one was found by running the worked example, not by reading the code. The first end-to-end run of the todo target refused `complete`'s write for `remove`'s red oracle, which is exactly the shape the batch filter had already been widened for once.
 
-**The end-to-end test drives all of that through the server**, and it is one of the two tests in the repo allowed to shell out. A two-step roadmap (B depends on A) is persisted *through the roadmap workflow's own `persist`* into the artifact store; a temp TypeScript project holds two oracles and two production symbols; the leaves are journal hits so nothing reaches a model; and the tests stage is the real one, over the declared test command. `runPipeline` is pressed once: A runs, B runs after A is `accepted`, both rows carry a run id the run store answers for, both `step_runs` rows read `accepted`, the event log shows the write under each row's own task id and each run's own session, and `bun test` over the project at the end reports 2 pass. A companion test drives an implementation that does *not* satisfy its oracle and watches the real gate refuse it, roll the file back byte for byte, park the row's run with the enum a person answers from, and leave B unready.
+**The end-to-end test drives all of that through the server**, and it is one of the two tests in the repo allowed to shell out. A two-step roadmap (B depends on A) is persisted *through the roadmap workflow's own `persist`* into the artifact store; a temp TypeScript project holds two oracles and two production symbols; the leaves are scripted at the binding so nothing reaches a model; and the tests stage is the real one, over the declared test command. `runPipeline` is pressed once: A runs, B runs after A is `accepted`, both rows carry a run id the run store answers for, both `step_runs` rows read `accepted`, the event log shows the write under each row's own task id and each run's own session, and `bun test` over the project at the end reports 2 pass. A companion test drives an implementation that does *not* satisfy its oracle and watches the real gate refuse it, roll the file back byte for byte, park the row's run with the enum a person answers from, and leave B unready.
 
 One honest finding from building that: with the impact floor covering the step's own acceptance test, a wrong implementation is caught at the **write** gate as `rejected: tests` and retried, so `still-red` is reached only when the suite fails for something the write's impacted set does not cover. That is the under-approximation `impact.ts` already documents (a fixture file, an environment variable, a subprocess), not a new gap.
 
@@ -745,7 +756,7 @@ resume(wf, runId, answer, execute, runtime?)
 
 `:memory:` is the default and is what the whole suite runs on. A `file:` URL opens libSQL, which is what lets a parked run outlive the process that parked it: the todo target's runtime is a file in its run directory, so a server restarted against the same run directory can still answer a suspension its predecessor produced. `packages/core/src/core/durable-snapshots.test.ts` proves it the only way that means anything — two runtime instances over one file, the first dropped before the second is built — and pairs it with the negative, a second runtime on a *different* file that cannot see the parked run.
 
-**Two adapters rather than one, and the split is measured.** Running the whole suite on `LibSQLStore({ url: ":memory:" })` also works, and took **20.6 s** against **4.6 s** on `InMemoryStore` when it was measured: the enumerated paths — 992 of them now — write a snapshot per step, and a SQL round trip per write is 4.5× the cost of a map write. The durable path needs a database; the in-memory one needs a map.
+**Two adapters rather than one, and the split is measured.** Running the whole suite on `LibSQLStore({ url: ":memory:" })` also works, and took **20.6 s** against **4.6 s** on `InMemoryStore` when it was measured: the enumerated paths — 972 of them now — write a snapshot per step, and a SQL round trip per write is 4.5× the cost of a map write. The durable path needs a database; the in-memory one needs a map.
 
 ## The server and the UI
 
@@ -789,6 +800,9 @@ which graph a person authored, which of its nodes a run is on, what each leaf
 attempt decided and cost, and which rows of a pipeline are waiting on which.
 Live node events come from the engine's own stream, projected back onto
 authored ids by the compiler that minted the compiled ones.
+
+**Runs, attempts and events are ROWS**, and the registry is a projection of
+them — see [Runs are rows](#runs-are-rows).
 
 **A pipeline is a registered composition that runs nothing.** It is rows —
 each naming a registered workflow and the input one run of it takes — plus
@@ -854,7 +868,8 @@ reach it.
 | `readArtifacts` | A table's rows, now or at a past version. |
 | `listPipelines` · `getPipeline` | The compositions, and one's run tree with the run each row is on. |
 | `runPipeline` · `resumeRow` | Drive the frontier; answer a parked row. |
-| `GET /api/events` | The one route rather than a function: `run-started`, `node-entered`, `node-left`, `leaf-attempt`, `suspended`, `resumed`, `terminal`, `pipeline-row`. |
+| `exportRun` | One run as JSON lines: the run, then its attempts, then its events. |
+| `GET /api/events` | The one route rather than a function: `run-started`, `node-entered`, `node-left`, `leaf-attempt`, `suspended`, `resumed`, `terminal`, `pipeline-row` — every one of them appended to `run_events` before it is published. |
 
 **The run id is the server's, and the engine's is recorded beside it.** `run`
 mints its own and hands it back when it stops, so a call that must answer with
@@ -862,6 +877,50 @@ an id before the run has done anything has nothing to answer with. A
 consumer's `record` receives the framework's `RunOutcome`, whose `runId` is the
 engine's — the one the snapshot is under — and the server's record carries it
 as `engineRunId`, so the two names for one run join in one hop.
+
+### Runs are rows
+
+Three tables on `bun:sqlite`, in
+[`packages/server/src/store.ts`](./packages/server/src/store.ts):
+
+| Table | Shape |
+|---|---|
+| `runs` | ONE row per run, UPDATED as its status changes: run id, workflow id, engine run id, input JSON, status, terminal JSON, suspension JSON, error, started/settled seq. |
+| `run_events` | APPEND-ONLY. Every one of the eight event kinds, in one total order — which is also the trace, because a node a run entered is an event it published. |
+| `leaf_attempts` | APPEND-ONLY. One row per model-call pair, with what each half cost. |
+
+A SIBLING of the artifact store rather than a table inside it, and the reason
+is ownership rather than taste. The artifact store is `@des/core`'s and holds
+the CONSUMER's rows, whose table names arrive on an effect at run time; this
+schema is the server's and is written where the server can migrate it. Nothing
+has to be atomic across the two, because no artifact write is part of a run
+write.
+
+**The registry is a projection.** `getRun`, `listRuns`, the pipeline row tree
+and `statusOf` read the database; the trace is derived from a run's own
+`node-entered` events rather than kept beside them; the row a run belongs to is
+read off the `pipeline-row` events rather than a map. The runner holds nothing
+— it rebuilds the graph from the registration and re-parses the input off the
+row — so **a restarted server shows every prior run, keeps a delivered pipeline
+row delivered, and answers the suspension its predecessor left.**
+`packages/server/src/restart.test.ts` drives exactly that through two real
+`serve()` calls over one directory.
+
+The previous cut kept all of this in maps and said so out loud: losing it cost
+a reader their scroll position rather than a fact. It cost both. Every durable
+fact about a run was on disk in four other stores — the engine's snapshot, the
+journal, the VCS event log, the consumer's own rows — and the one table that
+JOINED them was the map.
+
+One correction fell out of moving the trace onto the event log. Resuming
+re-executes the step the run parked on, because that is how the answer is
+delivered, and the engine emits a second `node-entered` for it while its own
+trace records the visit once. The watcher drops that one re-entry, so the log
+and the trace agree rather than one of them being right.
+
+**What is still in memory is a fact about THIS PROCESS**, and a second process
+has its own answer to each: which pipelines are being driven right now, what
+refused the last drive, and who holds which shared resource lease.
 
 ### The drawing
 
@@ -873,6 +932,18 @@ that goes backwards — and the loop node sits outside that box, because it is
 the thing that decides whether there is another iteration rather than part of
 one. A run paints itself over the same drawing: every node it entered, the one
 it is on, and the iteration counter on anything it entered twice.
+
+**dagre places the edge labels too**, and that is a correction rather than a
+detail. The layout graph is a MULTIGRAPH, because a branch routinely sends two
+or three edges to one target — every loop-exit edge converges on the loop node
+— and a simple graph collapses them into one edge with one place to put three
+keys. And a label goes where dagre put it rather than at its edge's midpoint,
+because for edges that share an endpoint and span the same two ranks those
+midpoints coincide. `layout.ts` hands dagre each label's size, dagre reserves a
+rank for it and answers with a point, and the link's own view converts that
+point into the distance-and-offset a JointJS label is addressed by. Before
+that, `exhausted`, `cannot-decompose` and `invalid` were painted on top of one
+another in the committed screenshots.
 
 JointJS is imported inside the effect that draws, because every route is
 server-rendered and a drawing library that wants a document has nothing to do
@@ -891,9 +962,10 @@ then `bun run todo`.
 ### A browser has rendered it
 
 `bun run e2e` is six Playwright tests against a real `serve()` on a free port,
-over the four example graphs and the two pipelines, seeded so that every leaf
-is a journal hit — the bindings throw by name if a key misses, so a test that
-reached a model would fail rather than spend one.
+over the four example graphs and the two pipelines, with every leaf scripted
+at the binding — an unscripted leaf refuses by name, so a test that reached a
+model would fail rather than spend one. The fixture builds its registrations
+with `todoRegistrations(dir, { models: scripted })` and nothing more.
 
 - **The index** lists four graphs and two pipelines, server-rendered.
 - **The drawing**: every node under the id its author wrote, the `author` loop
@@ -910,8 +982,9 @@ reached a model would fail rather than spend one.
 
 Screenshots are committed under
 [`packages/ui/e2e/screenshots/`](./packages/ui/e2e/screenshots) at a fixed
-1440×960 viewport, so what the tests saw is reviewable here. The video is not:
-`test-results/` is gitignored.
+1440×960 viewport, so what the tests saw is reviewable here — which is how the
+edge labels were found sitting on top of one another, and how the fix was
+checked. The video is not: `test-results/` is gitignored.
 
 **About 5.5 s, zero model calls.** What is still untested by a browser is
 everything a model would say: see [The real run](#the-real-run).
@@ -962,9 +1035,11 @@ bun run todo [run-name]             # http://localhost:3000, run directory `firs
 
 It registers **four graphs** — `roadmap`, `obligations`, `oracle`, `deliver` — and **two pipelines**: `oracles` (one oracle per value, in dependency order) and `delivery` (the step cycle, once per red-oracled row). A pipeline row names one of those four graphs and the input one run of it takes, so a graph and a pipeline are two front doors onto ONE registration rather than onto one graph twice — same seed, same executor, same journal. Neither escapes what the other enforces: the standalone `deliver` seed refuses a row whose oracle has not been measured red, by name, and the pipeline declares the same fact as its `readiness`.
 
-A run directory holds the copied project plus four stores and the report — `vcs.sqlite`, `artifacts.sqlite`, `journal.sqlite`, `mastra.sqlite`, `report.jsonl` — all of them files, so a restarted server continues rather than beginning again. `runs/` is gitignored. `test/` is tracked only once it exists, because the oracle is what creates it.
+A run directory holds the copied project plus five stores — `vcs.sqlite`, `artifacts.sqlite`, `journal.sqlite`, `mastra.sqlite`, `runs.sqlite` — all of them files, so a restarted server continues rather than beginning again: it shows every prior run, keeps a delivered row delivered, and answers a suspension its predecessor produced. `runs/` is gitignored. `test/` is tracked only once it exists, because the oracle is what creates it.
 
 **It starts without a key**, and that is a position rather than a convenience. The graphs, the projections, the artifact rows and the event stream are all readable without one, so refusing at the door would make every one of them unreadable to say one thing about a leaf. The refusal is where the need is: a leaf with no key throws by name, `runStep` records it as a trail entry the way it records any provider error, and the graph routes the exhausted leaf where it routes one. Measured rather than assumed — starting a roadmap run with no key parks it at `human` under `validator-exhausted`, with the credential message on both attempts and in the trail, and the server still up.
+
+**`models` is the composition's only injection point.** `todoRegistrations(dir, { models })` takes a `ModelBinding` per leaf ROLE — `decompose`, `authorOracle`, `implement`, `other`, `validator` — and nothing else. Production passes `todoModels()`; a test passes scripted ones. There used to be a second option, an `evidence` override, and it existed so a test could compute the journal key `runStep` would compute against runner output carrying its own timings. That was the composition shaped by its tests; it is gone, and what the suite actually printed is what every DELIVER run quotes.
 
 Models: `decompose` on `anthropic/claude-opus-5`, `author-oracle` and `implement` on `anthropic/claude-sonnet-5`, every other leaf and every validator on `anthropic/claude-haiku-4-5`. `author-oracle` sits on the open-output class for the same reason `implement` does — writing an executable oracle that falsifies every obligation through a declared port is code generation, and what makes it safe is narrow validation plus a measurement, not a smaller model. No escalation is wired, deliberately: `escalateTo` unset is what makes the report's exhaustion count the number of decisions the *small* models could not get past their own validators.
 
@@ -974,7 +1049,7 @@ Full detail in [`examples/nwave/README.md`](./examples/nwave/README.md#targetsto
 
 ### The stubbed end-to-end
 
-`targets/todo/.des/todo.test.ts` is the same path with the inference removed, and it is the one test that covers all three waves:
+`targets/todo/.des/todo.test.ts` is the same path with the inference removed — every leaf scripted at the binding, so the schemas, the mechanical checks and the validators all run — and it is the one test that covers all three waves:
 
 - the target copied to a temp directory, its own `commands.ts` loaded out of the copy exactly as a run directory loads it, and tracked with the **default** verifier over those commands — a real `bunx tsc --noEmit`, a real `bunx biome check`, a real impact-scoped `bun test`, a real oracle measurement;
 - the roadmap authored through the roadmap workflow's own graph and persisted by its own `persist`, with all three of DISTILL's fields empty;
@@ -991,28 +1066,30 @@ and the trace on it is of the graph the author wrote.
 
 Both halves of the declaration are asserted against what actually ran: the `oracle-measured` event carries the `--reporter=junit` argv the target declared, and the gate's `trail` event carries `["bunx", "biome", "check", "src/todo.ts"]` at exit 0.
 
-**About 3 s, zero model calls.** A companion test asserts the other half: with
+**About 3.6 s, zero model calls.** A companion test asserts the other half: with
 no `oracle_runs` row the pipeline's `readiness` refuses both values, no run is
 started at all, and the stubs are untouched — the model bindings throw, so
 reaching a leaf would fail it. The same precondition refuses a row started BY
 HAND, and lands on that run rather than on the call, because a seed runs where
 the run does.
 
-## The run report
+## What every leaf call cost
 
-Every leaf call appends one JSON line to `runs/<name>/report.jsonl`:
+One `leaf_attempts` row per model-call pair, in `runs/<name>/runs.sqlite`:
 
 ```json
-{"run":"first","row":"01-01","step":"deliver.implement","attempt":2,"model":"anthropic/claude-sonnet-5",
+{"runId":"…","stepId":"deliver.implement","attempt":2,"model":"anthropic/claude-sonnet-5",
  "decision":"written","accepted":true,"verdict":"pass","violations":[],"mechanical":[],
  "workerTokens":{"input":2104,"output":312},"validatorTokens":{"input":1580,"output":44}}
 ```
 
-**The gap between the calls a leaf made and the decisions it produced is the number worth reading** — it is what the validator and the mechanical checks cost, in inference, to keep the graph honest, and it is the open question the design says should be measured before the legibility argument is used to justify the approach. It is in the file, one line per call, and the same facts are on each run in the UI. The table that used to render it went with the command that printed it.
+**The gap between the calls a leaf made and the decisions it produced is the number worth reading** — it is what the validator and the mechanical checks cost, in inference, to keep the graph honest, and it is the open question the design says should be measured before the legibility argument is used to justify the approach. The UI shows it per run, and `exportRun(runId)` emits the same facts as JSON lines.
 
-A journal HIT writes no line, because no model was called; counting a replay as a call would make every rate a fiction.
+A journal HIT writes no row, because no model was called; counting a replay as a call would make every rate a fiction.
 
-Three facts join into a line from three places: the attempt from `runStep`'s observer seam, the row from the per-row observer a pipeline builds (or the graph's own id, for a run started by hand), and the tokens from `mastraAgent`'s `onUsage`. Token attribution is **order-based** — inside one `runStep` the calls are worker, then validator, and the observer fires after both — so it holds only while one leaf is in flight. A server does not serialise its runs, so every line it writes carries `concurrent: true`: the decision columns are exact and the token columns are not attributable.
+**The token counts are exact whatever the concurrency.** They used to be order-based — inside one `runStep` the calls are worker then validator, and the observer fires after both, so a queue drained in call order was right only while one leaf was in flight. A server does not serialise its runs, so every line the old report wrote carried `concurrent: true` and said the token columns could not be attributed. Now `runStep` hands each call its own `onUsage` sink, closed over the attempt being made: nothing queues, so nothing interleaves, and the caveat is gone with the flag.
+
+`targets/todo/.des/report.ts` and `report.jsonl` are deleted. What the file was FOR is `exportRun` — a read of the rows rather than a second writer beside them.
 
 ## The real run
 
@@ -1033,7 +1110,7 @@ bun run ui:build
 ANTHROPIC_API_KEY=... bun run todo
 ```
 
-then, in the UI: run `roadmap`, read the roadmap it parks with and answer `approve`; run `obligations`; run the `oracles` pipeline; run the `delivery` pipeline. The report lands in `runs/first/report.jsonl`.
+then, in the UI: run `roadmap`, read the roadmap it parks with and answer `approve`; run `obligations`; run the `oracles` pipeline; run the `delivery` pipeline. What every call decided and cost lands in `runs/first/runs.sqlite`, and the UI shows it per run.
 
 Or, for the smallest real thing — one oracle, one subagent, one measurement, no run directory:
 
@@ -1055,7 +1132,7 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 5. **The example's `State` uses one slot per classifier.** The sketch's `anchors: Record<string, string>` and `exhausted: Kind[]` are *shared* fields that all four classifiers write, and no shallow merge can keep four writes to one key. `State` carries `e2e | expectation | benchmark | dst: { lane?, anchor?, exhausted? }`, so each sub-step writes exactly one top-level key. Consequence for the document's second test: `result.state.expectation` becomes `terminal.state.expectation.lane`.
 
-6. **The journal key keeps the step id and version in plain text.** The sketch hashes `id`, `version`, and the input together into one opaque digest. The prose says "keyed by (step id, step version, input hash)", so the key is literally `<step id>@<version>:<sha256 of input>`. Same three components, same collision resistance on the input, and the stub journal can answer by step id without knowing the input — which is what makes the enumeration harness a dozen lines instead of a hundred. `journalKey` is exported for the same reason.
+6. **The journal key keeps the step id and version in plain text.** The sketch hashes `id`, `version`, and the input together into one opaque digest. The prose says "keyed by (step id, step version, input hash)", so the key is literally `<step id>@<version>:<sha256 of input>`. Same three components, same collision resistance on the input, and a reader can tell which step a key belongs to without hashing anything. `journalKey` is exported so a test can assert that two rows never collide on one.
 
 7. **Input canonicalisation is a recursive sort, not a replacer array.** The sketch uses `JSON.stringify(input, Object.keys(input).sort())`. A replacer *array* is a key allowlist applied at every nesting level, so any nested key not also present at the top level is silently dropped from the hash — two different inputs can collide. `canonicalJson` sorts keys recursively instead.
 
@@ -1120,13 +1197,13 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 37. **`run-tests` is a step, not a leaf.** It had a model behind it in an earlier cut. It does not need one: reading whether a suite passed is reading an effect's typed result. `TEST_OUTCOMES` is deleted with its rows. This is the design's "what decomposes and what stays wide" applied one notch further than the document takes it, and the document now says so.
 
-38. **The harness gained a second axis, `scriptedExecutor(choose, space)`.** The design's harness is "stub journal, path enumeration, trace matchers", and the walk enumerated leaf decisions only — which covered half of DELIVER's edge tables, because the other half route an `EffectResult`. An `EffectOutcomeSpace` names, per effect type, the outcomes to try, and the executor forks the path per outcome. An effect type the space does **not** declare is refused rather than answered `committed`: a silent commit makes the coverage claim a fiction for the edges the other outcomes route to, and nothing would say so. It is one outcome per effect rather than per batch, so a graph whose batch is atomic (the roadmap's `persist`, where a partial write is not a smaller success) keeps its own executor.
+38. **The harness gained a second axis, `scriptedExecutor(choose, space)`.** The design's harness is "stub journal, path enumeration, trace matchers" — the first of which is a scripted BINDING here, per deviation 84 — and the walk enumerated leaf decisions only — which covered half of DELIVER's edge tables, because the other half route an `EffectResult`. An `EffectOutcomeSpace` names, per effect type, the outcomes to try, and the executor forks the path per outcome. An effect type the space does **not** declare is refused rather than answered `committed`: a silent commit makes the coverage claim a fiction for the edges the other outcomes route to, and nothing would say so. It is one outcome per effect rather than per batch, so a graph whose batch is atomic (the roadmap's `persist`, where a partial write is not a smaller success) keeps its own executor.
 
 39. **The scheduler's `runOne` consumes the framework's own `RunOutcome<S>`, and a throw is not absorbed.** The design says `runOne(row) → Promise<RunOutcome>` without saying whose. Using the framework's own means the scheduler maps `accepted | rejected | suspended` off it and hands the whole outcome (`runId` included) to `record`, so a consumer persists what it needs without a second vocabulary. A `runOne` that *throws* propagates: everything a graph decides is data, so a throw means the graph itself is malformed and swallowing it into a status would hide that. `resumeOne` is injected beside it, symmetrically, because `resume` needs the graph the row was run with.
 
 40. **The scheduler holds a parked row's `runId` in memory, and `RowStatus` has no `running`.** State is a projection, so nothing about an *unfinished* run is persisted, and `pending` therefore covers both "never run" and "in flight" — which is the honest reading, since the two are indistinguishable to a reader and the right thing to do with an unfinished run is to run it. The scheduler knows its own in-flight set and does not start one twice; a second scheduler over the same rows would, which is why `record` is the consumer's place to refuse that (the pipeline does, by id collision on `step_runs`).
 
-41. **`runStep` gained an optional observer, and so did `leaf`.** New surface the design does not name, forced by the run report. The journal records what a step DECIDED and the exhaustion trail exists only when the validator was never satisfied; neither records what a *successful* step cost — how many attempts it took, which mechanical check refused the first one, what the validator said about the second. Those facts exist only inside `runStep`'s loop, and a report claiming a first-attempt acceptance rate needs them. So `runStep(def, raw, journal, observe?)` and `leaf({ …, observe? })` take a `StepObserver`, which is handed one `StepAttempt` per attempt and is **never read back**: nothing in the framework branches on an observation and removing the sink changes no trajectory. A journal hit emits nothing, because no model was called. The three graph builders thread it through as an optional last argument.
+41. **`runStep` gained an optional observer, and so did `leaf`.** New surface the design does not name, forced by the run report. The journal records what a step DECIDED and the exhaustion trail exists only when the validator was never satisfied; neither records what a *successful* step cost — how many attempts it took, which mechanical check refused the first one, what the validator said about the second. Those facts exist only inside `runStep`'s loop, and a report claiming a first-attempt acceptance rate needs them. So `runStep(def, raw, journal, observe?)` and `leaf({ …, observe? })` take a `StepObserver`, which is handed one `StepAttempt` per attempt and is **never read back**: nothing in the framework branches on an observation and removing the sink changes no trajectory. A journal hit emits nothing, because no model was called. The three graph builders thread it through as an optional last argument. What each call cost rides on the same seam — see deviation 83.
 
 42. **`mastraAgent` gained `onUsage`, and the shape it hands over is unshaped.** Token counts come from the provider layer and there is more than one shape of them in this dependency graph: `@mastra/core`'s own `TokenUsage` is flat (`promptTokens` / `completionTokens`) and the AI SDK's `LanguageModelUsage` nests (`inputTokens.total`). A binding that picked one would report zero against the other and say nothing about it, so the binding hands over whatever the provider reported, verbatim, and the consumer's `readTokens` reads all three known shapes — yielding an EMPTY object rather than a zero for anything else, because "the provider did not say" and "the call cost nothing" are different claims.
 
@@ -1208,14 +1285,26 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 81. **`bun run ui:dev` is gone, and browser tests replaced it.** The UI's data comes from a registry only `serve()` supplies, and a Vite dev server has none — the page would render "no registry is set". The build is about 1.5 s, so the loop is `bun run ui:build` then `bun run todo`; and what the dev server was really for, seeing whether the thing works, is now six Playwright tests that say so without a person looking.
 
-Source is ~30,130 lines: ~18,350 of implementation and ~11,780 of tests. The VCS module is ~7,410 of that; DELIVER is ~3,560; DISTILL is ~3,030; the UI is ~2,620, of which ~775 are the browser tests and their fixture; the server is ~2,510, split ~1,920 implementation and ~590 tests; the roadmap example is ~2,445; the todo composition is ~1,970, split ~1,040 and ~930; the artifact store is ~420.
+82. **A run is rows, and the registry is a projection of them.** Runs, traces, attempts, the row-to-run mapping and the event stream were maps, and deviation 77 said what that cost: a restarted server saw no rows delivered and would run them again. Three tables in `packages/server/src/store.ts` — `runs`, updated as a status changes; `run_events` and `leaf_attempts`, append-only — make the whole of it durable, and `getRun`, `listRuns`, the pipeline tree and `statusOf` read them. The trace is DERIVED from a run's own `node-entered` events rather than stored beside them; the row a run belongs to is read off the `pipeline-row` events. Deviation 77's cost is therefore paid off rather than restated: `step_runs` and `oracle_runs` answer "did it ever fail" as they always did, and "is it done" is answered by the run's own row.
+
+83. **`ModelBinding.generate` takes a `step`, and a per-call `onUsage`.** A binding is shared across steps — one worker binding answers every leaf a consumer points at it — so `generate({ system, prompt, schema })` could not say which step it was answering for, which a scripted binding needs in order to refuse an unscripted one by name. And token attribution was order-based, which holds only while one leaf is in flight; `runStep` now hands each call its own sink and already knows which attempt made it, so `StepAttempt` carries `workerTokens` and `validatorTokens` and the `concurrent: true` caveat is gone with the flag. `MastraAgentOptions.onUsage` went with it, and `readTokens` moved into `@des/core/step` because the attribution happens there now.
+
+84. **`stubJournal` became `noReplayJournal`, and stubbing moved to the binding.** The stub journal seeded `StepResult`s per step id, which short-circuits `runStep` before any model is reached: a test using one exercised neither the output schema, nor the mechanical checks, nor the validator, and the composition under test had to grow an `evidence` hook so a test could compute the journal key `runStep` would compute. `scriptedBinding` replaced the seeding. What survived is the half that was never about it — a journal that answers nothing and keeps nothing — because `enumeratePaths` re-runs a workflow once per path and a leaf inside a bounded loop is a choice point that replay would delete. New surface beyond what was asked for, and named here for that reason.
+
+85. **`scriptedBinding` takes a function as well as a table, and the function sees the prompt.** A table keyed by step id cannot express the two things this repo's tests need: which answer a leaf gives when that is the choice being enumerated, and which subject a call is about when one graph is driven over several rows. Both are functions of the call, and the second is on the PROMPT — `Step 01-01`, `Value 01-02` — which is exactly where the model it stands in for would read it. The function is consulted once per INVOCATION, on attempt 1, so a leaf a mechanical check refused and re-drove is one choice point rather than two.
+
+86. **`targets/todo/.des/request.ts` folded into `registrations.ts`, and `openRunDir`'s `track` option went.** The first was a one-constant module and the second had no caller. A composition is what production needs and nothing else; both are checked by looking at the directory, which is now `main.ts`, `models.ts`, `registrations.ts`, `run-dir.ts` and `todo.test.ts`.
+
+87. **Two enumerated path counts moved, and the move is the finding.** Running the mechanical checks — which stubbing at the binding does and seeding the journal did not — showed that a leaf carrying the same rules as its gate refuses most bad proposals before the gate ever sees them. The obligations walk fell from 55 paths to 28; the roadmap walk moved from 169 to 176, having gained a fifth proposal (`UNSHAPED`) carrying only the two defects the leaf cannot see, without which the gate's `invalid` edge is unreachable. `examples/nwave/deliver/pipeline.test.ts` gave up a matching pretence: its roadmap fixture pre-filled `acceptance` and `oracle`, which `roadmap.acceptance-facts-are-distills` refuses, so a decomposer could never have returned it.
+
+88. **The edge labels are dagre's to place, over a multigraph.** The layout graph was simple, so two edges between one pair became one; and a label went at its edge's midpoint, which for edges sharing an endpoint is the same coordinate. Both were visible in the committed screenshots as `exhausted`, `cannot-decompose` and `invalid` painted on top of one another. `labelSize` estimates the label box rather than measuring it, because this module has no DOM — it rounds up, since too wide costs a little space and too narrow costs a collision.
+
+Source is ~31,330 lines: ~18,660 of implementation and ~12,670 of tests. The VCS module is ~7,410 of that; DELIVER is ~3,570; DISTILL is ~3,065; the server is ~3,470, split ~2,535 implementation and ~935 tests; the UI is ~2,700, of which ~700 are the browser tests and their fixture; the roadmap example is ~2,520; the todo composition is ~1,515, split ~840 and ~675; the artifact store is ~415.
 
 ## Not built yet
 
 - **Emitting a Mastra dynamic-workflow JSON definition from a `Workflow<S>`.** Mastra's dynamic workflows (beta) are the design's "graph topology as data" already built: a JSON graph over registered agents, tools, and nested workflows, validated and persisted by `addDynamicWorkflow()`. The compiler currently emits live `createStep` closures; emitting the JSON definition instead is what would let the authoring workflow write a graph without writing source.
 - **A real-model run.** The server exists, every graph is registered, a browser has driven all of it, and a leaf refuses by name without a key. None has been run against a model. See [The real run](#the-real-run).
-- **A pipeline's rows surviving a restart.** A row's status is read off the run the server started for it, and a run's record is in memory — so a restarted server sees no rows delivered and would run them again. The facts are still on disk (`step_runs`, `oracle_runs`); what is missing is a registration hook that lets a consumer say "this row is already done" without owning execution, which is the thing deviation 76 deliberately removed. Until then, a pipeline is per-process and a `record` that refuses to write the same row twice is what stops a second delivery landing.
-
 - **OpenAI-compatible endpoints in the Mastra binding.** `mastraAgent` takes a `provider/model` string and lets Mastra's model router resolve the key from the environment, which covers the providers the router knows. A consumer whose model sits behind an OpenAI-compatible URL of its own — a gateway, a proxy, a local server — has no way to say so through the binding, and would have to write a second `ModelBinding`. The seam is one method, so that is a small thing to write and a real thing to be missing.
 - **A declared MUTATION command.** The design's quality gate is clippy plus a mutation kill rate. Lint is a declared command now; mutation is not, so `commands` has four keys and not five, the `gates` step emits one effect rather than two, and the `mutation-below-gate` verdict and the `add-test` leaf it reached are deleted rather than left with no producer. The consequence is that the outer cycle cannot iterate — see deviation 63. Adding the key is additive: a fifth `CommandArgs` member, a second effect from the same node, and a fourth gate verdict.
 

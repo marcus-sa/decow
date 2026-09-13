@@ -44,7 +44,7 @@ differ only in HOW they fail.
 | `executor.ts` | The framework seam. `DETERMINISTIC-WORKFLOWS.md` § "The agent-native VCS is the effect executor and mechanical verifier". |
 | `index.ts` | § 4.3's "runs as a single process and is the source of truth". The composition root: one database, one parser, one verifier, one clock, one id generator. |
 | `defaults.ts` | The only file allowed to read a clock or an RNG. |
-| `testing.ts` | Fixtures: counter ids, a manual clock, stage stubs, a temp project. The VCS's counterpart to `src/harness/stub-journal.ts`. |
+| `testing.ts` | Fixtures: counter ids, a manual clock, stage stubs, a temp project. The VCS's counterpart to `src/harness/`. |
 
 Sections with no file behind them are in [Not built yet](#not-built-yet): § 4.2
 (ast-grep), § 4.5 (the MCP tool surface), § 4.6 and § 7.3 (LSP), § 7.4 (git

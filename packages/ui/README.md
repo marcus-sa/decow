@@ -5,7 +5,7 @@ Start application over `@des/server`'s registry; JointJS draws, dagre lays out.
 
 ```bash
 bun run ui:build     # from the repository root: what `serve()` mounts
-bun run e2e          # the browser tests, against a real seeded server
+bun run e2e          # the browser tests, against a real scripted server
 ```
 
 | Route | What it shows |
@@ -52,6 +52,16 @@ bound rather than as an arrow that goes backwards — and the loop node itself
 sits outside that box, because it is the thing that decides whether there is
 another iteration rather than part of one.
 
+**The edge labels are dagre's to place, and the layout graph is a
+MULTIGRAPH.** A branch routinely sends two or three edges to one target —
+every loop-exit edge converges on the loop node — so a simple graph collapses
+them into one edge with one place to put three keys, and a label at its edge's
+midpoint lands on its neighbour's. `layout.ts` gives dagre each label's size,
+dagre reserves a rank for it and answers with a point, and the link's own view
+converts that point into the distance-and-offset a JointJS label is addressed
+by. `layout.test.ts` asserts that two edges out of one node do not share a
+position; the screenshots are where it was seen going wrong.
+
 JointJS is imported inside the effect that draws. Every route is
 server-rendered, and a drawing library that wants a document has nothing to do
 on a server.
@@ -65,9 +75,9 @@ buttons and is read by the next attempt rather than branched on.
 ## A browser has rendered it
 
 `e2e/` is six Playwright tests, in four files, against a real `serve()` on a
-free port, over the four example graphs and the two pipelines, seeded so that
-every leaf is a journal hit — the bindings throw by name if a key misses, so a
-test that reached a model would fail rather than spend one.
+free port, over the four example graphs and the two pipelines, with every leaf
+scripted at the binding — an unscripted one refuses by name, so a test that
+reached a model would fail rather than spend one.
 
 | Test | What it drives |
 |---|---|

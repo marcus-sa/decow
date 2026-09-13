@@ -10,6 +10,7 @@ const server = await serve({
   workflows: [registration({ id, title, input, graph, seed, executor, journal })],
   pipelines: [{ id, title, rows, readiness, record }],
   artifacts,
+  store: openRunDatabase({ path: "runs/first/runs.sqlite" }),
   port: 3000,
 });
 ```
@@ -48,6 +49,7 @@ is what a unit test here drives.
 | `getPipeline` | The run tree: every row, the status it projects, the run it is on, and why the last drive stopped early. |
 | `runPipeline` | Drive the frontier to quiescence. |
 | `resumeRow` | Answer a parked row — which is answering its run. |
+| `exportRun` | One run as JSON lines: the run, then its attempts, then its events. |
 
 The one thing that is not a function is the event stream. `/api/events` is a
 server ROUTE in `@des/ui`, over `openEvents`'s bus, because a server function
@@ -90,10 +92,43 @@ the ENGINE's — the one the snapshot is under, and the one that outlives the
 process — and the server's record carries it as `engineRunId`, so the two
 names for one run join in one hop.
 
-**A run's record is in memory.** Everything durable about a run is already
-durable somewhere better: the snapshot a suspension resumes from, the journal,
-the VCS event log, the consumer's own rows. This holds what a person watching
-right now is looking at.
+## Runs, attempts and events are ROWS
+
+`src/store.ts` is three tables on `bun:sqlite`, and the registry is a
+projection of them.
+
+| Table | Shape |
+|---|---|
+| `runs` | ONE row per run, UPDATED as its status changes: run id, workflow id, engine run id, input JSON, status, terminal JSON, suspension JSON, error, started/settled seq. |
+| `run_events` | APPEND-ONLY. Every one of the eight event kinds, in one total order — which is also the trace, because a node a run entered is an event it published. |
+| `leaf_attempts` | APPEND-ONLY. One row per model-call pair, with what each half cost. |
+
+A SIBLING of the artifact store rather than a table inside it. That store is
+`@des/core`'s and holds the CONSUMER's rows, whose table names arrive on an
+effect at run time; this schema is the server's and is written here. A file
+whose migrations are two packages' business belongs to neither, and nothing
+has to be atomic across them because no artifact write is part of a run write.
+
+**The guarantee is a restart.** A server started on the same run directory
+shows every prior run, keeps a delivered pipeline row delivered, and answers a
+suspension its predecessor produced: the engine's snapshot is on libSQL, the
+run's row carries the input and the engine's id, and the runner holds nothing —
+it rebuilds the graph from the registration. `src/restart.test.ts` drives that
+through two real `serve()` calls over one directory.
+
+The previous cut kept all of this in maps and said losing it cost a reader
+their scroll position rather than a fact. It cost both: a restarted server
+showed no prior run, and a row whose run had settled read `pending` again, so a
+second drive would deliver it twice.
+
+**What is still in memory is a fact about THIS PROCESS**, and a second process
+has its own answer to each: which pipelines are being driven right now, what
+refused the last drive, and who holds which shared resource lease.
+
+**Token counts are exact.** `runStep` hands each model call its own usage sink
+and already knows which attempt made it, so `leaf_attempts` carries
+`worker_tokens` and `validator_tokens` per row. Nothing queues, so nothing
+interleaves, so two runs in flight cannot swap each other's numbers.
 
 ## `Json`, and why it is not `unknown`
 

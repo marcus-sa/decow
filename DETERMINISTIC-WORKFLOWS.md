@@ -547,7 +547,7 @@ record that carries a default.
 
 ### What this costs to enumerate
 
-55 paths through the obligations graph and 421 through the oracle graph, with
+28 paths through the obligations graph and 421 through the oracle graph, with
 every node visited, every block reason produced, and zero model calls. The
 oracle graph's third axis is the one that makes it interesting: the verdict is
 an **effect outcome** rather than a leaf decision, so the walk gets all four
@@ -787,10 +787,21 @@ The one way the graph can be fooled: an AC that depends on a step it does not de
 | `StepDef` with a mandatory validator, `runStep`, retry and escalation policy | Graph rows and decision functions, committed and diffed in PRs |
 | A library of mechanical checks: verbatim-substring, enum-membership, id-in-set, symbol-set-difference | Model bindings: which small models, which validator family |
 | Journal interface plus a file or SQLite implementation | Effect executors: what `replace-symbol`, `write-file`, `run-tests` and `measure-oracle` mean in this repo |
-| Test harness: stub journal, path enumeration, trace matchers | The known-good hand-written graph used to validate the authoring workflow |
+| Test harness: scripted bindings, path enumeration, trace matchers | The known-good hand-written graph used to validate the authoring workflow |
 | The authoring workflow: requirement rows to graph rows plus enumeration test. The roadmap-authoring shape of it is built, at `examples/nwave/roadmap/` | Rendered views for humans |
 
 Two properties fall out of the split. Generated graphs are source, committed and reviewed, not runtime artifacts; regenerating at run time would put the frontier model back inside the loop. And the framework is self-hosting: the authoring workflow is itself a graph on the runtime, with the same step contract, and its validator is the compiler plus path enumeration, so the one output that needs frontier judgment is checked without a model.
+
+### Production code is not shaped by simulation
+
+A composition's only injection point is the one production already has: which
+model runs which leaf. A test stubs a leaf at that binding and at nothing else,
+because a stub anywhere else is a hole in the thing under test — and a hole the
+composition has to be shaped around is worse, since the shape outlives the
+test. The precedent is `targets/todo/.des/registrations.ts`'s `evidence` hook,
+which existed so a test could compute the journal key `runStep` would compute
+against runner output that carries its own timings; it is removed, and every
+leaf is stubbed with `scriptedBinding` through `models` instead.
 
 ### Package layout
 
@@ -800,9 +811,11 @@ Three packages in one workspace, and a consumer's own directories beside them.
 packages/core/     workflow.ts  step.ts  requirement.ts  journal.ts  effects.ts
                    commands.ts  scheduler.ts  compile.ts
                    checks/     verbatim.ts  enum-member.ts  id-in-set.ts  symbol-diff.ts
-                   harness/    stub-journal.ts  enumerate-paths.ts  matchers.ts
+                   harness/    scripted-binding.ts  no-replay.ts
+                               enumerate-paths.ts  matchers.ts
                    artifacts/  vcs/  bindings/
-packages/server/   registration.ts  projection.ts  runner.ts  router.ts  runs.ts  events.ts
+packages/server/   registration.ts  projection.ts  runner.ts  router.ts
+                   runs.ts  store.ts  events.ts
 packages/ui/       routes/  graph.tsx  layout.ts  suspension.tsx  serve.ts
 examples/          one consumer's waves
 targets/           one project to deliver to, plus the composition under `.des/`
@@ -863,7 +876,9 @@ snapshots, suspend and resume stay the engine's. What the server adds is the
 half the engine has no opinion about: which graph a person authored, which of
 its nodes a run is on, what each leaf attempt decided and what it cost, which
 artifact rows a run wrote, and which rows of a pipeline are still waiting on
-which.
+which. All of that is ROWS — one table for runs, one append-only table for the
+events they publish, one for every leaf attempt — so the server is a projection
+of them and a restart shows what the last process did.
 
 **A pipeline is a registered composition that owns no execution.** The roadmap
 is rows, the step cycle is one fixed graph, and the scheduler instantiates it
