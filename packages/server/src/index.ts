@@ -44,7 +44,7 @@ export type ServeOptions = {
    * Anything not under `/api`. The UI is mounted here; without one the server
    * is the API and nothing else.
    */
-  fallback?: (request: Request) => Response | Promise<Response> | undefined | Promise<undefined>;
+  fallback?: (request: Request) => Response | undefined | Promise<Response | undefined>;
   /** The id a new run is given. Injected so a test can name its runs. */
   mintId?: () => string;
   /** How often a running pipeline's rows are re-read. */

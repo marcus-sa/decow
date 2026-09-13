@@ -31,6 +31,8 @@ runs
 .eslintcache
 .cache
 *.tsbuildinfo
+.tanstack
+.vite
 
 # editors
 .idea

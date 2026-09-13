@@ -10,6 +10,8 @@
     "test": "bun test ./packages ./examples ./targets/todo/.des",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun run test",
+    "ui:build": "bun run --filter @des/ui build",
+    "ui:dev": "bun run --filter @des/ui dev",
     "smoke:deliver": "bun run examples/nwave/deliver/smoke.ts",
     "smoke:oracle": "bun run examples/nwave/distill/smoke.ts",
     "todo:roadmap": "bun run targets/todo/.des/roadmap.ts",
@@ -29,6 +31,7 @@
   "dependencies": {
     "@des/core": "workspace:*",
     "zod": "^4.6.2",
-    "@des/server": "workspace:*"
+    "@des/server": "workspace:*",
+    "@des/ui": "workspace:*"
   }
 }

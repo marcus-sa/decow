@@ -11,6 +11,7 @@
 
 import type { ArtifactStore } from "@des/core/artifacts";
 import type { RowStatus } from "@des/core/scheduler";
+import { z } from "zod";
 import { eventStream, type EventBus } from "./events.ts";
 import { project, type GraphProjection } from "./projection.ts";
 import type { AnyWorkflowRegistration, PipelineRegistration, PipelineRow } from "./registration.ts";
@@ -28,7 +29,7 @@ export type RouterOptions = {
   /** The authored projection per workflow id, built once at registration. */
   projections: Map<string, GraphProjection>;
   /** Anything not under `/api`. The UI, when one is mounted. */
-  fallback?: (request: Request) => Response | Promise<Response> | undefined | Promise<undefined>;
+  fallback?: (request: Request) => Response | undefined | Promise<Response | undefined>;
   /** How often a running pipeline's rows are re-read while it runs. */
   pipelinePollMs: number;
 };
@@ -138,14 +139,23 @@ export const openRouter = (options: RouterOptions) => {
 
   /* ------------------------------------------------------------- the routes */
 
-  const workflows = (): Response =>
-    json(
-      options.workflows.map((registration) => ({
-        id: registration.id,
-        title: registration.title,
-        graph: projectionOf(registration.id),
-      })),
-    );
+  /**
+   * One registration, as a client reads it: what it is called, the authored
+   * graph, and the shape of the input a person supplies to start one.
+   *
+   * The input schema is the REGISTRATION's rather than the graph's — a graph
+   * says nothing about what precedes it — so it travels beside the projection
+   * rather than inside it, and it travels as JSON Schema because a browser
+   * cannot hold a zod type.
+   */
+  const described = (registration: AnyWorkflowRegistration) => ({
+    id: registration.id,
+    title: registration.title,
+    graph: projectionOf(registration.id),
+    input: z.toJSONSchema(registration.input, { target: "draft-07", unrepresentable: "any" }),
+  });
+
+  const workflows = (): Response => json(options.workflows.map(described));
 
   const startRun = async (id: string, request: Request): Promise<Response> => {
     const registration = byId.get(id);
@@ -225,9 +235,7 @@ export const openRouter = (options: RouterOptions) => {
       if (second === "runs" && request.method === "POST") return await startRun(first, request);
       if (second === undefined) {
         const registration = byId.get(first);
-        return registration === undefined
-          ? notFound(`workflow ${first}`)
-          : json({ id: registration.id, title: registration.title, graph: projectionOf(first) });
+        return registration === undefined ? notFound(`workflow ${first}`) : json(described(registration));
       }
     }
 
@@ -244,7 +252,13 @@ export const openRouter = (options: RouterOptions) => {
       return artifacts(first, second, url.searchParams.get("version") ?? undefined);
     }
 
-    if (head === "pipelines" && first !== undefined) {
+    if (head === "pipelines") {
+      // The list is names only. A tree is a projection per row, and running
+      // every consumer's projection to render a menu would make the cheapest
+      // page the most expensive one.
+      if (first === undefined) {
+        return json(options.pipelines.map((p) => ({ id: p.id, title: p.title })));
+      }
       const pipeline = pipelineById.get(first);
       if (pipeline === undefined) return notFound(`pipeline ${first}`);
       if (second === undefined) return json(await runTree(pipeline));

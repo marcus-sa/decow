@@ -1,0 +1,336 @@
+/* Dark, quiet, and out of the way. The graph is the thing being read. */
+
+:root {
+  color-scheme: dark;
+  --bg: #0b0d12;
+  --panel: #11151d;
+  --line: #1e2530;
+  --text: #dbe3ec;
+  --dim: #8fa0b4;
+  --accent: #7fb0ff;
+  --green: #7fd6a1;
+  --amber: #ffd166;
+  --red: #ff8f8f;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+code,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.top {
+  display: flex;
+  align-items: baseline;
+  gap: 16px;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.brand {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.hint,
+.meta,
+.lede {
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.lede {
+  margin: 4px 0 12px;
+}
+
+main {
+  display: block;
+}
+
+.page {
+  padding: 20px;
+  max-width: 1100px;
+}
+
+h1 {
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  text-transform: lowercase;
+  margin: 24px 0 0;
+}
+
+h2 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--dim);
+  margin: 22px 0 8px;
+}
+
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.card a,
+.row a {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.card a:hover,
+.row a:hover {
+  border-color: var(--accent);
+}
+
+.rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.row a {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.empty {
+  color: var(--dim);
+  font-size: 12px;
+  padding: 10px 0;
+}
+
+.pill {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--dim);
+}
+
+.pill.running,
+.pill.pending {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.pill.suspended {
+  color: var(--amber);
+  border-color: var(--amber);
+}
+
+.pill.accepted {
+  color: var(--green);
+  border-color: var(--green);
+}
+
+.pill.rejected,
+.pill.failed {
+  color: var(--red);
+  border-color: var(--red);
+}
+
+.parked {
+  color: var(--amber);
+}
+
+.split {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  height: calc(100vh - 51px);
+}
+
+.canvas {
+  overflow: auto;
+  padding: 16px;
+}
+
+.graph svg {
+  overflow: visible;
+}
+
+.panel {
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  padding: 16px 18px;
+  overflow: auto;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+textarea,
+input,
+select {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 7px 8px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+
+button {
+  background: var(--accent);
+  color: #06101f;
+  border: 0;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+button.ghost {
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--line);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.error {
+  color: var(--red);
+  font-size: 12px;
+}
+
+.detail {
+  display: grid;
+  grid-template-columns: 80px 1fr;
+  gap: 4px 10px;
+  font-size: 12px;
+  margin: 0;
+}
+
+.detail dt {
+  color: var(--dim);
+}
+
+.detail dd {
+  margin: 0;
+}
+
+.trace {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.trace span {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.attempts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.attempt {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.attempt.refused {
+  border-color: var(--red);
+}
+
+/* The suspension dialog: the one place a person answers. */
+.backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 7, 11, 0.72);
+  display: grid;
+  place-items: center;
+  z-index: 20;
+}
+
+.dialog {
+  width: min(560px, 92vw);
+  background: var(--panel);
+  border: 1px solid var(--amber);
+  border-radius: 10px;
+  padding: 18px 20px;
+}
+
+.dialog h2 {
+  margin-top: 0;
+  color: var(--amber);
+}
+
+.answers {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+pre {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px;
+  overflow: auto;
+  font-size: 11px;
+  max-height: 220px;
+}
+
+.tree {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tree .row a {
+  justify-content: space-between;
+}

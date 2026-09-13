@@ -1,7 +1,14 @@
 {
   "compilerOptions": {
-    // Environment setup & latest features
-    "lib": ["ESNext"],
+    // Environment setup & latest features.
+    //
+    // `DOM` is in the lib because `packages/ui` is in the include: one root
+    // config over the whole workspace is what keeps `bunx tsc --noEmit` at the
+    // root a gate for every package at once, and a browser package needs the
+    // browser's types. It costs the server packages a set of globals they do
+    // not use; it buys a cross-package type error that cannot hide behind a
+    // per-package check nobody ran.
+    "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "target": "ESNext",
     "module": "Preserve",
     "moduleDetection": "force",
