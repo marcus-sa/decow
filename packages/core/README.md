@@ -4,7 +4,8 @@ The framework. A finite graph owns control flow, small models own one decision
 each, and the whole path space is enumerable before anything runs.
 
 Nothing here imports `@des/server` or `@des/ui`. The dependency runs one way,
-always.
+always: the examples depend on the server, the server depends on this, and
+nothing depends back.
 
 | Subpath | What it is |
 |---|---|

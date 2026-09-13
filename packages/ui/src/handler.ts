@@ -45,8 +45,8 @@ export const isBuilt = (options: UiOptions = {}): boolean =>
   existsSync(options.serverEntry ?? SERVER_ENTRY);
 
 const NOT_BUILT =
-  "The UI is not built. Run `bun run ui:build` from the repository root, or `bun run ui:dev` " +
-  "in packages/ui for the hot-reload loop.";
+  "The UI is not built. Run `bun run ui:build` from the repository root. There is no separate " +
+  "dev server: the data comes from a registry only `serve()` supplies, and the build is ~1.5s.";
 
 /** What the built server entry exports. */
 type ServerEntry = { default: { fetch: (request: Request) => Promise<Response> } };

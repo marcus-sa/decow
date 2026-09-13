@@ -2,7 +2,7 @@
 
 A prototype of the framework described in [`DETERMINISTIC-WORKFLOWS.md`](./DETERMINISTIC-WORKFLOWS.md): a finite graph owns control flow, small models own one decision each, and the whole path space is enumerable before anything runs.
 
-The property the rest of the design rests on is testable in this repo right now, on four graphs: **169 paths through the roadmap authoring workflow, 55 through DISTILL's obligations graph, 421 through its oracle graph, and 347 through the DELIVER step cycle — zero model calls, no API key, no network.** The whole suite — 495 tests, including all 992 of those walked paths through the real Mastra engine — takes **about 9.6 s**.
+The property the rest of the design rests on is testable in this repo right now, on four graphs: **169 paths through the roadmap authoring workflow, 55 through DISTILL's obligations graph, 421 through its oracle graph, and 347 through the DELIVER step cycle — zero model calls, no API key, no network.** The whole suite — 503 tests, including all 992 of those walked paths through the real Mastra engine — takes **about 13.3 s**. Beside it, six Playwright tests drive a real server in a real browser in **about 5.5 s**, also with no model.
 
 All four have cycles in them. Their path spaces are two and three figures rather than infinite because every repetition is a `loop` node with a required bound.
 
@@ -14,16 +14,19 @@ Every process the framework runs is a **declared command**. The consumer says ho
 
 The second half of the repo is the [VCS module](#vcs-module): `replace-symbol`, `write-file`, `run-tests` and `measure-oracle` execute for real, under a lease, through a verification gate, into an append-only event log. `run-tests` is a **union**: the VCS owns the impact floor and the workflow owns selection above it, so a leaf may add a test and can never subtract one. Artifact rows have [a real database](#artifact-rows) behind them, so a roadmap outlives the process that authored it.
 
-There is something to deliver *to*: [`targets/todo/`](#the-todo-target), a small TypeScript project with two stubbed methods and **no test file at all**, plus [one server](#the-server-and-the-ui) that registers all four graphs against a copy of it and [a run report](#the-run-report) that records what every leaf call decided and cost. A suspension is answered in the UI, from the closed enum the node itself declares; suspensions are also [durable](#durable-snapshots), so a run parked by one process can be answered by another. **No real-model run has been performed yet** — see [The real run](#the-real-run).
+There is something to deliver *to*: [`targets/todo/`](#the-todo-target), a small TypeScript project with two stubbed methods and **no test file at all**, plus [one server](#the-server-and-the-ui) that registers all four graphs against a copy of it and [a run report](#the-run-report) that records what every leaf call decided and cost. A suspension is answered in the UI, from the closed enum the node itself declares; suspensions are also [durable](#durable-snapshots), so a run parked by one process can be answered by another. A browser has [driven all of it](#a-browser-has-rendered-it), and the screenshots are in the repository. **No real-model run has been performed yet** — see [The real run](#the-real-run).
 
 ## Install, test, run
 
 ```bash
 bun install
-bun run test      # 495 tests, no network, no key, no model, ~9.6 s
+bunx playwright install chromium   # once, for the browser tests
+
+bun run test      # 503 tests, no network, no key, no model, ~13.3 s
 bun run typecheck # tsc --noEmit, over every package at once
 bun run check     # both
-bun run ui:build  # the UI the server serves
+bun run ui:build  # the application the server mounts
+bun run e2e       # six Playwright tests against a real seeded server, ~5.5 s
 bun run todo      # the todo target, served: http://localhost:3000
 ```
 
@@ -31,15 +34,15 @@ Three packages in one bun workspace, and a consumer's own directories beside the
 
 ```
 packages/core/     @des/core    the framework: the contract, the compiler, the VCS, the harness
-packages/server/   @des/server  one HTTP surface over the graphs a target registers
-packages/ui/       @des/ui      the authored graph, drawn, with a live trace and a place to answer
+packages/server/   @des/server  the registrations, the registry, the runner, the scheduler, `serve`
+packages/ui/       @des/ui      the application: server functions, the drawing, the place to answer
 examples/nwave/    one consumer's four waves
 targets/todo/      one project to deliver to, plus the composition under `.des/`
 ```
 
 `targets/todo` is deliberately NOT a workspace member: it is a template a run COPIES, and a workspace member is a thing bun links. Its `.des/` composition resolves `@des/*` by walking up to the root `node_modules`, which is also what a copy under `runs/` does.
 
-The test script names its roots — `packages`, `examples`, `targets/todo/.des` — rather than scanning the tree: a target's own project files and the run copies under `runs/` are not this repository's suite.
+The test script names its roots — `packages`, `examples`, `targets/todo/.des` — rather than scanning the tree: a target's own project files and the run copies under `runs/` are not this repository's suite. The browser tests are `*.e2e.ts` and belong to the other runner; `bun test` claims `*.spec.*`, so one suffix keeps them apart.
 
 Nothing in the test suite talks to a model. The two smoke scripts do, and the todo server refuses at the leaf rather than at the door:
 
@@ -58,7 +61,7 @@ ANTHROPIC_API_KEY=... DW_WORKSPACE=/path/to/repo bun run smoke:deliver
 The todo target is the end-to-end path, against a real project rather than a literal, and it is one process:
 
 ```bash
-bun run ui:build                                   # once, so there is a UI to serve
+bun run ui:build                                   # once, so there is an app to mount
 ANTHROPIC_API_KEY=... bun run todo                 # http://localhost:3000, run directory `first`
 ```
 
@@ -81,13 +84,13 @@ It starts **without a key**: the graphs, the projections, the artifact rows and 
 | `packages/core/src/checks/` | § Framework versus consumer → "a library of mechanical checks": `verbatim.ts`, `enum-member.ts`, `id-in-set.ts`. |
 | `packages/core/src/harness/` | § Framework versus consumer → "test harness": `stub-journal.ts`, `enumerate-paths.ts` (the graph inspector, the reachable-path walker, and the effect-outcome axis), `matchers.ts`. |
 | `examples/nwave/distill/` | § DISTILL is two graphs. `manifest.ts` is `des distill`'s closed rule set as a pure function; `obligations/` is the graph around it; `oracle/` is `des oracle --value N`, where the acceptance designer authors and software measures. Bootstrap steps 2 and 3. |
-| `examples/nwave/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops, starting at `implement` because RED is a row it reads. `pipeline.ts` is bootstrap step 7's second half: the scheduler composed over one roadmap. |
+| `examples/nwave/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops, starting at `implement` because RED is a row it reads. `pipeline.ts` is bootstrap step 7's second half: one roadmap row as one run's seed, and what a finished run is persisted as. The scheduling is the server's. |
 | `examples/nwave/roadmap/` | § DELIVER is two graphs → the roadmap half, and § Framework versus consumer → the authoring workflow. Bootstrap step 7's first half — the roadmap as rows, with two pure decision functions and no generator. |
-| `targets/todo/.des/` | The composition that points all four graphs at a real project: `registrations.ts` declares them, `main.ts` serves them, and the run report records what every leaf call decided and cost. Not a wave: the consumer's own composition. |
+| `targets/todo/.des/` | The composition that points all four graphs and the two pipelines at a real project: `registrations.ts` declares them, `main.ts` serves them, and the run report records what every leaf call decided and cost. Not a wave: the consumer's own composition. |
 | `targets/todo/` | The delivery target. A template project with two stubbed methods and no test file, copied into a run directory and never mutated in place. The oracle is authored into it, not shipped with it. |
 | `packages/core/src/vcs/` | § The agent-native VCS is the effect executor and mechanical verifier, and the whole of [`ai-vcs.md`](./ai-vcs.md) phases 2 to 4. See [`packages/core/src/vcs/README.md`](./packages/core/src/vcs/README.md). |
-| `packages/server/` | § The server and the UI are the entrypoint. `registration.ts` is what a target declares; `projection.ts` reads the AUTHORED graph off the node map; `runner.ts` drives one and watches it; `router.ts` is the surface. |
-| `packages/ui/` | § The server and the UI are the entrypoint → the drawing and the place a suspension is answered. `layout.ts` is dagre, `graph.tsx` is JointJS, `suspension.tsx` is the dialog whose buttons are a node's closed enum. |
+| `packages/server/` | § The server and the UI are the entrypoint. `registration.ts` is what a target declares; `projection.ts` reads the AUTHORED graph off the node map; `runner.ts` drives one and watches it; `pipelines.ts` schedules the rows a pipeline declares; `api.ts` is the surface, and `registry.ts` is where a request handler finds it. |
+| `packages/ui/` | § The server and the UI are the entrypoint → the application. `server/functions.ts` wraps every call as a server function; `routes/` are the pages and the one event route; `layout.ts` is dagre, `graph.tsx` is JointJS, `suspension.tsx` is the dialog whose buttons are a node's closed enum; `e2e/` is a browser driving all of it. |
 
 The model bindings live under `packages/core/src/bindings/` and nothing in `core/` imports them: the design's framework/consumer table puts "which small models, which validator family" on the consumer side, and the smoke scripts are where a consumer picks.
 
@@ -710,25 +713,25 @@ openScheduler<S>({
 - **Resource leases** serialize shared test infrastructure and nothing else. A row declares the names it needs, the scheduler takes the whole set atomically before the run and releases it after (`finally`, so a throwing run does not deadlock the next one), and two rows sharing one name serialize on that name while two rows sharing none run together. Taking the set at once is what makes it deadlock-free: a run never holds one name while waiting for another. `inMemoryLeases` grants waiters FIFO, so which of two blocked rows goes first is a function of the order they asked rather than of timing.
 - **A `runOne` that throws is a graph bug and is not absorbed.** Everything a graph decides is data, so a throw means the graph itself is malformed, and swallowing it into a status would hide that.
 
-**[`examples/nwave/deliver/pipeline.ts`](./examples/nwave/deliver/pipeline.ts) is the composition.** It reads the `roadmaps` row for its `stepIds` and joins through to `roadmap_steps` (a scan would mix two roadmaps in one store), records each finished run as a `step_runs` row `{ stepId, runId, outcome, seq }`, and derives each step's status from the latest such row. One DELIVER run per row, with:
+**[`examples/nwave/deliver/pipeline.ts`](./examples/nwave/deliver/pipeline.ts) is the row half, and the SERVER is the scheduling half.** The consumer's file reads the `roadmaps` row for its `stepIds` and joins through to `roadmap_steps` (a scan would mix two roadmaps in one store), turns one row into the seed of one DELIVER run, and appends a `step_runs` row `{ stepId, runId, outcome, seq }` for each finished run. It calls `openScheduler` nowhere: a pipeline registration is rows plus `readiness` plus `record`, and `@des/server` drives the frontier — starting each ready row through the same `runner.start` a person's button starts a run with, so **a row's run is an ordinary run** with an id, a trace, events and a dialog. One DELIVER run per row, with:
 
 - the row's obligations, `predictedTouches` and `authority` in the `StepUnderDelivery` the graph reads;
-- **the row id as the VCS session**, so two rows in flight hold two leases rather than colliding on the one lease a session may hold;
+- **the run's id as the VCS session**, so two runs hold two leases rather than colliding on the one lease a session may hold;
 - **the row id as the task id**, so the event log's answer to "what changed" joins the journal's answer to "what did this step decide" on one key;
 - and therefore the row id in **every leaf's journal input**, because `StepUnderDelivery` carries it and the journal key is a hash of the input. Two rows cannot share a key, so one row's decision cannot replay as another's. That is asserted directly rather than assumed.
 
-Two things the DELIVER pipeline builds per row are about OWNERSHIP rather than plumbing, and both are executor options rather than graph edges:
+Two things the DELIVER registration builds per row are about OWNERSHIP rather than plumbing, and both are executor options rather than graph edges:
 
 - **`protected: [the row's oracle file]`** — `_crafter_owns`. Every path the task declares is the crafter's except the oracle.
 - **`knownRed`: every other undelivered value's oracle.** Every one of them is red by construction, because a value is only ready once its own oracle has been measured red. Without this a module with two undelivered values is undeliverable: the gate refuses row A's correct write because row B's oracle — which A did not break and cannot fix — is failing. An *accepted* sibling's oracle is deliberately not in the set: that one is green, and breaking it is a real regression the gate exists to catch.
 
 That second one was found by running the worked example, not by reading the code. The first end-to-end run of the todo target refused `complete`'s write for `remove`'s red oracle, which is exactly the shape the batch filter had already been widened for once.
 
-**The end-to-end test is the one this cut is for**, and the one test in the repo allowed to shell out. A two-step roadmap (B depends on A) is persisted *through the roadmap workflow's own `persist`* into the artifact store; a temp TypeScript project holds two pending acceptance tests and two production symbols; the leaves are journal hits so nothing reaches a model; and the tests stage is the real one, over the declared test command. A runs, B runs after A is `accepted`, both `step_runs` rows read `accepted`, the event log shows the activation and the implement write under each row's own session and task id, and `bun test` over the project at the end reports 2 pass. A companion test drives an implementation that does *not* satisfy its activated test and watches the real gate refuse it, roll the file back byte for byte, and leave B unready.
+**The end-to-end test drives all of that through the server**, and it is one of the two tests in the repo allowed to shell out. A two-step roadmap (B depends on A) is persisted *through the roadmap workflow's own `persist`* into the artifact store; a temp TypeScript project holds two oracles and two production symbols; the leaves are journal hits so nothing reaches a model; and the tests stage is the real one, over the declared test command. `runPipeline` is pressed once: A runs, B runs after A is `accepted`, both rows carry a run id the run store answers for, both `step_runs` rows read `accepted`, the event log shows the write under each row's own task id and each run's own session, and `bun test` over the project at the end reports 2 pass. A companion test drives an implementation that does *not* satisfy its oracle and watches the real gate refuse it, roll the file back byte for byte, park the row's run with the enum a person answers from, and leave B unready.
 
 One honest finding from building that: with the impact floor covering the step's own acceptance test, a wrong implementation is caught at the **write** gate as `rejected: tests` and retried, so `still-red` is reached only when the suite fails for something the write's impacted set does not cover. That is the under-approximation `impact.ts` already documents (a fixture file, an environment variable, a subprocess), not a new gap.
 
-**5 tests, ~0.8 s** for the whole file, including five real `bun test` spawns. A `bun test` of one file with one test costs about 30 ms, which is what makes a real gate affordable in a test suite at all.
+**10 tests, ~1.6 s** for the whole file, including the real `bun test` spawns behind every write gate. A `bun test` of one file with one test costs about 30 ms, which is what makes a real gate affordable in a test suite at all.
 
 ## Durable snapshots
 
@@ -746,22 +749,61 @@ resume(wf, runId, answer, execute, runtime?)
 
 ## The server and the UI
 
-**The entrypoint is a server, and a UI over it.** A target declares what it can run and calls `serve`; `targets/todo/.des/main.ts` is that file, and it is a list of registrations and one call.
+**The entrypoint is a server, and the server IS the application.** A target
+declares what it can run and calls `serve`; `targets/todo/.des/main.ts` is that
+file, and it is a list of registrations and one call.
 
 ```ts
 import { serve } from "@des/server";
-await serve({ workflows: [...], pipelines: [...], artifacts, fallback: ui() });
+await serve({ workflows: [...], pipelines: [...], artifacts, port: 3000 });
 ```
 
-Four things are decided by that, and each is a position rather than a convenience.
+Five things are decided by that, and each is a position rather than a convenience.
 
-**The UI draws the AUTHORED graph, never the compiled one.** The compiler emits nested workflows with per-path ids — `wf:cycle>test.verdict=green.implement` — and a node reachable from two branch edges is compiled twice under two names, neither of which its author wrote. Drawing that would draw the compile. So `project()` reads the node map through the harness's own `inspectGraph` and `loopBody` — the same walk `compileWorkflow` admits a graph with — and reports the ids in the source. A branch arrives with its whole edge table; a loop with its bound and the nodes inside its body; a suspend node with the closed enum a person will choose from, read off its own `resumeSchema`.
+**Every call the UI makes is a server function.** `@des/ui` is a TanStack Start
+application, and each of the eleven things it can ask for is a `createServerFn`
+whose body is `@des/server`'s own — called directly from a route's loader or a
+button, typed end to end. There is no fetch to `/api` in the client, no
+hand-written JSON route behind one, and no origin to configure: the function
+runs in the process that holds the registrations. Routes have loaders, so the
+first paint is rendered there, from the registry, before any client bundle
+exists.
 
-**Mastra's runtime sits under the server rather than beside it.** Runs, snapshots, suspend and resume stay the engine's; `run` and `resume` are still `@des/core`'s. What the server adds is the half neither has an opinion about: which graph a person authored, which of its nodes a run is on, what each leaf attempt decided and cost, and which rows of a pipeline are waiting on which. Live node events come from the engine's own stream, projected back onto authored ids by the compiler that minted the compiled ones.
+The one exception is `/api/events`, which is a server ROUTE, because a server
+function is one request and one response and an event stream is neither.
 
-**A pipeline is a registered composition.** The roadmap is rows, the step cycle is one fixed graph, and the scheduler instantiates it once per row — so a pipeline registers as data (its rows, their dependencies, the status each projects) and is shown as a run tree. Its state is a projection, so watching one means re-reading it: there is no hook to subscribe to, and inventing one would ask every consumer to report what its own projection already says.
+**The UI draws the AUTHORED graph, never the compiled one.** The compiler emits
+nested workflows with per-path ids — `wf:cycle>test.verdict=green.implement` —
+and a node reachable from two branch edges is compiled twice under two names,
+neither of which its author wrote. Drawing that would draw the compile. So
+`project()` reads the node map through the harness's own `inspectGraph` and
+`loopBody` — the same walk `compileWorkflow` admits a graph with — and reports
+the ids in the source. A branch arrives with its whole edge table; a loop with
+its bound and the nodes inside its body; a suspend node with the closed enum a
+person will choose from, read off its own `resumeSchema`.
 
-**A suspension is answered in the UI.** A parked run raises a notification and a dialog whose buttons are the node's own closed enum. A person cannot answer with something the node would refuse, because nothing else is offered; an answer that somehow is refused comes back a 400 naming the enum, and the run stays parked.
+**Mastra's runtime sits under the server rather than beside it.** Runs,
+snapshots, suspend and resume stay the engine's; `run` and `resume` are still
+`@des/core`'s. What the server adds is the half neither has an opinion about:
+which graph a person authored, which of its nodes a run is on, what each leaf
+attempt decided and cost, and which rows of a pipeline are waiting on which.
+Live node events come from the engine's own stream, projected back onto
+authored ids by the compiler that minted the compiled ones.
+
+**A pipeline is a registered composition that runs nothing.** It is rows —
+each naming a registered workflow and the input one run of it takes — plus
+`readiness` and `record`. The server drives the frontier through `@des/core`'s
+scheduler and starts each ready row through the same `runner.start` a person's
+button uses, so **a row's run is an ordinary run**: a server run id, a live
+trace, events, and a suspension answered in the same dialog. Its status is read
+off that run.
+
+**A suspension is answered in the UI.** A parked run raises a notification and
+a dialog whose buttons are the node's own closed enum. A person cannot answer
+with something the node would refuse, because nothing else is offered; an
+answer that somehow is refused comes back naming the enum, and the run stays
+parked. Answering a pipeline row is answering its run, from either page, and
+the frontier is re-evaluated when it settles.
 
 ### The registration
 
@@ -769,7 +811,7 @@ Four things are decided by that, and each is a position rather than a convenienc
 type WorkflowRegistration<S, I> = {
   id: string;
   title: string;
-  input: z.ZodType<I>;                          // what a person supplies, and the POST body's parser
+  input: z.ZodType<I>;                          // what a person supplies, and the parser for it
   graph: (ctx: GraphContext) => Workflow<S>;    // built over the journal and the observer
   seed: (input: I) => S;
   executor: (ctx: { runId: string; input: I }) => EffectExecutor;
@@ -777,32 +819,102 @@ type WorkflowRegistration<S, I> = {
   runtime?: WorkflowRuntime;
   observe?: StepObserver;                       // the target's own sink, called before the server's
 };
+
+type PipelineRegistration = {
+  id: string;
+  title: string;
+  rows: () => PipelineRow[] | Promise<PipelineRow[]>;   // { id, dependencies, workflowId, input }
+  readiness?: (rowId: string) => boolean | Promise<boolean>;
+  record?: (rowId: string, outcome: RunOutcome<unknown>) => void | Promise<void>;
+  concurrency?: number;
+  resourcesFor?: (row: PipelineRow) => string[];
+};
 ```
 
-Two of those shapes are worth defending. **The graph is a factory** because a `Workflow<S>` has its journal and its observer already closed over, and "what did each attempt cost" is exactly what a person watching wants — so the server supplies both, which is the signature every graph builder in this repository already has. **The executor sees the run's input** because its two ownership options are facts about what the run is ABOUT: which oracle this row's crafter is walled off from, and which failing tests it did not cause.
+Three of those shapes are worth defending. **The graph is a factory** because a
+`Workflow<S>` has its journal and its observer already closed over, and "what
+did each attempt cost" is exactly what a person watching wants — so the server
+supplies both, which is the signature every graph builder in this repository
+already has. **The executor sees the run's input** because its two ownership
+options are facts about what the run is ABOUT: which oracle this row's crafter
+is walled off from, and which failing tests it did not cause. **A pipeline row
+names a workflow and an input** rather than carrying a way to run itself,
+which is what makes "starting one row by hand does not escape the precondition
+the scheduler enforces" structural: there is one registration and both doors
+reach it.
 
 ### The surface
 
-| Route | What it answers |
+| Server function | What it answers |
 |---|---|
-| `GET /api/workflows` | Every registration: its title, its authored graph, and the JSON Schema of its input. |
-| `POST /api/workflows/:id/runs` | Start a run. The run executes asynchronously and the id comes back at once. |
-| `GET /api/runs` · `GET /api/runs/:runId` | Status, the trace with iteration counters, the suspension and its answer space, the terminal, and every leaf attempt. |
-| `POST /api/runs/:runId/resume` | Answer a suspension. Outside the enum is a 400 naming it. |
-| `GET /api/events` | SSE: `run-started`, `node-entered`, `node-left`, `leaf-attempt`, `suspended`, `resumed`, `terminal`, `pipeline-row`. |
-| `GET /api/artifacts/:table` · `/:id?version=` | The rows, now or at a past version. |
-| `GET /api/pipelines` · `/:id` | The compositions, and one's run tree with the error that stopped its last run. |
-| `POST /api/pipelines/:id/run` · `/rows/:rowId/resume` | Run the ready set; answer a parked row. |
+| `listWorkflows` · `getWorkflow` | Every registration: its title, its authored graph, and the JSON Schema of its input. |
+| `startRun` | Start a run. The run executes asynchronously and the id comes back at once. |
+| `listRuns` · `getRun` | Status, the trace with iteration counters, the suspension and its answer space, the terminal, and every leaf attempt. |
+| `resumeRun` | Answer a suspension. Outside the enum is a refusal naming it. |
+| `readArtifacts` | A table's rows, now or at a past version. |
+| `listPipelines` · `getPipeline` | The compositions, and one's run tree with the run each row is on. |
+| `runPipeline` · `resumeRow` | Drive the frontier; answer a parked row. |
+| `GET /api/events` | The one route rather than a function: `run-started`, `node-entered`, `node-left`, `leaf-attempt`, `suspended`, `resumed`, `terminal`, `pipeline-row`. |
 
-**The run id is the server's, and the engine's is recorded beside it.** `run` mints its own and hands it back when it stops, so a POST that must answer with an id before the run has done anything has nothing to answer with.
+**The run id is the server's, and the engine's is recorded beside it.** `run`
+mints its own and hands it back when it stops, so a call that must answer with
+an id before the run has done anything has nothing to answer with. A
+consumer's `record` receives the framework's `RunOutcome`, whose `runId` is the
+engine's — the one the snapshot is under — and the server's record carries it
+as `engineRunId`, so the two names for one run join in one hop.
 
 ### The drawing
 
-JointJS paints and dagre lays out. Every id on the canvas is one the author wrote. A branch's edges carry the key they are taken on. A loop's body is a dagre **cluster** and comes out as a dashed box with the bound written on it — which is what makes a bounded loop legible as a bound rather than as an arrow that goes backwards — and the loop node sits outside that box, because it is the thing that decides whether there is another iteration rather than part of one. A run paints itself over the same drawing: every node it entered, the one it is on, and the iteration counter on anything it entered twice.
+JointJS paints and dagre lays out. Every id on the canvas is one the author
+wrote. A branch's edges carry the key they are taken on. A loop's body is a
+dagre **cluster** and comes out as a dashed box with the bound written on it —
+which is what makes a bounded loop legible as a bound rather than as an arrow
+that goes backwards — and the loop node sits outside that box, because it is
+the thing that decides whether there is another iteration rather than part of
+one. A run paints itself over the same drawing: every node it entered, the one
+it is on, and the iteration counter on anything it entered twice.
 
-**One process.** The app builds as a SPA — a prerendered shell plus a client — so `serve({ fallback: ui() })` serves it from disk beside the API it is a client of: hashed assets by path, the shell for every route the client owns. No proxy and no second origin, which is what makes `/api` a relative URL in the client and a relative URL the right thing for it to be. Development is the other way round and says so: `bun run ui:dev` serves the app with hot reload and proxies `/api` back to a running server. `dist/` is not committed, and a server whose UI is not built answers 503 with the command that builds it.
+JointJS is imported inside the effect that draws, because every route is
+server-rendered and a drawing library that wants a document has nothing to do
+on a server.
 
-**No browser has rendered it.** There is no browser automation here. What is tested is the projection (all four graphs, every node under the id its author wrote), the layout (a loop's body lands inside its own box), the HTTP surface end to end on a real port through a suspension and back, and the mount (the shell and its assets on the same origin as `/api`).
+**One process.** `serve()` mounts `@des/ui`'s built handler: the hashed assets
+by path, everything else to TanStack Start's own `{ fetch }`, which dispatches
+server functions, then server routes, then SSR. `@des/*` is external to that
+build, so the bundle imports the very modules the process already loaded rather
+than carrying copies of the registry, of `bun:sqlite`, of everything. `dist/`
+is not committed, and a server whose UI is not built answers 503 with the
+command that builds it. There is no separate dev server: the data comes from a
+registry only `serve()` supplies, so the loop is `bun run ui:build` (~1.5 s)
+then `bun run todo`.
+
+### A browser has rendered it
+
+`bun run e2e` is six Playwright tests against a real `serve()` on a free port,
+over the four example graphs and the two pipelines, seeded so that every leaf
+is a journal hit — the bindings throw by name if a key misses, so a test that
+reached a model would fail rather than spend one.
+
+- **The index** lists four graphs and two pipelines, server-rendered.
+- **The drawing**: every node under the id its author wrote, the `author` loop
+  as a box labelled `max 2` with the loop node outside it and its body inside,
+  and `human` / `human-review` drawn as suspends — and the only two.
+- **A suspension**: a roadmap run started from the form, parked at
+  `human-review` under `edges-added`, offering exactly `approve` / `revise` /
+  `abandon`; approve carries the SAME run to `accepted` and the trace spans
+  both halves. Recorded to video.
+- **A pipeline**: two pending rows, one button, both `accepted`, and each row's
+  link opening its own run page with the step cycle's trace on it — nothing
+  below the graph stubbed, so each row writes a real body through the real
+  write path with a real `tsc`, `biome check` and `bun test` at the gate.
+
+Screenshots are committed under
+[`packages/ui/e2e/screenshots/`](./packages/ui/e2e/screenshots) at a fixed
+1440×960 viewport, so what the tests saw is reviewable here. The video is not:
+`test-results/` is gitignored.
+
+**About 5.5 s, zero model calls.** What is still untested by a browser is
+everything a model would say: see [The real run](#the-real-run).
 
 ## The todo target
 
@@ -842,13 +954,13 @@ It imports the `Commands` type and nothing else, so the import is erased before 
 ### The server
 
 ```bash
-bun run ui:build                    # once, so there is a UI to serve
+bun run ui:build                    # once, so there is an app to mount
 bun run todo [run-name]             # http://localhost:3000, run directory `first`
 ```
 
 `targets/todo/.des/main.ts` is a list of registrations and a call to `serve`. It replaced six commands, which were six processes over one run directory, each holding nothing and reading everything back out of five files — because a suspension had to survive the exit of the process that produced it. A server stays up, so a suspension is answered where it is read.
 
-It registers **four graphs** — `roadmap`, `obligations`, `oracle`, `deliver` — and **two pipelines**: `oracles` (one oracle per value, in dependency order) and `delivery` (the step cycle, once per red-oracled row). A graph and a pipeline are two front doors onto the same fixed graph, and neither escapes what the other enforces: starting one DELIVER row by hand refuses a row whose oracle has not been measured red, by name, exactly as the scheduler's `eligible` does.
+It registers **four graphs** — `roadmap`, `obligations`, `oracle`, `deliver` — and **two pipelines**: `oracles` (one oracle per value, in dependency order) and `delivery` (the step cycle, once per red-oracled row). A pipeline row names one of those four graphs and the input one run of it takes, so a graph and a pipeline are two front doors onto ONE registration rather than onto one graph twice — same seed, same executor, same journal. Neither escapes what the other enforces: the standalone `deliver` seed refuses a row whose oracle has not been measured red, by name, and the pipeline declares the same fact as its `readiness`.
 
 A run directory holds the copied project plus four stores and the report — `vcs.sqlite`, `artifacts.sqlite`, `journal.sqlite`, `mastra.sqlite`, `report.jsonl` — all of them files, so a restarted server continues rather than beginning again. `runs/` is gitignored. `test/` is tracked only once it exists, because the oracle is what creates it.
 
@@ -871,9 +983,20 @@ Full detail in [`examples/nwave/README.md`](./examples/nwave/README.md#targetsto
 - DELIVER refusing nothing (both rows are oracled), writing both stub bodies through the real gate, running `bunx biome check src/todo.ts` for real as the quality gate, and leaving both oracle files **byte-identical**;
 - and the project's own suite: 2 pass, 0 skip, exit 0.
 
+Every one of those is driven **through the server**: `todoRegistrations` is the
+same function `main.ts` calls, the registry is the one `serve` would build, and
+a wave is `startRun` or `runPipeline` rather than a call into a composition.
+Each row of each pipeline comes back with a run id the run store answers for,
+and the trace on it is of the graph the author wrote.
+
 Both halves of the declaration are asserted against what actually ran: the `oracle-measured` event carries the `--reporter=junit` argv the target declared, and the gate's `trail` event carries `["bunx", "biome", "check", "src/todo.ts"]` at exit 0.
 
-**About 2.2 s, zero model calls.** A companion test asserts the other half: with no `oracle_runs` row, `unoracled()` names both values, the scheduler runs nothing, and the stubs are untouched — the model bindings throw, so reaching a leaf at all would fail it.
+**About 3 s, zero model calls.** A companion test asserts the other half: with
+no `oracle_runs` row the pipeline's `readiness` refuses both values, no run is
+started at all, and the stubs are untouched — the model bindings throw, so
+reaching a leaf would fail it. The same precondition refuses a row started BY
+HAND, and lands on that run rather than on the call, because a seed runs where
+the run does.
 
 ## The run report
 
@@ -948,7 +1071,7 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 13. **The graph is recompiled per `run` and per `resume`.** Compilation is a pure function of the graph and costs about 0.2 ms, so `run` builds the Mastra workflow each time rather than caching it. That is what lets `resume` take a `Workflow<S>` rather than a live handle: it rebuilds the identical workflow and reattaches by `runId`.
 
-14. **Tests beyond the two in the document.** The document shows two tests. This repo ships 495, including the compiler's graph-bug rejections, six malformed-loop rejections, the snapshot assertions behind suspend/resume, a cross-process resume over a libSQL file, a `Run.restart()` exercise, the `runStep` unit tests, the `leaf` constructor's ownership of the exhaustion trail, the Claude Code binding against a scripted `query`, the three mechanical checks, the effect executor's optimistic concurrency, the path walker's own arithmetic, the observer seam's view of a refused attempt, the todo target delivered end to end against a real gate, the four graphs projected as a drawing reads them, the HTTP surface driven through a suspension and back on a real port, and a source scanner that fails the build if `Date.now`, `Math.random`, or `new Date(` appears in the contract, the compiler, or any decision-function file. That scanner was verified by planting a violation in `compile.ts` and watching it fail.
+14. **Tests beyond the two in the document.** The document shows two tests. This repo ships 503 plus six in a browser, including the compiler's graph-bug rejections, six malformed-loop rejections, the snapshot assertions behind suspend/resume, a cross-process resume over a libSQL file, a `Run.restart()` exercise, the `runStep` unit tests, the `leaf` constructor's ownership of the exhaustion trail, the Claude Code binding against a scripted `query`, the three mechanical checks, the effect executor's optimistic concurrency, the path walker's own arithmetic, the observer seam's view of a refused attempt, the todo target delivered end to end against a real gate, the four graphs projected as a drawing reads them, every server function driven through a suspension and back, and a source scanner that fails the build if `Date.now`, `Math.random`, or `new Date(` appears in the contract, the compiler, or any decision-function file. That scanner was verified by planting a violation in `compile.ts` and watching it fail.
 
 15. **Nested workflow ids carry the path that reached them.** The previous cut named a branch tail `${branchId}=${key}`, which collides once a node is reachable by two different paths and has a branch of its own. DELIVER has exactly that shape: `commit` is reached from `cycle.verdict` and from `human.route`. Ids are now `${parentSegmentId}>${branchId}=${key}`, unique by construction. The top-level id is unchanged (`wf:${wf.start}`), so `resume` still reattaches.
 
@@ -1007,7 +1130,7 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 42. **`mastraAgent` gained `onUsage`, and the shape it hands over is unshaped.** Token counts come from the provider layer and there is more than one shape of them in this dependency graph: `@mastra/core`'s own `TokenUsage` is flat (`promptTokens` / `completionTokens`) and the AI SDK's `LanguageModelUsage` nests (`inputTokens.total`). A binding that picked one would report zero against the other and say nothing about it, so the binding hands over whatever the provider reported, verbatim, and the consumer's `readTokens` reads all three known shapes — yielding an EMPTY object rather than a zero for anything else, because "the provider did not say" and "the call cost nothing" are different claims.
 
-43. **`openPipeline` gained a per-row observer factory, an `onRun` hook and `resumeParked`.** The observer is `(rowId) => StepObserver` rather than one observer, because a record's most useful field is which roadmap step it belongs to and the journal key does not carry it — the row id is inside the hashed input. `onRun` exists because the `step_runs` row records the outcome and the run id but the TRACE only exists on the outcome. `resumeParked` reads the parked run id off the row's own `step_runs` row instead of out of the scheduler's memory, which is deviation 40's limitation answered where the projection already lives: the same rows that say "this row is parked" say "under which run".
+43. **The DELIVER composition carried a per-row observer factory, an `onRun` hook and `resumeParked`.** The observer was `(rowId) => StepObserver` rather than one observer, because a record's most useful field is which roadmap step it belongs to and the journal key does not carry it — the row id is inside the hashed input. `onRun` existed because the `step_runs` row records the outcome and the run id but the TRACE only exists on the outcome. `resumeParked` read the parked run id off the row's own `step_runs` row instead of out of the scheduler's memory, which was deviation 40's limitation answered where the projection already lives. All three went with `openPipeline` in deviation 76: the server holds the run, so it holds the observer seam, the trace and the id a resume needs.
 
 44. **The tests stage excludes every test the BATCH is rewriting, not just the write in hand.** Deviation 34 established the exclusion and scoped it per write. The todo target broke it: a value with TWO acceptance tests writes both as two writes under one lease, and the per-write filter leaves the first in the second's impacted set — where it fails, by design, because the production code it asserts is still a stub. The lease is what names the batch, so the lease is what the filter is over. A defect found by pointing the framework at a real project, which is what the target is for.
 
@@ -1061,11 +1184,11 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 69. **A `step` node gained an optional `leaf`, set by the `leaf` constructor.** The compiler does not read it — a leaf IS a step, and telling them apart would buy the compiler nothing. What reads it is whatever has to say which nodes are model calls: a drawing of the graph, a report over what each leaf decided. It carries the `StepDef` id, which is the same id `StepAttempt.stepId` carries, so the two join. The alternative was a hand-maintained list beside the graph, which drifts.
 
-70. **The server's run id is its own, and the engine's is recorded beside it.** `run` mints a run id and hands it back when the run stops, so a `POST` that must answer with an id before the run has done anything has nothing to answer with. The API's id is the server's; the engine's is on the record, and is what a resume reattaches to.
+70. **The server's run id is its own, and the engine's is recorded beside it.** `run` mints a run id and hands it back when the run stops, so a call that must answer with an id before the run has done anything has nothing to answer with. The surface's id is the server's; the engine's is on the record as `engineRunId`, is what a resume reattaches to, and is the `runId` a consumer's `record` sees — because `RunOutcome` is the framework's type and the engine's id is the one the snapshot is under. The two join in one hop, in either direction.
 
 71. **A registration's `graph` is a factory and its `executor` sees the input.** The obvious shapes — a `Workflow<S>` value and an `executor(runId)` — cannot do their jobs: a graph handed over has its observer already closed over, so the server cannot see what its leaves decided, and an executor that cannot see what the run is ABOUT cannot wall off that row's oracle or excuse the red tests it did not cause.
 
-72. **A pipeline is watched by re-reading it, and its refusal is held.** Its state is a projection — the scheduler persists nothing of its own — so there is no hook to subscribe to and inventing one would ask every consumer to report what its own projection already says. The rows are re-read on a period while a run is in flight and every status that moved is published. A refusal (DELIVER's "no oracle measured red") lands on `GET /api/pipelines/:id` as `error`, because the run is asynchronous and the POST that started it answered long ago.
+72. **A pipeline's rows are announced as they move, and its refusal is held.** The server starts each row's run, so it knows when one starts and when it settles and publishes `pipeline-row` at both — no polling, which the previous cut needed because the pipeline ran itself and nothing here saw it. A refusal that stops a drive early lands on the pipeline's tree as `error`, because the drive is asynchronous and whatever started it answered long ago.
 
 73. **A suspend node's REASON is not projected, and its answer space is.** `reason` is `(s: S) => string`, a function of state, so the closed set it draws from lives in the consumer's own enum and not in the node; `resumeSchema` is a value, so the answers are readable. The half a person has to choose from is the half that travels, and the reason arrives with the suspension itself.
 
@@ -1073,14 +1196,25 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 75. **The run report kept its writer and lost its table.** `summarize` and `renderTable` had one reader, `todo:report`, and that command went with the other five. The lines are still written per run directory, one per model call; the same facts are on each run in the UI. A renderer nothing renders is dead code, and the deletion took its tests with it.
 
-Source is ~28,800 lines: ~17,530 of implementation and ~11,280 of tests. The VCS module is ~7,410 of that, split ~4,010 implementation and ~3,400 tests; DISTILL is ~3,160, split ~2,320 and ~840; DELIVER is ~3,690, split ~2,080 and ~1,610; the roadmap example is ~2,450, split ~1,730 and ~720; the server is ~1,910, split ~1,390 and ~510; the UI is ~1,620, split ~1,410 and ~210; the todo composition is ~1,910, split ~1,040 and ~870; the artifact store is ~420, split ~190 and ~230.
+76. **A pipeline registration owns no execution.** It was `{ rows, status, run, resume }`, where `run` called `@des/core`'s `run` itself — so a row's run had no server id, published no events, had no trace anybody could read, and parked where no dialog could reach it. It is `{ rows, readiness?, record?, concurrency?, resourcesFor? }` now: rows name a registered workflow and the input one run of it takes, and the SERVER schedules them through the same `openScheduler` and the same `runner.start` a person's button uses. `readiness` is the precondition the frontier rule cannot express; `record` is the consumer's one write. The consequence is the point: a row's run is an ordinary run.
+
+77. **A row's status is read off its run, not off the consumer's rows.** `statusOf` was the consumer's projection over `step_runs`; it is now the server's reading of the run it started for that row, because a registration that owns no execution cannot be asked what happened. What that costs is honest and worth saying: a restarted server no longer sees the rows a previous process delivered, so it would run them again. The durable `step_runs` and `oracle_runs` rows are still appended and are still what "did it ever fail" is answered from — they stopped being what "is it done" is answered from.
+
+78. **A `seed` that refuses lands on the run, not on the call.** DELIVER's seed refuses a row with no red oracle by name, and it used to throw out of a command. `seed` now runs inside the driver, so the refusal is recorded as a `failed` run carrying the message — which is where a person reads it, and which keeps starting a run from blocking on whatever the seed does. The todo target's DELIVER seed runs the project's whole suite; a start that waited for it would be a start that waited for `bun test`.
+
+79. **`unknown` is not a serializable type, and the boundary says so.** TanStack Start validates a server function's return type against a serializable bound, and a type containing `unknown` degrades every call site to `unknown` rather than erroring where the problem is. Every value affected was JSON in fact — a JSON Schema, a form's input, an artifact row body that is JSON text in the store it came from, a trail on its way to a person — so `@des/server` has a `Json` type and one named widening, `asJson`, at each boundary that knows. Nothing in `@des/core` changed.
+
+80. **`@des/server` depends on `@des/ui`, and the module graph is still acyclic.** `serve()` mounts the built application, which is a `@des/ui` artifact; `@des/ui`'s server functions read `@des/server`'s registry. The package graph is therefore a cycle, which a bun workspace links without complaint. The MODULE graph is not: `@des/ui/handler` imports nothing from `@des/server`, and `serve` reaches it by dynamic import at run time. The registry is kept on a well-known symbol besides, so two copies of that module — one imported by the process, one inlined by a bundler — would still read one registry. Two defences, because that failure would be silent.
+
+81. **`bun run ui:dev` is gone, and browser tests replaced it.** The UI's data comes from a registry only `serve()` supplies, and a Vite dev server has none — the page would render "no registry is set". The build is about 1.5 s, so the loop is `bun run ui:build` then `bun run todo`; and what the dev server was really for, seeing whether the thing works, is now six Playwright tests that say so without a person looking.
+
+Source is ~30,130 lines: ~18,350 of implementation and ~11,780 of tests. The VCS module is ~7,410 of that; DELIVER is ~3,560; DISTILL is ~3,030; the UI is ~2,620, of which ~775 are the browser tests and their fixture; the server is ~2,510, split ~1,920 implementation and ~590 tests; the roadmap example is ~2,445; the todo composition is ~1,970, split ~1,040 and ~930; the artifact store is ~420.
 
 ## Not built yet
 
 - **Emitting a Mastra dynamic-workflow JSON definition from a `Workflow<S>`.** Mastra's dynamic workflows (beta) are the design's "graph topology as data" already built: a JSON graph over registered agents, tools, and nested workflows, validated and persisted by `addDynamicWorkflow()`. The compiler currently emits live `createStep` closures; emitting the JSON definition instead is what would let the authoring workflow write a graph without writing source.
-- **A real-model run.** The server exists, every graph is registered, and a leaf refuses by name without a key. None has been run against a model. See [The real run](#the-real-run).
-
-- **Browser automation for the UI.** What is tested is the projection, the layout, the HTTP surface end to end, and the mount. What is not tested is that a browser renders any of it: there is no headless browser here, nothing asserts on a rendered node, and no screenshot has been taken. The claim "the graph is drawn" rests on the code and on nobody's eyes.
+- **A real-model run.** The server exists, every graph is registered, a browser has driven all of it, and a leaf refuses by name without a key. None has been run against a model. See [The real run](#the-real-run).
+- **A pipeline's rows surviving a restart.** A row's status is read off the run the server started for it, and a run's record is in memory — so a restarted server sees no rows delivered and would run them again. The facts are still on disk (`step_runs`, `oracle_runs`); what is missing is a registration hook that lets a consumer say "this row is already done" without owning execution, which is the thing deviation 76 deliberately removed. Until then, a pipeline is per-process and a `record` that refuses to write the same row twice is what stops a second delivery landing.
 
 - **OpenAI-compatible endpoints in the Mastra binding.** `mastraAgent` takes a `provider/model` string and lets Mastra's model router resolve the key from the environment, which covers the providers the router knows. A consumer whose model sits behind an OpenAI-compatible URL of its own — a gateway, a proxy, a local server — has no way to say so through the binding, and would have to write a second `ModelBinding`. The seam is one method, so that is a small thing to write and a real thing to be missing.
 - **A declared MUTATION command.** The design's quality gate is clippy plus a mutation kill rate. Lint is a declared command now; mutation is not, so `commands` has four keys and not five, the `gates` step emits one effect rather than two, and the `mutation-below-gate` verdict and the `add-test` leaf it reached are deleted rather than left with no producer. The consequence is that the outer cycle cannot iterate — see deviation 63. Adding the key is additive: a fifth `CommandArgs` member, a second effect from the same node, and a fourth gate verdict.

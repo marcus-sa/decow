@@ -196,12 +196,15 @@ verdicts from the same `scriptedExecutor` seam it gets a write outcome from.
 
 ### The composition
 
-`runObligations` runs the first graph once per roadmap. `openOracles` runs the
-second once per value, in dependency order, through the same scheduler DELIVER
-uses — each value under its own VCS session and task id — and records an
-`oracle_runs` row per finished run. `verdict` on that row is the measured one
-widened by exactly one word: `blocked` is a run that produced no measurement at
-all, which keeps "measured green" and "never measured" two different facts.
+The first graph is registered as a WORKFLOW and runs once per roadmap; the
+second is registered as a PIPELINE over the roadmap's rows, one run per value,
+in dependency order — each value under its own VCS session and its own task id
+— and `recordOracleRun` appends an `oracle_runs` row per finished run.
+`verdict` on that row is the measured one widened by exactly one word:
+`blocked` is a run that produced no measurement at all, which keeps "measured
+green" and "never measured" two different facts. Neither of them schedules
+anything: a pipeline registration is rows plus `record`, and the server drives
+the frontier.
 
 There is **no protected scope here**, and that asymmetry is the point: this is
 the one turn that owns the oracle. DELIVER's executor is the one that walls it.
@@ -346,7 +349,7 @@ it proposes comes back `rejected: contract`.
 ### The server
 
 ```bash
-bun run ui:build                      # once, so there is a UI to serve
+bun run ui:build                      # once, so there is an app to mount
 bun run todo [run-name]               # http://localhost:3000, run directory `first`
 ```
 
@@ -370,14 +373,18 @@ it:
 - **`deliver`** runs the step cycle over one row. `implement` is Sonnet; every
   other leaf is Haiku. It refuses a row with no red oracle **by name**.
 
-**Two pipelines**, which are the same graphs under the scheduler: `oracles`
-(one per value, in dependency order) and `delivery` (the step cycle, once per
-red-oracled row, with each row's own oracle protected and every sibling's
-excused as known-red).
+**Two pipelines**, which are those same registrations under the server's
+scheduler: `oracles` (one per value, in dependency order) and `delivery` (the
+step cycle, once per red-oracled row, with each row's own oracle protected and
+every sibling's excused as known-red). A pipeline row is `{ id, dependencies,
+workflowId, input }` and nothing else — it names one of the four graphs above
+and the input one run of it takes.
 
-A graph and a pipeline are two front doors onto the same fixed graph, and
-neither escapes what the other enforces: the readiness precondition is in the
-scheduler's `eligible` AND in the standalone seed.
+So a graph and a pipeline are two front doors onto ONE registration rather
+than onto one graph twice: same seed, same executor, same journal, and a row's
+run is an ordinary run with an id, a trace, events and a dialog. Neither door
+escapes what the other enforces — the readiness precondition is the pipeline's
+`readiness` AND the standalone seed's refusal.
 
 **It starts without a key.** Everything is readable; a leaf refuses by name on
 the attempt, the message lands in the run's trail, and the server stays up. No
@@ -402,6 +409,7 @@ columns are exact and the token columns are not attributable.
 
 ```
 bun test ./examples/nwave       # all four waves, no network, no key
+bun run e2e                     # a browser over a seeded server: the graphs, a suspension, a pipeline
 bun run smoke:oracle            # one oracle, authored by a real subagent in the PROPOSAL shape
 bun run smoke:deliver           # DELIVER against Haiku plus three Claude Code subagents
 bun run todo                    # the four waves, served, against a copy of the todo target
@@ -411,8 +419,10 @@ The smoke scripts refuse to run without `ANTHROPIC_API_KEY`. The server does
 not: it starts, everything is readable, and the refusal is at the leaf.
 
 **Nothing in this directory has been run against a real model.** The server
-exists and a leaf refuses without a key. `todo.test.ts` drives all three waves
-against a real checkout, through the target's own declared commands
+exists, a browser has driven it, and a leaf refuses without a key.
+`todo.test.ts` drives all three waves against a real checkout — through the
+server, as `startRun` and `runPipeline` — through the target's own declared
+commands
 — a real `write-file`, a real measurement, a real `bunx tsc --noEmit`, a real
 `bunx biome check` and a real impact-scoped `bun test` at every write gate, and
 a real `bunx biome check` at the quality gate — in about 2.2 s with zero model

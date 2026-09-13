@@ -826,16 +826,27 @@ Each piece is what validates the next.
 
 ## The server and the UI are the entrypoint
 
-A consumer's entrypoint is not a command per wave. It is a server, and a UI
-over it. A target declares what it can run and calls `serve`:
+A consumer's entrypoint is not a command per wave. It is a server, and the
+server IS the application. A target declares what it can run and calls `serve`:
 
 ```ts
 import { serve } from "@des/server";
 await serve({ workflows: [...], pipelines: [...] });
 ```
 
-Four things are decided by that, and each one is a position rather than a
+Five things are decided by that, and each one is a position rather than a
 convenience.
+
+**Every call the UI makes is a server function.** The application is TanStack
+Start, and each thing it can ask for — list the graphs with their authored
+projection and input schema, get one, start a run, get a run, answer a
+suspension, read artifact rows, get a pipeline's tree, drive it, answer a row —
+is a `createServerFn` whose body runs in the process that holds the
+registrations, called directly and typed end to end. There is no client over an
+API, no origin to configure, and no second definition of what a projection is.
+Routes have loaders, so the first paint is rendered from the registry itself.
+The one exception is the event stream, which is a server ROUTE, because a
+server function is one request and one response.
 
 **The UI draws the AUTHORED graph, never the compiled one.** The compiler emits
 nested workflows with per-path ids, and a node reachable from two branch edges
@@ -854,18 +865,24 @@ its nodes a run is on, what each leaf attempt decided and what it cost, which
 artifact rows a run wrote, and which rows of a pipeline are still waiting on
 which.
 
-**A pipeline is a registered composition rather than a second kind of graph.**
-The roadmap is rows, the step cycle is one fixed graph, and the scheduler
-instantiates it once per row. So a pipeline registers as data — its rows, their
-dependencies, the status each one projects — and is shown as a run tree. What a
-row's run drills into is a run of the same fixed graph.
+**A pipeline is a registered composition that owns no execution.** The roadmap
+is rows, the step cycle is one fixed graph, and the scheduler instantiates it
+once per row — so a pipeline registers as DATA: its rows, each naming a
+registered workflow and the input one run of it takes, plus whether a row may
+run at all and what to persist when one finishes. The SERVER drives the
+frontier and starts each ready row the same way a person's button starts a run.
+So a row's run is an ordinary run: a run id, a live trace, events, and a
+suspension answered in the same place. There is no second way to run a row, and
+that is what makes "starting one row by hand does not escape the precondition
+the scheduler enforces" structural rather than duplicated.
 
 **A suspension is answered in the UI.** A parked run raises a notification and
 a dialog whose BUTTONS are the suspend node's own closed enum, read off its
 `resumeSchema` rather than off a second declaration. A person cannot answer
 with something the node would refuse, because nothing else is offered; the
 answer goes back through the same `resume` a second process used to call, and
-the same run continues to a terminal.
+the same run continues to a terminal. Answering a pipeline row is answering its
+run.
 
 A registration is what a target writes:
 
@@ -881,13 +898,25 @@ type WorkflowRegistration<S, I> = {
   runtime?: WorkflowRuntime;
   observe?: StepObserver;
 };
+
+type PipelineRegistration = {
+  id: string;
+  title: string;
+  rows: () => PipelineRow[] | Promise<PipelineRow[]>;   // { id, dependencies, workflowId, input }
+  readiness?: (rowId: string) => boolean | Promise<boolean>;
+  record?: (rowId: string, outcome: RunOutcome<unknown>) => void | Promise<void>;
+  concurrency?: number;
+  resourcesFor?: (row: PipelineRow) => string[];
+};
 ```
 
 The graph is a factory because a `Workflow<S>` has its journal and its observer
 already closed over, and "what did each attempt cost" is exactly what a person
 watching wants. The executor sees the run's input because its two ownership
 options — which oracle this row's crafter is walled off from, which failing
-tests it did not cause — are facts about what the run is ABOUT.
+tests it did not cause — are facts about what the run is ABOUT. And a pipeline
+row names a workflow rather than carrying a way to run itself, because a
+composition that ran itself is a composition nobody can watch.
 
 One thing the server deliberately does not claim: a suspend node's REASON is
 `(s: S) => string`, a function of state, so the closed set it draws from is not

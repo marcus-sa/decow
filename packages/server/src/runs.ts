@@ -58,7 +58,7 @@ export type RunRecord = {
   engineRunId?: string;
 };
 
-/** A run as `GET /api/runs` lists it: everything but the bulky fields. */
+/** A run as `listRuns` reports it: everything but the bulky fields. */
 export type RunSummary = Omit<RunRecord, "trace" | "attempts" | "input"> & {
   /** How many nodes it has entered. */
   visited: number;

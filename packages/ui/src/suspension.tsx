@@ -98,8 +98,8 @@ export const SuspensionDialog = (props: SuspensionDialogProps): React.ReactEleme
 
         {options.length === 0 ? (
           <p className="meta">
-            This node's answer is not a closed enum, so there is nothing to offer. Post to
-            <code> /api/runs/{props.run.runId}/resume</code>.
+            This node's answer is not a closed enum, so there is nothing to offer. Call{" "}
+            <code>resumeRun</code> with the shape its <code>resumeSchema</code> parses.
           </p>
         ) : null}
       </div>

@@ -9,8 +9,13 @@ the two stubbed method bodies in `src/todo.ts` until that oracle is green.
 **This is a template. It is never mutated in place.** Every run copies it to a
 fresh directory under `runs/<name>/todo/` (gitignored) and works there, so the
 repository stays clean and each run is a fresh checkout. See [`.des/`](.des) for
-the composition that registers the four graphs against a copy of it, and
-`bun run todo` for the server that serves them.
+the composition that registers the four graphs and the two pipelines against a
+copy of it, and `bun run todo` for the server that serves them.
+
+A pipeline here is DATA: rows naming one of those four graphs and the input one
+run of it takes. The server schedules them, so delivering a row and starting
+one by hand are the same registration — and `bun run e2e` drives exactly that
+in a browser, against a throwaway copy of this directory.
 
 | File | What it is |
 |---|---|
