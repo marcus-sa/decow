@@ -53,9 +53,9 @@
  */
 
 import { z } from "zod";
-import { measurementOf, type Effect, type EffectResult } from "../../../../core/effects.ts";
-import type { Journal } from "../../../../core/journal.ts";
-import type { StepObserver } from "../../../../core/step.ts";
+import { measurementOf, type Effect, type EffectResult } from "../../../../src/core/effects.ts";
+import type { Journal } from "../../../../src/core/journal.ts";
+import type { StepObserver } from "../../../../src/core/step.ts";
 import {
   branch,
   leaf,
@@ -63,7 +63,7 @@ import {
   suspend,
   type LoopExit,
   type Workflow,
-} from "../../../../core/workflow.ts";
+} from "../../../../src/core/workflow.ts";
 import {
   declaredPaths,
   type AuthorInput,

@@ -23,15 +23,15 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync, symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { openArtifacts } from "../../../artifacts/store.ts";
-import { memoryEffects } from "../../../core/effects.ts";
-import { inMemoryLeases } from "../../../core/scheduler.ts";
-import { memoryJournal } from "../../../core/journal.ts";
-import { journalKey, type StepResult } from "../../../core/step.ts";
-import { resume, run } from "../../../core/workflow.ts";
-import { openVcs } from "../../../vcs/index.ts";
-import { bunCommands, counterIds, manualClock, passingVerifier, tempProject } from "../../../vcs/testing.ts";
-import { spawningExecutor, testsStage } from "../../../vcs/verify.ts";
+import { openArtifacts } from "../../../src/artifacts/store.ts";
+import { memoryEffects } from "../../../src/core/effects.ts";
+import { inMemoryLeases } from "../../../src/core/scheduler.ts";
+import { memoryJournal } from "../../../src/core/journal.ts";
+import { journalKey, type StepResult } from "../../../src/core/step.ts";
+import { resume, run } from "../../../src/core/workflow.ts";
+import { openVcs } from "../../../src/vcs/index.ts";
+import { bunCommands, counterIds, manualClock, passingVerifier, tempProject } from "../../../src/vcs/testing.ts";
+import { spawningExecutor, testsStage } from "../../../src/vcs/verify.ts";
 import { roadmapGraph, seed as seedRoadmap, type State as RoadmapState } from "../roadmap/graph.ts";
 import type { Roadmap } from "../roadmap/schema.ts";
 import { roadmapDefs } from "../roadmap/steps.ts";
@@ -47,8 +47,8 @@ import {
   type StepRun,
 } from "./pipeline.ts";
 
-/** This file is `<root>/src/examples/nwave/deliver/pipeline.test.ts`. */
-const REPO = dirname(dirname(dirname(dirname(dirname(import.meta.path)))));
+/** This file is `<root>/examples/nwave/deliver/pipeline.test.ts`. */
+const REPO = dirname(dirname(dirname(dirname(import.meta.path))));
 
 const REQUEST = "Two functions return the numbers their acceptance tests assert.";
 const DESIGN = "alpha(): number returns 42. bravo(): number returns 7. No other surface.";

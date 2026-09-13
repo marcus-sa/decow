@@ -6,7 +6,7 @@ The property the rest of the design rests on is testable in this repo right now,
 
 All four have cycles in them. Their path spaces are two and three figures rather than infinite because every repetition is a `loop` node with a required bound.
 
-The four examples are one consumer's waves, so they live together under [`src/examples/nwave/`](#the-four-worked-examples), and they are one **pipeline** rather than four demonstrations: the roadmap workflow writes rows, [DISTILL](#distill-is-two-graphs) fills in what each value must be observed to do and writes the oracle that observes it, and the DELIVER step cycle runs once per row whose oracle has been measured red.
+The four examples are one consumer's waves, so they live together under [`examples/nwave/`](#the-four-worked-examples), and they are one **pipeline** rather than four demonstrations: the roadmap workflow writes rows, [DISTILL](#distill-is-two-graphs) fills in what each value must be observed to do and writes the oracle that observes it, and the DELIVER step cycle runs once per row whose oracle has been measured red.
 
 That last clause is the shape of this cut. **The oracle is authored by one wave, executed by software, and walled off from the next wave.** RED is not a node in the step cycle; it is a recorded verdict the step cycle refuses to run without.
 
@@ -69,9 +69,9 @@ See [The todo target](#the-todo-target).
 | `src/bindings/` | § Framework versus consumer → "model bindings: which small models, which validator family". `mastra.ts` is one model call; `claude-code.ts` is a Claude Code subagent. |
 | `src/checks/` | § Framework versus consumer → "a library of mechanical checks": `verbatim.ts`, `enum-member.ts`, `id-in-set.ts`. |
 | `src/harness/` | § Framework versus consumer → "test harness": `stub-journal.ts`, `enumerate-paths.ts` (the graph inspector, the reachable-path walker, and the effect-outcome axis), `matchers.ts`. |
-| `src/examples/nwave/distill/` | § DISTILL is two graphs. `manifest.ts` is `des distill`'s closed rule set as a pure function; `obligations/` is the graph around it; `oracle/` is `des oracle --value N`, where the acceptance designer authors and software measures. Bootstrap steps 2 and 3. |
-| `src/examples/nwave/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops, starting at `implement` because RED is a row it reads. `pipeline.ts` is bootstrap step 7's second half: the scheduler composed over one roadmap. |
-| `src/examples/nwave/roadmap/` | § DELIVER is two graphs → the roadmap half, and § Framework versus consumer → the authoring workflow. Bootstrap step 7's first half — the roadmap as rows, with two pure decision functions and no generator. |
+| `examples/nwave/distill/` | § DISTILL is two graphs. `manifest.ts` is `des distill`'s closed rule set as a pure function; `obligations/` is the graph around it; `oracle/` is `des oracle --value N`, where the acceptance designer authors and software measures. Bootstrap steps 2 and 3. |
+| `examples/nwave/deliver/` | § DELIVER is two graphs → The step cycle as a graph. Bootstrap step 6 — the fixed step cycle, as three nested bounded loops, starting at `implement` because RED is a row it reads. `pipeline.ts` is bootstrap step 7's second half: the scheduler composed over one roadmap. |
+| `examples/nwave/roadmap/` | § DELIVER is two graphs → the roadmap half, and § Framework versus consumer → the authoring workflow. Bootstrap step 7's first half — the roadmap as rows, with two pure decision functions and no generator. |
 | `targets/todo/.des/` | The composition that points the roadmap workflow and the step cycle at a real project, plus the run report. Not a wave: the consumer's own commands. |
 | `targets/todo/` | The delivery target. A template project with two stubbed methods and no test file, copied into a run directory and never mutated in place. The oracle is authored into it, not shipped with it. |
 | `src/vcs/` | § The agent-native VCS is the effect executor and mechanical verifier, and the whole of [`ai-vcs.md`](./ai-vcs.md) phases 2 to 4. See [`src/vcs/README.md`](./src/vcs/README.md). |
@@ -375,7 +375,7 @@ One reading changed, and it got sharper rather than looser. A selector naming no
 
 ## The four worked examples
 
-They live under `src/examples/nwave/`, together, because they are waves of one consumer's process rather than unrelated demonstrations — and they compose: ROADMAP writes the rows, DISTILL fills in their acceptance facts and writes the oracle that measures each value, and DELIVER runs once per row whose oracle came back red.
+They live under `examples/nwave/`, together, because they are waves of one consumer's process rather than unrelated demonstrations — and they compose: ROADMAP writes the rows, DISTILL fills in their acceptance facts and writes the oracle that measures each value, and DELIVER runs once per row whose oracle came back red.
 
 | | ROADMAP | DISTILL / obligations | DISTILL / oracle | DELIVER |
 |---|---|---|---|---|
@@ -584,7 +584,7 @@ So this graph is fixed and hand-written like the other two, and what it produces
 
 #### The rows
 
-Modelled on nWave's own `handover.json`, with our naming. A `StoredHandover` there is a request plus an ordered tuple of `HandoverValue`s; these are the same facts, as zod schemas, in `src/examples/nwave/roadmap/schema.ts`:
+Modelled on nWave's own `handover.json`, with our naming. A `StoredHandover` there is a request plus an ordered tuple of `HandoverValue`s; these are the same facts, as zod schemas, in `examples/nwave/roadmap/schema.ts`:
 
 ```ts
 RoadmapStep = {
@@ -664,7 +664,7 @@ That is a position rather than an omission. Every route into `human` is a block 
 
 **It resumes.** DELIVER's person sits outside all three loops, so its walk stops at the suspension and leaves `human.route` to the resume tests. Here the review is in the middle, and `persist`, `accept`, `review.route` and `human.route` are only reachable through an answer. So the walk answers: while a run is parked it chooses from that node's own closed enum and resumes. The walker allows it because the choice point's id is `resume:${reason}`, and the reason is a function of the choices already made, which is the walker's one requirement. The coverage assertion is therefore stronger than DELIVER's: **every node the graph declares is visited, with nothing excused.**
 
-**It chooses data, not just decisions.** Two branches read pure functions of the roadmap, so to reach `shape.route`'s `invalid` edge or `disjointness.route`'s `consistent` and `drift-unresolvable` edges the walk has to vary the *roadmap*. The choice point at `decompose` is therefore a choice of **proposal**, drawn from the hand-written roadmaps in `src/examples/nwave/roadmap/fixture.ts`: `KNOWN_GOOD` (three steps, one declared dependency, one deliberate overlap → `edges-added`), `DISJOINT` (→ `consistent`), `UNRESOLVABLE` (→ `drift-unresolvable`), `MALFORMED` (every shape defect at once), plus `cannot-decompose` and the exhausted validator. Enumerating a graph whose decisions are functions of its data means enumerating enough data to reach every edge.
+**It chooses data, not just decisions.** Two branches read pure functions of the roadmap, so to reach `shape.route`'s `invalid` edge or `disjointness.route`'s `consistent` and `drift-unresolvable` edges the walk has to vary the *roadmap*. The choice point at `decompose` is therefore a choice of **proposal**, drawn from the hand-written roadmaps in `examples/nwave/roadmap/fixture.ts`: `KNOWN_GOOD` (three steps, one declared dependency, one deliberate overlap → `edges-added`), `DISJOINT` (→ `consistent`), `UNRESOLVABLE` (→ `drift-unresolvable`), `MALFORMED` (every shape defect at once), plus `cannot-decompose` and the exhausted validator. Enumerating a graph whose decisions are functions of its data means enumerating enough data to reach every edge.
 
 `KNOWN_GOOD` is also the known-good artifact in the framework/consumer sense: the harness proves a roadmap is well-formed, and a hand-written one is the only thing that says a well-formed one is *right*. `KNOWN_GOOD_RESOLVED` beside it is the expected output rows, which is what makes "the resolution is not advice" a testable claim rather than a comment.
 
@@ -697,7 +697,7 @@ openScheduler<S>({
 - **Resource leases** serialize shared test infrastructure and nothing else. A row declares the names it needs, the scheduler takes the whole set atomically before the run and releases it after (`finally`, so a throwing run does not deadlock the next one), and two rows sharing one name serialize on that name while two rows sharing none run together. Taking the set at once is what makes it deadlock-free: a run never holds one name while waiting for another. `inMemoryLeases` grants waiters FIFO, so which of two blocked rows goes first is a function of the order they asked rather than of timing.
 - **A `runOne` that throws is a graph bug and is not absorbed.** Everything a graph decides is data, so a throw means the graph itself is malformed, and swallowing it into a status would hide that.
 
-**[`src/examples/nwave/deliver/pipeline.ts`](./src/examples/nwave/deliver/pipeline.ts) is the composition.** It reads the `roadmaps` row for its `stepIds` and joins through to `roadmap_steps` (a scan would mix two roadmaps in one store), records each finished run as a `step_runs` row `{ stepId, runId, outcome, seq }`, and derives each step's status from the latest such row. One DELIVER run per row, with:
+**[`examples/nwave/deliver/pipeline.ts`](./examples/nwave/deliver/pipeline.ts) is the composition.** It reads the `roadmaps` row for its `stepIds` and joins through to `roadmap_steps` (a scan would mix two roadmaps in one store), records each finished run as a `step_runs` row `{ stepId, runId, outcome, seq }`, and derives each step's status from the latest such row. One DELIVER run per row, with:
 
 - the row's obligations, `predictedTouches` and `authority` in the `StepUnderDelivery` the graph reads;
 - **the row id as the VCS session**, so two rows in flight hold two leases rather than colliding on the one lease a session may hold;
@@ -784,7 +784,7 @@ Models: `decompose` on `anthropic/claude-opus-5`, `author-oracle` and `implement
 
 **The design source is `design.md` plus the VCS symbol inventory**, and the addition is load-bearing: `predictedTouches` and `implement`'s `symbolId` are opaque VCS ids assigned at track time, so a model that has never seen the inventory names one that does not exist and every write it proposes comes back `rejected: contract`.
 
-Full detail in [`src/examples/nwave/README.md`](./src/examples/nwave/README.md#todo--the-three-waves-pointed-at-a-real-project).
+Full detail in [`examples/nwave/README.md`](./examples/nwave/README.md#targetstododes--the-three-waves-pointed-at-a-real-project).
 
 ### The stubbed end-to-end
 

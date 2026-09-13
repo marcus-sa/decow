@@ -20,7 +20,7 @@
  * THE CYCLE STARTS AT `implement`, and there is no RED node ahead of it. RED is
  * a fact this graph READS rather than one it establishes: `des oracle` authored
  * the oracle, software executed it, and the recorded verdict was `red` before
- * this row was ever ready (`src/examples/nwave/distill/oracle/`). A row with no
+ * this row was ever ready (`examples/nwave/distill/oracle/`). A row with no
  * recorded red oracle never becomes ready, so "no edge bypasses RED" is a
  * readiness precondition here rather than a node — see `../distill/README` in
  * the nwave example's own README.
@@ -67,10 +67,10 @@
  */
 
 import { z } from "zod";
-import { normalizeCommand, type Commands } from "../../../core/commands.ts";
-import { commandEffect, commandOf, commandOutput, type Effect, type EffectResult } from "../../../core/effects.ts";
-import type { Journal } from "../../../core/journal.ts";
-import type { StepObserver } from "../../../core/step.ts";
+import { normalizeCommand, type Commands } from "../../../src/core/commands.ts";
+import { commandEffect, commandOf, commandOutput, type Effect, type EffectResult } from "../../../src/core/effects.ts";
+import type { Journal } from "../../../src/core/journal.ts";
+import type { StepObserver } from "../../../src/core/step.ts";
 import {
   branch,
   leaf,
@@ -80,7 +80,7 @@ import {
   type Node,
   type NodeId,
   type Workflow,
-} from "../../../core/workflow.ts";
+} from "../../../src/core/workflow.ts";
 import {
   COMMIT_OUTCOMES,
   REFACTOR_OUTCOMES,

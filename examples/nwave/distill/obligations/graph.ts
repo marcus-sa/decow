@@ -41,9 +41,9 @@
  */
 
 import { z } from "zod";
-import type { Effect, EffectResult } from "../../../../core/effects.ts";
-import type { Journal } from "../../../../core/journal.ts";
-import type { StepObserver } from "../../../../core/step.ts";
+import type { Effect, EffectResult } from "../../../../src/core/effects.ts";
+import type { Journal } from "../../../../src/core/journal.ts";
+import type { StepObserver } from "../../../../src/core/step.ts";
 import {
   branch,
   leaf,
@@ -51,7 +51,7 @@ import {
   suspend,
   type LoopExit,
   type Workflow,
-} from "../../../../core/workflow.ts";
+} from "../../../../src/core/workflow.ts";
 import { ROADMAP_STEPS_TABLE } from "../../roadmap/graph.ts";
 import type { Roadmap } from "../../roadmap/schema.ts";
 import {

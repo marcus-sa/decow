@@ -5,7 +5,7 @@
  * VCS or a roadmap: what has to hold is the frontier rule, the concurrency
  * limit, the blast radius of a row that did not succeed, the resource leases,
  * and termination. The composition over real roadmap rows is
- * `src/examples/nwave/deliver/pipeline.test.ts`.
+ * `examples/nwave/deliver/pipeline.test.ts`.
  */
 
 import { describe, expect, test } from "bun:test";

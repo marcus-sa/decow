@@ -20,8 +20,8 @@
 
 import { join } from "node:path";
 import type { RunOutcome } from "../../../src/core/workflow.ts";
-import { HUMAN_DECISIONS, type HumanDecision, type State } from "../../../src/examples/nwave/deliver/graph.ts";
-import { openPipeline } from "../../../src/examples/nwave/deliver/pipeline.ts";
+import { HUMAN_DECISIONS, type HumanDecision, type State } from "../../../examples/nwave/deliver/graph.ts";
+import { openPipeline } from "../../../examples/nwave/deliver/pipeline.ts";
 import { todoDeliverDefs } from "./models.ts";
 import { heading, renderDeliverTrail, renderTrace } from "./render.ts";
 import { openReport } from "./report.ts";

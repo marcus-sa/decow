@@ -34,15 +34,15 @@ import { memoryJournal } from "../../../src/core/journal.ts";
 import { journalKey, type StepResult } from "../../../src/core/step.ts";
 import { resume, run } from "../../../src/core/workflow.ts";
 import { openVcs, type Vcs } from "../../../src/vcs/index.ts";
-import { openPipeline, readRoadmap, statusOf, stepUnderDelivery } from "../../../src/examples/nwave/deliver/pipeline.ts";
-import { deliverDefs, LeafInput, type DeliverDefs, type LeafId } from "../../../src/examples/nwave/deliver/steps.ts";
-import { obligationsDefs, ProposeInput } from "../../../src/examples/nwave/distill/obligations/steps.ts";
-import { AuthorInput, oracleDefs } from "../../../src/examples/nwave/distill/oracle/steps.ts";
-import { openOracles, runObligations } from "../../../src/examples/nwave/distill/pipeline.ts";
-import { oracleIsRed, oracleRunsOf } from "../../../src/examples/nwave/distill/runs.ts";
-import { roadmapGraph, seed as seedRoadmap, type State as RoadmapState } from "../../../src/examples/nwave/roadmap/graph.ts";
-import type { Roadmap } from "../../../src/examples/nwave/roadmap/schema.ts";
-import { roadmapDefs } from "../../../src/examples/nwave/roadmap/steps.ts";
+import { openPipeline, readRoadmap, statusOf, stepUnderDelivery } from "../../../examples/nwave/deliver/pipeline.ts";
+import { deliverDefs, LeafInput, type DeliverDefs, type LeafId } from "../../../examples/nwave/deliver/steps.ts";
+import { obligationsDefs, ProposeInput } from "../../../examples/nwave/distill/obligations/steps.ts";
+import { AuthorInput, oracleDefs } from "../../../examples/nwave/distill/oracle/steps.ts";
+import { openOracles, runObligations } from "../../../examples/nwave/distill/pipeline.ts";
+import { oracleIsRed, oracleRunsOf } from "../../../examples/nwave/distill/runs.ts";
+import { roadmapGraph, seed as seedRoadmap, type State as RoadmapState } from "../../../examples/nwave/roadmap/graph.ts";
+import type { Roadmap } from "../../../examples/nwave/roadmap/schema.ts";
+import { roadmapDefs } from "../../../examples/nwave/roadmap/steps.ts";
 import { REQUEST } from "./request.ts";
 import {
   createRunDir,

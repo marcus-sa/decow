@@ -16,8 +16,8 @@
  */
 
 import { z } from "zod";
-import type { Requirement } from "../../../../core/requirement.ts";
-import { stepOutput, type ModelBinding, type StepDef } from "../../../../core/step.ts";
+import type { Requirement } from "../../../../src/core/requirement.ts";
+import { stepOutput, type ModelBinding, type StepDef } from "../../../../src/core/step.ts";
 import { AcceptanceObligation, Roadmap } from "../../roadmap/schema.ts";
 import {
   describeManifestDefect,

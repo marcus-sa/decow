@@ -18,15 +18,15 @@
  * bypasses RED" lives now that the step cycle has no RED node.
  */
 
-import type { ArtifactStore } from "../../../artifacts/store.ts";
-import type { WorkflowRuntime } from "../../../core/compile.ts";
-import { measurementOf } from "../../../core/effects.ts";
-import type { Journal } from "../../../core/journal.ts";
-import { openScheduler, type SchedulerRow } from "../../../core/scheduler.ts";
-import type { StepObserver } from "../../../core/step.ts";
-import { resume, run, type RunOutcome } from "../../../core/workflow.ts";
-import { vcsExecutor } from "../../../vcs/executor.ts";
-import type { Vcs } from "../../../vcs/index.ts";
+import type { ArtifactStore } from "../../../src/artifacts/store.ts";
+import type { WorkflowRuntime } from "../../../src/core/compile.ts";
+import { measurementOf } from "../../../src/core/effects.ts";
+import type { Journal } from "../../../src/core/journal.ts";
+import { openScheduler, type SchedulerRow } from "../../../src/core/scheduler.ts";
+import type { StepObserver } from "../../../src/core/step.ts";
+import { resume, run, type RunOutcome } from "../../../src/core/workflow.ts";
+import { vcsExecutor } from "../../../src/vcs/executor.ts";
+import type { Vcs } from "../../../src/vcs/index.ts";
 import { readRoadmap, ROADMAP_STEPS_TABLE, type RoadmapRow } from "../deliver/pipeline.ts";
 import {
   oracleRunsOf,

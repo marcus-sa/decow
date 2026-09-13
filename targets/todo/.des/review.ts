@@ -30,7 +30,7 @@ import {
   roadmapGraph,
   type ReviewDecision,
   type State,
-} from "../../../src/examples/nwave/roadmap/graph.ts";
+} from "../../../examples/nwave/roadmap/graph.ts";
 import { todoRoadmapDefs } from "./models.ts";
 import { heading, renderReviewTrail, renderTrace } from "./render.ts";
 import { openReport } from "./report.ts";

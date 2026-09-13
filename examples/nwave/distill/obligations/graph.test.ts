@@ -11,18 +11,18 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { Effect, EffectResult } from "../../../../core/effects.ts";
-import { stepIdFromKey, type Journal } from "../../../../core/journal.ts";
-import type { StepResult } from "../../../../core/step.ts";
-import { resume, run, type EffectExecutor } from "../../../../core/workflow.ts";
+import type { Effect, EffectResult } from "../../../../src/core/effects.ts";
+import { stepIdFromKey, type Journal } from "../../../../src/core/journal.ts";
+import type { StepResult } from "../../../../src/core/step.ts";
+import { resume, run, type EffectExecutor } from "../../../../src/core/workflow.ts";
 import {
   enumeratePaths,
   graphDefects,
   inspectGraph,
   type Choose,
-} from "../../../../harness/enumerate-paths.ts";
-import { endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "../../../../harness/matchers.ts";
-import { exhausted, ok, stubJournal } from "../../../../harness/stub-journal.ts";
+} from "../../../../src/harness/enumerate-paths.ts";
+import { endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "../../../../src/harness/matchers.ts";
+import { exhausted, ok, stubJournal } from "../../../../src/harness/stub-journal.ts";
 import { ROADMAP_STEPS_TABLE } from "../../roadmap/graph.ts";
 import type { Roadmap } from "../../roadmap/schema.ts";
 import { manifestDefects, type ProposedValue } from "../manifest.ts";

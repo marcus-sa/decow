@@ -12,10 +12,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { memoryEffects, type Effect, type EffectResult, type OracleVerdict } from "../../../../core/effects.ts";
-import { stepIdFromKey, type Journal } from "../../../../core/journal.ts";
-import type { StepResult } from "../../../../core/step.ts";
-import { resume, run, type EffectExecutor } from "../../../../core/workflow.ts";
+import { memoryEffects, type Effect, type EffectResult, type OracleVerdict } from "../../../../src/core/effects.ts";
+import { stepIdFromKey, type Journal } from "../../../../src/core/journal.ts";
+import type { StepResult } from "../../../../src/core/step.ts";
+import { resume, run, type EffectExecutor } from "../../../../src/core/workflow.ts";
 import {
   enumeratePaths,
   graphDefects,
@@ -23,9 +23,9 @@ import {
   scriptedExecutor,
   type Choose,
   type EffectOutcomeSpace,
-} from "../../../../harness/enumerate-paths.ts";
-import { endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "../../../../harness/matchers.ts";
-import { exhausted, ok, stubJournal } from "../../../../harness/stub-journal.ts";
+} from "../../../../src/harness/enumerate-paths.ts";
+import { endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "../../../../src/harness/matchers.ts";
+import { exhausted, ok, stubJournal } from "../../../../src/harness/stub-journal.ts";
 import {
   BLOCK_REASONS,
   MAX_AUTHOR_ATTEMPTS,

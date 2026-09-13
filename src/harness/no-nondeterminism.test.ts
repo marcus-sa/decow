@@ -17,8 +17,14 @@ import { dirname, join, relative } from "node:path";
 /** This file is `<src>/harness/no-nondeterminism.test.ts`. */
 const SRC = dirname(dirname(import.meta.path));
 
+/** The repository root. Every scanned path is reported relative to it. */
+const REPO = dirname(SRC);
+
+/** `<repo>/examples`, where a consumer's waves live. */
+const EXAMPLES = join(REPO, "examples");
+
 /** `<repo>/targets`, where a consumer declares its own commands. */
-const TARGETS = join(dirname(SRC), "targets");
+const TARGETS = join(REPO, "targets");
 
 /** Literal source fragments that introduce nondeterminism into a decision. */
 const BANNED = ["Date.now", "Math.random", "new Date(", "randomUUID"] as const;
@@ -59,11 +65,12 @@ const EXEMPT = new Set([join(SRC, "vcs/defaults.ts")]);
  * is `targets/*` rather than `targets/todo` so a second target is scanned the
  * day it lands.
  *
- * The examples live one directory deeper than they used to — `examples/nwave/`
- * groups the three that model one consumer's waves — and the globs are
- * unchanged, because `**` spans any depth. They are deliberately NOT narrowed
- * to `examples/nwave/**`: a second consumer's example set must be scanned the
- * day it lands, not the day somebody remembers to add a glob for it.
+ * The examples are a second root rather than a subdirectory of the first:
+ * `examples/` sits beside `src/` at the repository root, because a consumer's
+ * waves are not the framework. The globs are relative to that root, and they
+ * are deliberately NOT narrowed to `nwave/**`: a second consumer's example set
+ * must be scanned the day it lands, not the day somebody remembers to add a
+ * glob for it.
  */
 const scanned = async (): Promise<string[]> => {
   const files = new Set<string>([
@@ -71,22 +78,29 @@ const scanned = async (): Promise<string[]> => {
     join(SRC, "core/compile.ts"),
     join(SRC, "core/scheduler.ts"),
   ]);
-  for (const pattern of [
-    "examples/**/graph.ts",
-    "examples/**/manifest.ts",
-    "examples/**/steps.ts",
-    "examples/**/shape.ts",
-    "examples/**/disjointness.ts",
-    "examples/**/schema.ts",
-    "examples/**/fixture.ts",
-    "examples/**/oracle.ts",
-    "examples/**/pipeline.ts",
-    "artifacts/**/*.ts",
-    "vcs/**/*.ts",
-  ]) {
-    for await (const match of new Glob(pattern).scan({ cwd: SRC, absolute: true })) {
-      if (match.endsWith(".test.ts") || EXEMPT.has(match)) continue;
-      files.add(match);
+  const roots: readonly (readonly [string, readonly string[]])[] = [
+    [
+      EXAMPLES,
+      [
+        "**/graph.ts",
+        "**/manifest.ts",
+        "**/steps.ts",
+        "**/shape.ts",
+        "**/disjointness.ts",
+        "**/schema.ts",
+        "**/fixture.ts",
+        "**/oracle.ts",
+        "**/pipeline.ts",
+      ],
+    ],
+    [SRC, ["artifacts/**/*.ts", "vcs/**/*.ts"]],
+  ];
+  for (const [cwd, patterns] of roots) {
+    for (const pattern of patterns) {
+      for await (const match of new Glob(pattern).scan({ cwd, absolute: true })) {
+        if (match.endsWith(".test.ts") || EXEMPT.has(match)) continue;
+        files.add(match);
+      }
     }
   }
   for await (const match of new Glob("*/commands.ts").scan({ cwd: TARGETS, absolute: true })) {
@@ -101,9 +115,9 @@ const stripComments = (source: string): string =>
 
 describe("no nondeterminism inside the graph", () => {
   test("the scanned set is non-empty and includes the runner and every graph", async () => {
-    const files = (await scanned()).map((f) => relative(SRC, f));
-    expect(files).toContain("core/workflow.ts");
-    expect(files).toContain("core/compile.ts");
+    const files = (await scanned()).map((f) => relative(REPO, f));
+    expect(files).toContain("src/core/workflow.ts");
+    expect(files).toContain("src/core/compile.ts");
     expect(files).toContain("examples/nwave/deliver/graph.ts");
     expect(files).toContain("examples/nwave/distill/manifest.ts");
     expect(files).toContain("examples/nwave/distill/obligations/graph.ts");
@@ -112,17 +126,17 @@ describe("no nondeterminism inside the graph", () => {
     expect(files).toContain("examples/nwave/roadmap/graph.ts");
     expect(files).toContain("examples/nwave/roadmap/shape.ts");
     expect(files).toContain("examples/nwave/roadmap/disjointness.ts");
-    expect(files).toContain("core/scheduler.ts");
+    expect(files).toContain("src/core/scheduler.ts");
     expect(files).toContain("examples/nwave/deliver/pipeline.ts");
-    expect(files).toContain("artifacts/store.ts");
-    expect(files).toContain("vcs/registry.ts");
-    expect(files).toContain("vcs/leases.ts");
-    expect(files).toContain("vcs/writes.ts");
-    expect(files).toContain("vcs/executor.ts");
-    expect(files).toContain("vcs/structural/typescript.ts");
-    expect(files).not.toContain("vcs/defaults.ts");
+    expect(files).toContain("src/artifacts/store.ts");
+    expect(files).toContain("src/vcs/registry.ts");
+    expect(files).toContain("src/vcs/leases.ts");
+    expect(files).toContain("src/vcs/writes.ts");
+    expect(files).toContain("src/vcs/executor.ts");
+    expect(files).toContain("src/vcs/structural/typescript.ts");
+    expect(files).not.toContain("src/vcs/defaults.ts");
     // The consumer's own declaration of how its project is built and tested.
-    expect(files).toContain("../targets/todo/commands.ts");
+    expect(files).toContain("targets/todo/commands.ts");
     expect(files.length).toBeGreaterThanOrEqual(30);
   });
 
@@ -133,7 +147,7 @@ describe("no nondeterminism inside the graph", () => {
       lines.forEach((line, i) => {
         for (const banned of BANNED) {
           if (line.includes(banned)) {
-            offenders.push(`${relative(SRC, file)}:${i + 1} uses ${banned}: ${line.trim()}`);
+            offenders.push(`${relative(REPO, file)}:${i + 1} uses ${banned}: ${line.trim()}`);
           }
         }
       });

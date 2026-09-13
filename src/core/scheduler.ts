@@ -8,7 +8,7 @@
  *
  * Generic on purpose. A row is `{ id, dependencies }` and nothing else; what a
  * row MEANS, where it is read from, and what its run does are the consumer's
- * (`src/examples/nwave/deliver/pipeline.ts`). This file owns the frontier, the
+ * (`examples/nwave/deliver/pipeline.ts`). This file owns the frontier, the
  * concurrency limit, the resource leases, and termination.
  *
  * STATE IS A PROJECTION. The scheduler persists nothing of its own: it asks

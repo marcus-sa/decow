@@ -26,20 +26,20 @@
 import { mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { claudeCode } from "../../../bindings/claude-code.ts";
-import { mastraAgent } from "../../../bindings/mastra.ts";
-import { measurementOf } from "../../../core/effects.ts";
-import { memoryJournal } from "../../../core/journal.ts";
-import { run } from "../../../core/workflow.ts";
-import { describeTrace } from "../../../harness/matchers.ts";
-import { vcsExecutor } from "../../../vcs/executor.ts";
-import { openVcs } from "../../../vcs/index.ts";
-import { loadCommands } from "../../../../targets/todo/.des/run-dir.ts";
+import { claudeCode } from "../../../src/bindings/claude-code.ts";
+import { mastraAgent } from "../../../src/bindings/mastra.ts";
+import { measurementOf } from "../../../src/core/effects.ts";
+import { memoryJournal } from "../../../src/core/journal.ts";
+import { run } from "../../../src/core/workflow.ts";
+import { describeTrace } from "../../../src/harness/matchers.ts";
+import { vcsExecutor } from "../../../src/vcs/executor.ts";
+import { openVcs } from "../../../src/vcs/index.ts";
+import { loadCommands } from "../../../targets/todo/.des/run-dir.ts";
 import { oracleGraph, seed, type State } from "./oracle/graph.ts";
 import { oracleDefs, type ValueUnderOracle } from "./oracle/steps.ts";
 
-/** This file is `<repo>/src/examples/nwave/distill/smoke.ts`. */
-const REPO = dirname(dirname(dirname(dirname(dirname(import.meta.path)))));
+/** This file is `<repo>/examples/nwave/distill/smoke.ts`. */
+const REPO = dirname(dirname(dirname(dirname(import.meta.path))));
 
 const VALIDATOR_MODEL = "anthropic/claude-haiku-4-5";
 const AGENT = process.env.DW_ORACLE_AGENT ?? "nw-acceptance-designer";

@@ -27,12 +27,14 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  // `src/` is this repository. `targets/*/commands.ts` is the one file in a
-  // target that is OURS to typecheck: it declares conformance to the
-  // framework's `Commands` type, and a declaration nothing checks is a
-  // declaration that drifts. Everything else in a target is that target's own
-  // project, typechecked by the write path's own declared typecheck command
-  // inside a run; `runs/` holds the copies.
-  "include": ["src", "targets/*/commands.ts", "targets/*/.des"],
+  // `src/` is the framework and `examples/` is one consumer's waves; both are
+  // this repository. `targets/*/commands.ts` and `targets/*/.des` are the
+  // files in a target that are OURS to typecheck: the first declares
+  // conformance to the framework's `Commands` type, and a declaration nothing
+  // checks is a declaration that drifts; the second is the composition that
+  // drives the waves against that target. Everything else in a target is that
+  // target's own project, typechecked by the write path's own declared
+  // typecheck command inside a run; `runs/` holds the copies.
+  "include": ["src", "examples", "targets/*/commands.ts", "targets/*/.des"],
   "exclude": ["node_modules", "runs"]
 }

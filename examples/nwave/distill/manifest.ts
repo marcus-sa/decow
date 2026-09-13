@@ -55,7 +55,7 @@
  * new Date. src/harness/no-nondeterminism.test.ts enforces that mechanically.
  */
 
-import { parseOracleLocator } from "../../../vcs/verify.ts";
+import { parseOracleLocator } from "../../../src/vcs/verify.ts";
 import type { AcceptanceObligation, Roadmap } from "../roadmap/schema.ts";
 
 /* ---------------------------------------------------------- the manifest */

@@ -160,7 +160,7 @@ declared path lands the oracle and its supports under a path-scope lease; then
 What executes it is the consumer's declared `commands.oracle` — the framework
 knows the job and the target names the runner — and the verdict is read off the
 JUnit report that command was told to write. See
-[Declared commands](../../../README.md#declared-commands).
+[Declared commands](../../README.md#declared-commands).
 
 That last part is the whole arrangement. The two roles that hold an oracle —
 its author, `Read, Edit`, and its reviewer, an enforced empty tool set —
@@ -293,7 +293,7 @@ report), `render.ts`, the command scripts `roadmap.ts` / `review.ts` /
 
 ### The target
 
-[`targets/todo/`](../../../targets/todo) is a tiny TypeScript project: a
+[`targets/todo/`](../../targets/todo) is a tiny TypeScript project: a
 `TodoStore` with `add`, `complete`, `remove` and `list`. `add` and `list` are
 implemented; **`complete` and `remove` are stubs whose bodies throw**.
 `design.md` is the authority for what it is: the public surface, the behaviour
@@ -393,7 +393,7 @@ honest.
 ## Running things
 
 ```
-bun test src/examples/nwave         # all four waves, no network, no key
+bun test ./examples/nwave       # all four waves, no network, no key
 bun run smoke:oracle                 # one oracle, authored by a real subagent in the PROPOSAL shape
 bun run smoke:deliver                # DELIVER against Haiku plus three Claude Code subagents
 ```

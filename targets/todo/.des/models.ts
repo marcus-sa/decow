@@ -38,10 +38,10 @@
 
 import { mastraAgent } from "../../../src/bindings/mastra.ts";
 import type { ModelBinding } from "../../../src/core/step.ts";
-import { deliverDefs, LEAF_IDS, type DeliverDefs, type LeafId } from "../../../src/examples/nwave/deliver/steps.ts";
-import { obligationsDefs, type ObligationsDefs } from "../../../src/examples/nwave/distill/obligations/steps.ts";
-import { oracleDefs, type OracleDefs } from "../../../src/examples/nwave/distill/oracle/steps.ts";
-import { roadmapDefs, type RoadmapDefs } from "../../../src/examples/nwave/roadmap/steps.ts";
+import { deliverDefs, LEAF_IDS, type DeliverDefs, type LeafId } from "../../../examples/nwave/deliver/steps.ts";
+import { obligationsDefs, type ObligationsDefs } from "../../../examples/nwave/distill/obligations/steps.ts";
+import { oracleDefs, type OracleDefs } from "../../../examples/nwave/distill/oracle/steps.ts";
+import { roadmapDefs, type RoadmapDefs } from "../../../examples/nwave/roadmap/steps.ts";
 
 /** Mastra model-router ids: `provider/model`. No provider package needed. */
 export const DECOMPOSE_MODEL = "anthropic/claude-opus-5";
