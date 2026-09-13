@@ -52,9 +52,9 @@ export const SuspensionDialog = (props: SuspensionDialogProps): React.ReactEleme
     ] !== undefined;
 
   return (
-    <div className="backdrop" role="dialog" aria-modal="true">
+    <div className="backdrop" role="dialog" aria-modal="true" data-testid="suspension">
       <div className="dialog">
-        <h2>{suspension.reason}</h2>
+        <h2 data-testid="suspension-reason">{suspension.reason}</h2>
         <p className="meta">
           <code>{props.run.runId}</code> parked at <code>{suspension.node ?? "?"}</code>. The run
           continues from here when you answer; it is not a new run.
@@ -71,11 +71,15 @@ export const SuspensionDialog = (props: SuspensionDialogProps): React.ReactEleme
 
         {props.error === undefined ? null : <p className="error">{props.error}</p>}
 
-        <div className="answers">
+        <div className="answers" data-testid="answers">
           {options.map((option) => (
             <button
               key={option}
               type="button"
+              // The one marker that says "this button posts an answer": the
+              // dismiss beside them does not, and a test asserting the closed
+              // enum is offered has to be able to tell them apart.
+              data-answer={option}
               disabled={props.busy === true}
               onClick={() =>
                 props.onAnswer({

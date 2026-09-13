@@ -17,6 +17,12 @@ logs
 # run directories: one copied target plus its five stores, per run
 runs
 
+# browser-test output: the videos and the traces of one run. The SCREENSHOTS
+# are committed (packages/ui/e2e/screenshots) because they are the evidence;
+# a video is 4 MB of the same thing and is reviewed by watching it locally.
+test-results
+playwright-report
+
 # journals
 *.sqlite
 *.sqlite-shm

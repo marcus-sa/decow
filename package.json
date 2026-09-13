@@ -13,10 +13,12 @@
     "ui:build": "bun run --filter @des/ui build",
     "smoke:deliver": "bun run examples/nwave/deliver/smoke.ts",
     "smoke:oracle": "bun run examples/nwave/distill/smoke.ts",
-    "todo": "bun run targets/todo/.des/main.ts"
+    "todo": "bun run targets/todo/.des/main.ts",
+    "e2e": "playwright test --config=packages/ui/playwright.config.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.13",
+    "@playwright/test": "^1.63.0",
     "@types/bun": "latest"
   },
   "peerDependencies": {
