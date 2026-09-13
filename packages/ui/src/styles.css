@@ -224,6 +224,14 @@ button {
   cursor: pointer;
 }
 
+/*
+ * A control that stands on its own beneath a form rather than being that
+ * form's own submit. Without the gap the two read as one stack of buttons.
+ */
+button.standalone {
+  margin-top: 14px;
+}
+
 button.ghost {
   background: transparent;
   color: var(--text);

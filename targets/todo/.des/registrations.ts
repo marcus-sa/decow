@@ -46,6 +46,7 @@ import {
   readRoadmap,
   recordStepRun,
   ROADMAP_STEPS_TABLE,
+  ROADMAP_TABLE,
   type RoadmapStep,
 } from "../../../examples/nwave/deliver/pipeline.ts";
 import type { State as DeliverState } from "../../../examples/nwave/deliver/graph.ts";
@@ -351,6 +352,21 @@ export const todoRegistrations = (
    * that did not exist yet.
    */
 
+  /**
+   * The roadmaps a person may drive one of these over: every row the artifact
+   * store holds in the table the roadmap graph writes.
+   *
+   * THE TABLE NAME LIVES HERE, and this is the only place it can. `roadmaps`
+   * is a fact about this composition — the server knows there is a field with
+   * options, the UI knows to render a closed list for it, and neither knows
+   * what a roadmap is or where one is kept.
+   *
+   * A function rather than a list, because the server calls it on every read:
+   * a roadmap the browser authored a moment ago is on the next list it draws.
+   */
+  const roadmapChoices = () =>
+    dir.artifacts.list(ROADMAP_TABLE).map((row) => ({ value: row.id }));
+
   /** One step per roadmap step, pointed at the graph that delivers it. */
   const stepsFor = (workflowId: string) => (input: NamesRoadmap) =>
     steps(dir, input.roadmapId).map((step) => ({
@@ -368,6 +384,7 @@ export const todoRegistrations = (
     id: "oracles",
     title: "DISTILL — one oracle per value, authored and measured",
     input: NamesRoadmap,
+    choices: { roadmapId: roadmapChoices },
     steps: stepsFor("oracle"),
     record: (stepId, outcome) => {
       recordOracleRun(dir.artifacts, stepId, outcome);
@@ -380,6 +397,7 @@ export const todoRegistrations = (
     id: "delivery",
     title: "DELIVER — the step cycle, once per red-oracled step",
     input: NamesRoadmap,
+    choices: { roadmapId: roadmapChoices },
     steps: stepsFor("deliver"),
     // "No edge bypasses RED", as the readiness precondition it is. A step with
     // no oracle measured red never becomes ready and blocks its dependents,

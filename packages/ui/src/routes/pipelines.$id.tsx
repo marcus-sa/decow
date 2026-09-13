@@ -1,65 +1,96 @@
 /**
- * A pipeline: the roadmap it is driven over, the steps that roadmap declares,
- * what each one's status projects, and the run each one is on.
+ * A pipeline: the input it is driven over, the steps that input declares, what
+ * each one's status projects, and the run each one is on.
  *
  * There is no second graph here. A pipeline is the one fixed graph
  * instantiated once per step, so the tree is a list and each step's link is a
  * run of that graph — an ordinary run, with a trace, drawn on the same page
  * every other run is.
  *
- * A PERSON PICKS THE ROADMAP FIRST, and until they do there is nothing to
- * show: a composition over a roadmap has no steps until it is told which one.
- * The choices are the rows the artifact store holds, so a choice cannot name a
- * roadmap nobody authored, and the one that was made is in the URL rather than
- * in this component — which is what makes the steps server-rendered, a reload
- * land on the same tree, and walking into a step's run and back keep the
- * roadmap the step belongs to.
+ * A PERSON SUPPLIES THE INPUT FIRST, and until they do there is nothing to
+ * show: a composition whose steps are derived has no steps until it is told
+ * what to derive them from. The form is the registration's own input schema,
+ * rendered by the same component the workflow page renders a run's input with,
+ * and a field whose options the registration declared is offered as a closed
+ * list — so a pick cannot name something that does not exist.
+ *
+ * THIS PAGE KNOWS NO TABLE, no column and no field name. Which fields there
+ * are is the schema's; which options a field has is the registration's; where
+ * those options were read from is the consumer's and is never asked. Adding a
+ * pipeline over something else changes nothing here.
+ *
+ * The supplied input is in the URL rather than in this component, which is
+ * what makes the steps server-rendered, a reload land on the same tree, and
+ * walking into a step's run and back keep the input the step belongs to. It
+ * travels as ONE `?input=` parameter holding the whole object as JSON rather
+ * than as one parameter per field, because the schema's values are typed — a
+ * number, a boolean, a nested object — and a parameter per field would arrive
+ * as a string this page would then have to decode back against the schema,
+ * which is exactly the schema knowledge it is not supposed to have.
  */
 
 import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { subscribe } from "../events.ts";
-import { getPipeline, listPipelines, readArtifacts, runPipeline } from "../server/functions.ts";
+import { SchemaForm, type JsonSchema } from "../form.tsx";
+import { getPipeline, listPipelines, runPipeline } from "../server/functions.ts";
 
 /**
- * The table a roadmap is a row in.
+ * The `?input=` parameter, read back.
  *
- * Named here because this page offers a CHOICE between roadmaps, and the only
- * place the choices exist is the artifact store. It is the one thing this
- * application knows about what its target's pipelines are compositions over.
+ * A refusal rather than a throw: a hand-edited URL is a thing a person can
+ * act on, and losing the form to an error boundary would leave them nothing to
+ * act with.
  */
-const ROADMAPS = "roadmaps";
+const decode = (encoded: string): { values: Record<string, unknown> } | { refused: string } => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(encoded);
+  } catch {
+    return { refused: `the input in the URL is not JSON: ${encoded}` };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { refused: `the input in the URL is not an object: ${encoded}` };
+  }
+  return { values: parsed as Record<string, unknown> };
+};
 
 export const Route = createFileRoute("/pipelines/$id")({
   // Optional, and the absence is the state a person arrives in: the index
-  // links here without one, and there is nothing to show until they pick.
-  validateSearch: (search: Record<string, unknown>): { roadmap?: string } =>
-    typeof search["roadmap"] === "string" ? { roadmap: search["roadmap"] } : {},
-  loaderDeps: ({ search }) => ({ roadmap: search.roadmap }),
+  // links here without one, and there is nothing to show until they supply it.
+  validateSearch: (search: Record<string, unknown>): { input?: string } =>
+    typeof search["input"] === "string" ? { input: search["input"] } : {},
+  loaderDeps: ({ search }) => ({ input: search.input }),
   loader: async ({ params, deps }) => {
     const listed = (await listPipelines()).find((p) => p.id === params.id);
     if (listed === undefined) throw new Error(`no pipeline ${params.id} is registered`);
-    const read = await readArtifacts({ data: { table: ROADMAPS } });
-    const roadmaps = "rows" in read ? read.rows.map((row) => row.id) : [];
-    if (deps.roadmap === undefined) return { pipeline: listed, roadmaps };
+
+    const decoded = deps.input === undefined ? undefined : decode(deps.input);
+    const values = decoded !== undefined && "values" in decoded ? decoded.values : undefined;
+    if (values === undefined) {
+      return {
+        pipeline: listed,
+        values,
+        tree: undefined,
+        refused: decoded !== undefined && "refused" in decoded ? decoded.refused : undefined,
+      };
+    }
+
     try {
-      const tree = await getPipeline({
-        data: { id: params.id, input: { roadmapId: deps.roadmap } },
-      });
-      return { pipeline: listed, roadmaps, tree };
+      const tree = await getPipeline({ data: { id: params.id, input: values } });
+      return { pipeline: listed, values, tree, refused: undefined };
     } catch (error) {
-      // A refusal belongs on the page beside the picker that produced it: an
-      // id the store does not hold is a thing a person can act on, and losing
-      // the picker to an error boundary would leave them nothing to act with.
-      return { pipeline: listed, roadmaps, refused: String(error) };
+      // The registration's own schema refused it. That refusal belongs on the
+      // page beside the form that produced it, naming the field it is about.
+      return { pipeline: listed, values, tree: undefined, refused: String(error) };
     }
   },
   component: PipelinePage,
 });
 
 function PipelinePage(): React.ReactElement {
-  const { pipeline, roadmaps, tree, refused } = Route.useLoaderData();
-  const { roadmap } = Route.useSearch();
+  const { pipeline, values, tree, refused } = Route.useLoaderData();
+  const { input } = Route.useSearch();
   const navigate = Route.useNavigate();
   const router = useRouter();
   const [error, setError] = useState<string | undefined>();
@@ -79,39 +110,32 @@ function PipelinePage(): React.ReactElement {
       <h1>{pipeline.id}</h1>
       <p className="lede">{pipeline.title}</p>
 
-      <label className="field">
-        <span>roadmap</span>
-        <select
-          data-testid="roadmap"
-          value={roadmap ?? ""}
-          onChange={(e) => {
-            const picked = e.target.value;
-            setError(undefined);
-            void navigate({ search: { roadmap: picked === "" ? undefined : picked } });
-          }}
-        >
-          <option value="">choose a roadmap</option>
-          {roadmaps.map((id) => (
-            <option key={id} value={id}>
-              {id}
-            </option>
-          ))}
-        </select>
-        <span className="meta">
-          {roadmaps.length === 0
-            ? "No roadmap has been authored yet. Run the roadmap graph first."
-            : "The steps below are this roadmap's, and so is the frontier the button drives."}
-        </span>
-      </label>
+      {/*
+        Keyed on the encoded input, so the URL is what the fields say. A person
+        who reloaded, or walked back out of a step's run, reads the value they
+        supplied rather than the value the form would have started at.
+      */}
+      <SchemaForm
+        key={input ?? ""}
+        schema={(pipeline.input ?? {}) as JsonSchema}
+        choices={pipeline.choices}
+        {...(values === undefined ? {} : { values })}
+        submitLabel="Show the steps"
+        onSubmit={(supplied) => {
+          setError(undefined);
+          void navigate({ search: { input: JSON.stringify(supplied) } });
+        }}
+      />
 
       <button
         type="button"
-        disabled={busy || roadmap === undefined}
+        className="standalone"
+        disabled={busy || values === undefined}
         data-testid="run-pipeline"
         onClick={() => {
           setBusy(true);
           setError(undefined);
-          void runPipeline({ data: { id: pipeline.id, input: { roadmapId: roadmap } } })
+          void runPipeline({ data: { id: pipeline.id, input: values } })
             .then(() => router.invalidate())
             .catch((e: Error) => setError(e.message))
             .finally(() => setBusy(false));
@@ -149,7 +173,7 @@ function PipelinePage(): React.ReactElement {
             )}
           </li>
         ))}
-        {tree === undefined ? <li className="empty">Pick a roadmap.</li> : null}
+        {tree === undefined ? <li className="empty">Supply an input.</li> : null}
       </ul>
 
       <p className="meta">

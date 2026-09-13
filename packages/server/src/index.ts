@@ -165,6 +165,7 @@ export {
   registration,
   type AnyPipelineRegistration,
   type AnyWorkflowRegistration,
+  type Choice,
   type GraphContext,
   type PipelineRegistration,
   type PipelineStep,

@@ -83,8 +83,16 @@ export const readArtifacts = createServerFn({ method: "GET" })
 
 /* ----------------------------------------------------------- the pipelines */
 
-export const listPipelines = createServerFn({ method: "GET" }).handler(() =>
-  readPipelines(getRegistry()),
+/**
+ * Every registered composition, with its input schema and the options each of
+ * its fields is picked from.
+ *
+ * The options are read HERE, on every call, because a consumer declares where
+ * they live rather than what they are: a value some other graph wrote since
+ * the last paint is on the next one.
+ */
+export const listPipelines = createServerFn({ method: "GET" }).handler(
+  async () => await readPipelines(getRegistry()),
 );
 
 /**

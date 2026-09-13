@@ -21,7 +21,7 @@ import { z } from "zod";
 import { asJson, type Json } from "./json.ts";
 import { continueAfterResume, ownerOf, runIdOf, start, tree, type PipelineTree } from "./pipelines.ts";
 import type { GraphProjection, ResumeOptions } from "./projection.ts";
-import type { AnyPipelineRegistration, AnyWorkflowRegistration } from "./registration.ts";
+import type { AnyPipelineRegistration, AnyWorkflowRegistration, Choice } from "./registration.ts";
 import type { Registry } from "./registry.ts";
 import type { RunRecord, RunSummary } from "./runs.ts";
 
@@ -41,8 +41,28 @@ export type DescribedWorkflow = {
   input: Json;
 };
 
-/** One pipeline, as the index lists it. */
-export type ListedPipeline = { id: string; title: string };
+/** One pipeline, as a client reads it before it has an input to drive one with. */
+export type ListedPipeline = {
+  id: string;
+  title: string;
+  /**
+   * The JSON Schema of the input a person supplies.
+   *
+   * It rides here rather than on `getPipeline` because `getPipeline` PARSES an
+   * input before it will answer, and the moment a person needs the schema is
+   * the moment before they have one. It travels as JSON Schema because a
+   * browser cannot hold a zod type.
+   */
+  input: Json;
+  /**
+   * The options for every input field that declared them, resolved now.
+   *
+   * A field absent from this record has no closed list and is rendered from
+   * the schema alone. The record is EMPTY for a pipeline that declared none,
+   * which is the ordinary case.
+   */
+  choices: Record<string, Choice[]>;
+};
 
 /**
  * A registration's input, parsed by its own schema, or a refusal naming every
@@ -234,8 +254,38 @@ export const readArtifacts = (
 
 /* ----------------------------------------------------------- the pipelines */
 
-export const listPipelines = (registry: Registry): ListedPipeline[] =>
-  registry.pipelines.map((pipeline) => ({ id: pipeline.id, title: pipeline.title }));
+/**
+ * Every field's options, asked for NOW.
+ *
+ * The declared functions are the consumer's and they are called on every read,
+ * which is what makes a value written a moment ago pickable. They run
+ * concurrently because they are independent: one field's options are never a
+ * function of another's.
+ */
+const choicesOf = async (
+  pipeline: AnyPipelineRegistration,
+): Promise<Record<string, Choice[]>> => {
+  const declared = Object.entries(pipeline.choices ?? {});
+  const read = await Promise.all(
+    declared.map(async ([field, options]): Promise<[string, Choice[]]> => [
+      field,
+      [...(await options())],
+    ]),
+  );
+  return Object.fromEntries(read);
+};
+
+export const listPipelines = async (registry: Registry): Promise<ListedPipeline[]> =>
+  await Promise.all(
+    registry.pipelines.map(async (pipeline) => ({
+      id: pipeline.id,
+      title: pipeline.title,
+      input: asJson(
+        z.toJSONSchema(pipeline.input, { target: "draft-07", unrepresentable: "any" }),
+      ),
+      choices: await choicesOf(pipeline),
+    })),
+  );
 
 /**
  * One pipeline's steps, for the input it names them under.

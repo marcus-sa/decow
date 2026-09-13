@@ -49,7 +49,12 @@ import {
   type GateState,
 } from "./fixture.ts";
 import { openRegistry, type Registry } from "./registry.ts";
-import { pipeline, registration, type PipelineStep } from "./registration.ts";
+import {
+  pipeline,
+  registration,
+  type AnyPipelineRegistration,
+  type PipelineStep,
+} from "./registration.ts";
 
 /* ------------------------------------------------------------- the registry */
 
@@ -354,7 +359,11 @@ const twoSteps = (options: {
 describe("a registered pipeline", () => {
   test("its steps are declarations, and its tree is those steps plus what the server knows", async () => {
     const { registry } = twoSteps();
-    expect(listPipelines(registry)).toEqual([{ id: "two-steps", title: "A pipeline of two" }]);
+    const [listed] = await listPipelines(registry);
+    expect(listed).toMatchObject({ id: "two-steps", title: "A pipeline of two", choices: {} });
+    // The input schema travels with the listing, because a person needs the
+    // form before they have anything to put in it.
+    expect(listed?.input).toMatchObject({ type: "object" });
 
     const before = await getPipeline(registry, "two-steps", {});
     expect(before.steps.map((r) => [r.id, r.status])).toEqual([
@@ -504,6 +513,76 @@ describe("a registered pipeline", () => {
     // Nothing ran at all: the fixture's model bindings throw, so reaching a
     // leaf would have failed this.
     expect(listRuns(registry)).toEqual([]);
+  });
+});
+
+describe("a pipeline declares where its input's options come from", () => {
+  /** A registry holding pipelines and nothing else: only the listing is read. */
+  const listing = (registered: AnyPipelineRegistration[]): Registry =>
+    openRegistry({ mintId: () => "run-1", workflows: [], pipelines: registered });
+
+  test("a pipeline with choices reports them, resolved, per field", async () => {
+    const registry = listing([
+      pipeline<{ pick: string }>({
+        id: "picks",
+        title: "One field, picked from a list",
+        input: z.object({ pick: z.string() }),
+        choices: { pick: () => [{ value: "first", label: "the first one" }] },
+        steps: () => [],
+      }),
+    ]);
+
+    const [listed] = await listPipelines(registry);
+    expect(listed?.choices).toEqual({ pick: [{ value: "first", label: "the first one" }] });
+  });
+
+  test("a pipeline that declares none reports none, and its schema still travels", async () => {
+    const registry = listing([
+      pipeline<{ tag: string }>({
+        id: "fixed",
+        title: "Nothing to pick",
+        input: z.object({ tag: z.string() }),
+        steps: () => [],
+      }),
+    ]);
+
+    const [listed] = await listPipelines(registry);
+    // Empty rather than absent: a field with no closed list is rendered from
+    // the schema alone, and the caller reads one record either way.
+    expect(listed?.choices).toEqual({});
+    expect(listed?.input).toMatchObject({ type: "object" });
+  });
+
+  test("the options are read on every call, never captured at registration", async () => {
+    // The whole reason `choices` is a function rather than a list. What a
+    // person may pick is a fact about the store right now, so a value written
+    // after this server booted is on the next listing it answers with.
+    const rows: string[] = [];
+    let reads = 0;
+    const registry = listing([
+      pipeline<{ pick: string }>({
+        id: "picks",
+        title: "One field, picked from a list",
+        input: z.object({ pick: z.string() }),
+        choices: {
+          pick: () => {
+            reads += 1;
+            return rows.map((value) => ({ value }));
+          },
+        },
+        steps: () => [],
+      }),
+    ]);
+
+    // Registering read nothing at all.
+    expect(reads).toBe(0);
+    expect((await listPipelines(registry))[0]?.choices["pick"]).toEqual([]);
+
+    rows.push("written-since-boot");
+    expect((await listPipelines(registry))[0]?.choices["pick"]).toEqual([
+      { value: "written-since-boot" },
+    ]);
+    expect(reads).toBe(2);
   });
 });
 

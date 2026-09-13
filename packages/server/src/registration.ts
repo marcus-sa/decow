@@ -101,6 +101,19 @@ export type PipelineStep = {
 };
 
 /**
+ * One option a person may pick for one input field.
+ *
+ * `value` is what the field is set to, and it is what the registration's own
+ * schema parses. `label` is what a person reads when the value alone is not
+ * readable; absent, the value is shown.
+ *
+ * A choice is DATA. The UI renders a closed list because a field declares
+ * choices, and it knows nothing about where they came from — a table, a
+ * directory, a constant, or a service.
+ */
+export type Choice = { value: string; label?: string };
+
+/**
  * A registered composition over the scheduler: an input, data, plus two hooks.
  *
  * It owns NO execution. The server reads the steps, drives the frontier through
@@ -118,6 +131,22 @@ export type PipelineRegistration<I = unknown> = {
   title: string;
   /** What a person supplies to drive one. The input is parsed by it. */
   input: z.ZodType<I>;
+  /**
+   * The options one input field is picked from, keyed by the field's name.
+   *
+   * A field that declares choices is offered as a closed list; every other
+   * field is rendered from the schema alone. This is where a consumer names
+   * WHERE the options live, which is the one thing about them a reader of the
+   * schema cannot work out: a field typed `string` says nothing about which
+   * strings exist.
+   *
+   * Called at READ time rather than at registration, and that is the whole of
+   * why it is a function. What a person may pick is a fact about the store
+   * RIGHT NOW — a value some other graph wrote a second ago is one of the
+   * options — and a list captured when the server booted would be the list
+   * that existed before anything had run.
+   */
+  choices?: { [field: string]: () => Promise<Choice[]> | Choice[] };
   /** The steps, in declaration order. Re-read on every request and every run. */
   steps: (input: I) => Promise<PipelineStep[]> | PipelineStep[];
   /**
@@ -187,6 +216,7 @@ export type AnyPipelineRegistration = {
   id: string;
   title: string;
   input: z.ZodType<unknown>;
+  choices?: { [field: string]: () => Promise<Choice[]> | Choice[] };
   steps: (input: unknown) => Promise<PipelineStep[]> | PipelineStep[];
   readiness?: (stepId: string, input: unknown) => Promise<boolean> | boolean;
   record?: (stepId: string, outcome: RunOutcome<unknown>, input: unknown) => Promise<void> | void;
