@@ -72,11 +72,6 @@ const main = async (): Promise<void> => {
   console.log(`project: ${shortPath(dir.project)}`);
   console.log(`design:  ${dir.design.length} chars, including the symbol inventory`);
   console.log(`runs:    ${shortPath(join(dir.path, "runs.sqlite"))}`);
-  console.log(
-    process.env.ANTHROPIC_API_KEY
-      ? "\nANTHROPIC_API_KEY is set: a leaf will call a model."
-      : "\nANTHROPIC_API_KEY is NOT set. Everything is readable; a leaf will refuse by name.",
-  );
   console.log(`\n  ${server.url}\n`);
 
   const stop = async (): Promise<void> => {

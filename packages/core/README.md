@@ -22,9 +22,35 @@ nothing depends back.
 | `@des/core/harness` | `inspectGraph`, `enumeratePaths`, `scriptedExecutor`, and the trace matchers. |
 | `@des/core/harness/scripted-binding` | The ONE way a test stubs a leaf: a `ModelBinding` that answers from a script. |
 | `@des/core/harness/no-replay` | A journal that answers nothing and keeps nothing, for a walk that must not replay. |
-| `@des/core/bindings/mastra` | One model call, through a Mastra Agent at temperature 0. |
+| `@des/core/bindings/mastra` | One model call, through a Mastra Agent at temperature 0, against a router id or an OpenAI-compatible endpoint. |
 | `@des/core/bindings/claude-code` | A Claude Code subagent, in the opaque or the proposal shape. |
 | `@des/core/checks/*` | The mechanical checks: `verbatim`, `enum-member`, `id-in-set`. |
+
+## A model is a router id or an OpenAI-compatible endpoint
+
+`mastraAgent({ model })` takes either. A **string** is Mastra's model-router
+id, `provider/model`, and the router resolves that provider's key out of the
+environment itself. An **object** is an `OpenAICompatibleConfig` — Mastra's own
+type, imported rather than restated — carrying a `url`, an `apiKey` and
+headers of the caller's choosing, which is what a gateway, a proxy or a model
+served locally looks like from here. The object reaches `Agent` unchanged, so a
+field this binding does not know about survives. The binding's `id` — what
+lands in `Attempt.model` and in `leaf_attempts.model_id` — is the string, or
+`providerId/modelId`, or the config's own `id`; `options.id` overrides it.
+
+The **credential is refused at the leaf**, on the attempt, and what a call needs
+is read off the config: an endpoint carrying its own `apiKey`, or one naming
+its own `url`, needs nothing from the environment and is never refused, while a
+bare router string needs the variables Mastra's registry declares for that
+provider. A server therefore starts without a key and stays readable, and the
+refusal lands in the run's trail where a person reads it.
+
+Two caveats belong to the endpoint rather than to the binding. **Structured
+output depends on the endpoint honouring the schema**: the step re-parses every
+answer with its own zod schema, so an endpoint that returns prose or a
+differently-shaped object fails the parse — visibly, as a trail entry and a
+`validator-exhausted` run, never as a silent wrong answer. And **token usage
+may be absent**, in which case the attempt records no counts rather than zeros.
 
 ## A leaf is stubbed at the BINDING, never at the journal
 

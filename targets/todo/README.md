@@ -21,6 +21,7 @@ in a browser, against a throwaway copy of this directory.
 |---|---|
 | `design.md` | The authority for WHAT it is. The whole public surface, the behaviour of each method, the driving port, and the test path scope. |
 | [`.des/commands.ts`](.des/commands.ts) | The authority for HOW it is checked. Four functions, from typed arguments to a command: typecheck, lint, tests, oracle. DES configuration, so it sits with the composition rather than with the project. |
+| [`.des/models.ts`](.des/models.ts) | Which model runs which of the five roles. Anthropic router ids by default; four variables point every role at one OpenAI-compatible endpoint instead. |
 | `biome.json` | Three lines, so the declared lint command has something to run. |
 | `src/todo.ts` | `TodoStore`. `add` and `list` are implemented; `complete` and `remove` are stubs whose bodies throw. |
 
@@ -73,3 +74,57 @@ the stub *symbols* exist with their declared signatures, so a `replace-symbol`
 effect has a target and the gap is a missing body rather than a missing
 surface. `write-file` is what creates the oracle; `replace-symbol` is what
 fills the body.
+
+**Every leaf can run against one OpenAI-compatible endpoint**, without editing
+`.des/models.ts`. The defaults there are Anthropic router ids — Opus for the
+decomposition, Sonnet for the two code-generating leaves, Haiku for everything
+else and for every validator — and the argument behind that table is about
+model *size*, not about a vendor. Setting `DES_OPENAI_COMPATIBLE_URL` replaces
+all five with one endpoint of your own: a gateway, a proxy, or a model served
+on your own machine.
+
+| Variable | What it does |
+|---|---|
+| `DES_OPENAI_COMPATIBLE_URL` | The endpoint. **Setting it is the switch**; leaving it unset keeps the Anthropic defaults. |
+| `DES_OPENAI_COMPATIBLE_MODEL` | The model the endpoint serves. Required alongside a URL, and refused by name without one: an endpoint does not name a model. |
+| `DES_OPENAI_COMPATIBLE_PROVIDER` | The name the model is reported under, in `describeModels()` and in every attempt row. Defaults to `openai-compatible`. |
+| `DES_OPENAI_COMPATIBLE_API_KEY` | Defaults to `unused`, which is what a local server wants — and is also what tells the binding no key is needed, so no leaf refuses for want of one. |
+
+A local [Ollama](https://ollama.com), whose OpenAI-compatible API is at
+`/v1` — the model name is an example, and any model the endpoint serves works
+the same way:
+
+```bash
+DES_OPENAI_COMPATIBLE_URL=http://localhost:11434/v1 \
+DES_OPENAI_COMPATIBLE_MODEL=qwen3:8b \
+bun run todo
+```
+
+The server prints what is in effect, so a report's numbers are readable
+against the models that produced them:
+
+```
+decompose:     openai-compatible/qwen3:8b
+author-oracle: openai-compatible/qwen3:8b
+implement:     openai-compatible/qwen3:8b
+every other leaf: openai-compatible/qwen3:8b
+validators:    openai-compatible/qwen3:8b
+endpoint:      http://localhost:11434/v1 (DES_OPENAI_COMPATIBLE_URL)
+escalation:    none
+credential:    none is read from the environment; the endpoint carries its own
+```
+
+Two things are worth knowing before reading such a run. **Structured output
+depends on the endpoint honouring the schema**: every leaf asks for one object
+against a zod schema, the step re-parses what comes back, and an endpoint that
+returns prose or a differently-shaped object fails that parse. The failure is
+not silent and it is not a wrong answer — `runStep` records it in the trail and
+the leaf exhausts, so the run parks as `validator-exhausted` with the parse
+error in it. **Token counts may be absent**, because not every
+OpenAI-compatible server reports usage; an attempt then records no counts at
+all rather than zeros, since "nobody said" and "it cost nothing" are different
+claims.
+
+The five roles collapse onto one model, which is a different reading of a run
+rather than a broken one: the model table's claim is that small models suffice
+for four of the five jobs, and one model at all five is the control for it.

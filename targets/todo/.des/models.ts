@@ -36,14 +36,19 @@
  * mind.
  */
 
-import { mastraAgent } from "@des/core/bindings/mastra";
-import type { GenerateRequest, ModelBinding } from "@des/core/step";
+import { mastraAgent, modelId, requiredCredential, type MastraModel } from "@des/core/bindings/mastra";
+import type { ModelBinding } from "@des/core/step";
 import { deliverDefs, type DeliverDefs } from "../../../examples/nwave/deliver/steps.ts";
 import { obligationsDefs, type ObligationsDefs } from "../../../examples/nwave/distill/obligations/steps.ts";
 import { oracleDefs, type OracleDefs } from "../../../examples/nwave/distill/oracle/steps.ts";
 import { roadmapDefs, type RoadmapDefs } from "../../../examples/nwave/roadmap/steps.ts";
 
-/** Mastra model-router ids: `provider/model`. No provider package needed. */
+/**
+ * Mastra model-router ids: `provider/model`. No provider package needed.
+ *
+ * These are the DEFAULTS. `DES_OPENAI_COMPATIBLE_URL` below replaces all five
+ * at once with one endpoint of the reader's own.
+ */
 export const DECOMPOSE_MODEL = "anthropic/claude-opus-5";
 /**
  * `author-oracle` runs on the same class as `implement`, and the reason is the
@@ -82,42 +87,98 @@ export type Models = {
 };
 
 /**
- * The credential, refused at the LEAF rather than at the door.
+ * ONE OpenAI-compatible endpoint for every role, from the environment.
  *
- * A command could check for a key and exit. A server cannot: the graphs, the
- * projections, the rows and the event stream are all readable without one, and
- * a process that refused to start would make every one of them unreadable to
- * say one thing about a leaf.
+ * The defaults above are Anthropic router ids, and the model table is an
+ * argument about model SIZE rather than about a vendor. A reader who wants to
+ * run the same waves against a gateway, a proxy, or a model served on their
+ * own machine should not have to edit this file to do it, so four variables
+ * say it instead:
  *
- * So the refusal is where the need is. A leaf that reaches a model with no key
- * throws this, `runStep` records it as a trail entry — which is what it does
- * with any provider error — and the graph routes the exhausted leaf wherever
- * it routes one. A person reads the message on the run, and the server is
- * still up.
+ *   DES_OPENAI_COMPATIBLE_URL       the endpoint. SETTING IT IS THE SWITCH.
+ *   DES_OPENAI_COMPATIBLE_MODEL     the model it serves. Required with a URL.
+ *   DES_OPENAI_COMPATIBLE_PROVIDER  the name it is reported under.
+ *                                   Defaults to `openai-compatible`.
+ *   DES_OPENAI_COMPATIBLE_API_KEY   defaults to `unused`, which is what a
+ *                                   local server wants and what tells the
+ *                                   binding not to look for a key.
+ *
+ * Every role gets the SAME endpoint, so the five-way split the table argues
+ * for collapses: a report from such a run says what one model did at five
+ * jobs, which is a different reading and a useful one — the table's claim is
+ * that small models suffice for four of the five, and one model everywhere is
+ * the control for it.
+ *
+ * A URL with no model is refused AT THE DOOR, unlike a missing key. The two
+ * are not the same kind of wrong: a run with no credential is entirely
+ * readable and refuses only where a model is actually needed, whereas a URL
+ * naming no model is a contradiction inside the configuration a person just
+ * typed, with no model to name in a trail and nothing to be read later.
  */
-const credentialed = (binding: ModelBinding): ModelBinding => ({
-  id: binding.id,
-  generate: async <T>(req: GenerateRequest<T>): Promise<T> => {
-    if (!process.env.ANTHROPIC_API_KEY) {
-      throw new Error(
-        `${binding.id}: ANTHROPIC_API_KEY is not set, so this leaf cannot call a model. ` +
-          "Everything else about this run is readable; nothing here fabricates an answer.",
-      );
-    }
-    return await binding.generate<T>(req);
-  },
-});
+const URL_VAR = "DES_OPENAI_COMPATIBLE_URL";
+const MODEL_VAR = "DES_OPENAI_COMPATIBLE_MODEL";
+const PROVIDER_VAR = "DES_OPENAI_COMPATIBLE_PROVIDER";
+const API_KEY_VAR = "DES_OPENAI_COMPATIBLE_API_KEY";
 
-const agent = (model: string): ModelBinding => credentialed(mastraAgent({ model }));
+/** The object form of `MastraModel`, with every field this composition sets. */
+type Endpoint = { providerId: string; modelId: string; url: string; apiKey: string };
 
-/** The real bindings, one per role. What `main.ts` serves with. */
-export const todoModels = (): Models => ({
-  decompose: agent(DECOMPOSE_MODEL),
-  authorOracle: agent(ORACLE_MODEL),
-  implement: agent(IMPLEMENT_MODEL),
-  other: agent(WORKER_MODEL),
-  validator: agent(VALIDATOR_MODEL),
-});
+const openAiCompatible = (): Endpoint | undefined => {
+  const url = process.env[URL_VAR];
+  if (url === undefined || url === "") return undefined;
+  const model = process.env[MODEL_VAR];
+  if (model === undefined || model === "") {
+    throw new Error(
+      `${URL_VAR} is ${url} but ${MODEL_VAR} is not set, and an endpoint does not name a model. ` +
+        `Set ${MODEL_VAR}, or unset ${URL_VAR} to run on the Anthropic defaults.`,
+    );
+  }
+  return {
+    providerId: process.env[PROVIDER_VAR] ?? "openai-compatible",
+    modelId: model,
+    url,
+    apiKey: process.env[API_KEY_VAR] ?? "unused",
+  };
+};
+
+/** Which model each role runs, as the environment leaves it. */
+const roleModels = (): Record<keyof Models, MastraModel> => {
+  const endpoint = openAiCompatible();
+  return endpoint === undefined
+    ? {
+        decompose: DECOMPOSE_MODEL,
+        authorOracle: ORACLE_MODEL,
+        implement: IMPLEMENT_MODEL,
+        other: WORKER_MODEL,
+        validator: VALIDATOR_MODEL,
+      }
+    : {
+        decompose: endpoint,
+        authorOracle: endpoint,
+        implement: endpoint,
+        other: endpoint,
+        validator: endpoint,
+      };
+};
+
+/**
+ * The real bindings, one per role. What `main.ts` serves with.
+ *
+ * The credential is the BINDING's to refuse, at the leaf: a call that needs a
+ * variable the environment does not have throws where it is made, `runStep`
+ * records it as a trail entry, and the server stays up with everything else
+ * readable. An endpoint carrying its own key is not refused at all.
+ */
+export const todoModels = (): Models => {
+  const roles = roleModels();
+  return {
+    decompose: mastraAgent({ model: roles.decompose }),
+    authorOracle: mastraAgent({ model: roles.authorOracle }),
+    implement: mastraAgent({ model: roles.implement }),
+    other: mastraAgent({ model: roles.other }),
+    validator: mastraAgent({ model: roles.validator }),
+  };
+};
 
 /** The roadmap workflow's two leaves: Opus proposes, Haiku judges and refutes. */
 export const todoRoadmapDefs = (models: Models): RoadmapDefs =>
@@ -143,13 +204,41 @@ export const todoDeliverDefs = (models: Models): DeliverDefs =>
     workers: { implement: models.implement },
   });
 
-/** What the commands print, so a reader knows what a report's numbers are of. */
-export const describeModels = (): string =>
-  [
-    `decompose:     ${DECOMPOSE_MODEL}`,
-    `author-oracle: ${ORACLE_MODEL}`,
-    `implement:     ${IMPLEMENT_MODEL}`,
-    `every other leaf: ${WORKER_MODEL}`,
-    `validators:    ${VALIDATOR_MODEL}`,
+/**
+ * The credential line: which variable a leaf will read, and whether it is
+ * there. Derived from the same configs the bindings are built from, through
+ * the same rule the guard applies, so the banner cannot claim a refusal the
+ * binding will not make.
+ */
+const credentialLine = (roles: Record<keyof Models, MastraModel>): string => {
+  const variables = [...new Set(Object.values(roles).flatMap((model) => requiredCredential(model)))];
+  if (variables.length === 0) {
+    return "credential:    none is read from the environment; the endpoint carries its own";
+  }
+  const names = variables.join(" or ");
+  return variables.some((variable) => process.env[variable])
+    ? `credential:    ${names} is set: a leaf will call a model`
+    : `credential:    ${names} is NOT set. Everything is readable; a leaf will refuse by name`;
+};
+
+/**
+ * What the server prints, so a reader knows what a report's numbers are of.
+ *
+ * What is IN EFFECT, not what is written above: with an OpenAI-compatible
+ * endpoint configured, every role reads as that endpoint's model and the URL
+ * is named, because a run's numbers belong to the models that produced them.
+ */
+export const describeModels = (): string => {
+  const roles = roleModels();
+  const endpoint = openAiCompatible();
+  return [
+    `decompose:     ${modelId(roles.decompose)}`,
+    `author-oracle: ${modelId(roles.authorOracle)}`,
+    `implement:     ${modelId(roles.implement)}`,
+    `every other leaf: ${modelId(roles.other)}`,
+    `validators:    ${modelId(roles.validator)}`,
+    ...(endpoint === undefined ? [] : [`endpoint:      ${endpoint.url} (${URL_VAR})`]),
     `escalation:    none`,
+    credentialLine(roles),
   ].join("\n");
+};
