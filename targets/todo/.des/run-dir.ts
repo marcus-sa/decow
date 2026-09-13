@@ -6,8 +6,9 @@
  * is a fresh checkout, and two runs cannot see each other's writes. `runs/` is
  * gitignored.
  *
- * Five stores, one directory, all of them files rather than `:memory:`,
- * because the three commands are three PROCESSES:
+ * Five stores, one directory, all of them files rather than `:memory:`, so a
+ * server restarted against the same name continues where it left off rather
+ * than beginning again:
  *
  *   todo/             the copied target, which the VCS writes into, and
  *                     whose `commands.ts` says how it is typechecked,
@@ -17,7 +18,6 @@
  *   journal.sqlite    what each step decided, keyed by content
  *   mastra.sqlite     the engine's snapshots, so a parked run survives exit
  *   report.jsonl      one line per leaf call
- *   run.json          the manifest: which roadmap, which parked run
  *
  * The design string handed to `decompose` and to every DELIVER leaf is
  * `design.md` PLUS the VCS symbol inventory. That addition is not decoration:
@@ -28,7 +28,7 @@
  * repository telling the author what its symbols are called.
  */
 
-import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { openArtifacts, type ArtifactStore } from "@des/core/artifacts";
 import type { Commands } from "@des/core/commands";
@@ -45,17 +45,6 @@ export const TARGET = join(REPO, "targets", "todo");
 /** Where run directories live. Gitignored. */
 export const RUNS = join(REPO, "runs");
 
-/** What the manifest records between commands. */
-export type RunManifest = {
-  name: string;
-  /** The request the roadmap was authored for. Also the `roadmaps` row id. */
-  request: string;
-  /** The run id the roadmap workflow parked under, once it has parked. */
-  roadmapRunId?: string;
-  /** The reason it parked, which decides what a person may answer. */
-  roadmapReason?: string;
-};
-
 export type RunDir = {
   name: string;
   /** `runs/<name>`. */
@@ -70,16 +59,11 @@ export type RunDir = {
   runtime: WorkflowRuntime;
   /** `design.md` plus the VCS symbol inventory. */
   design: string;
-  manifest: RunManifest;
-  /** Rewrite `run.json`. The manifest object is updated in place too. */
-  save(patch: Partial<RunManifest>): void;
   close(): void;
 };
 
 /** The directories every command tracks, in order, when they exist. */
 export const TRACKED = ["src", "test"] as const;
-
-const manifestPath = (path: string): string => join(path, "run.json");
 
 /** The file a target declares its four commands in. */
 export const COMMANDS_FILE = "commands.ts";
@@ -111,9 +95,6 @@ export const loadCommands = async (project: string): Promise<Commands> => {
   }
   return loaded.commands;
 };
-
-export const readManifest = (path: string): RunManifest =>
-  JSON.parse(readFileSync(manifestPath(path), "utf8")) as RunManifest;
 
 /**
  * The symbol inventory, as the design source names it.
@@ -175,8 +156,11 @@ export type OpenRunOptions = {
 };
 
 /**
- * Open every store of a run directory. Used by all four commands, so the
- * second and third see exactly what the first left behind.
+ * Open every store of a run directory.
+ *
+ * A server opens one of these at boot and holds it for its lifetime. A second
+ * open of the same name — a restart — sees exactly what the first left behind,
+ * because every store in it is a file.
  */
 export const openRunDir = async (name: string, options: OpenRunOptions = {}): Promise<RunDir> => {
   const path = join(RUNS, name);
@@ -204,10 +188,6 @@ export const openRunDir = async (name: string, options: OpenRunOptions = {}): Pr
   const journal = sqliteJournal(join(path, "journal.sqlite"));
   const runtime = openWorkflowRuntime(`file:${join(path, "mastra.sqlite")}`);
 
-  const manifest = existsSync(manifestPath(path))
-    ? readManifest(path)
-    : ({ name, request: "" } satisfies RunManifest);
-
   return {
     name,
     path,
@@ -218,11 +198,6 @@ export const openRunDir = async (name: string, options: OpenRunOptions = {}): Pr
     journal,
     runtime,
     design: designSource(project, vcs),
-    manifest,
-    save(patch) {
-      Object.assign(manifest, patch);
-      writeFileSync(manifestPath(path), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
-    },
     close() {
       journal.close();
       artifacts.close();
@@ -249,26 +224,6 @@ export const runSuite = (project: string): SuiteRun => {
     output: `${run.stdout.toString()}${run.stderr.toString()}`.trim(),
     exitCode: run.exitCode ?? 1,
   };
-};
-
-/** The credential every command needs, refused by name when it is absent. */
-export const requireCredential = (command: string): void => {
-  if (process.env.ANTHROPIC_API_KEY) return;
-  console.error(
-    `${command}: ANTHROPIC_API_KEY is not set. Refusing to run.\n` +
-      "Every leaf in this command is a real model call; there is nothing to do without a key.",
-  );
-  process.exit(1);
-};
-
-/** The run name from `argv`, refused by name when it is absent. */
-export const requireRunName = (command: string, argv: readonly string[]): string => {
-  const name = argv[0];
-  if (name === undefined || name.startsWith("-")) {
-    console.error(`usage: bun run ${command} <run-name>`);
-    process.exit(1);
-  }
-  return name;
 };
 
 /** Absolute path, for printing. */

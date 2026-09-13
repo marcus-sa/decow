@@ -44,6 +44,8 @@ export const openRunner = (options: RunnerOptions): Runner => {
   const { runs, events, runtime, mintId } = options;
   /** The graph each run was built with. A resume recompiles the same one. */
   const graphs = new Map<string, Workflow<unknown>>();
+  /** The input each run was started with, which its executor is built from. */
+  const inputs = new Map<string, unknown>();
   /** Everything in flight, so a caller can wait for quiet. */
   const inFlight = new Set<Promise<void>>();
 
@@ -137,6 +139,7 @@ export const openRunner = (options: RunnerOptions): Runner => {
         observe: observerFor(registration, runId),
       });
       graphs.set(runId, graph);
+      inputs.set(runId, input);
 
       track(
         (async () => {
@@ -144,7 +147,7 @@ export const openRunner = (options: RunnerOptions): Runner => {
             const outcome = await startRun<unknown>(
               graph,
               registration.seed(input),
-              registration.executor({ runId }),
+              registration.executor({ runId, input }),
               registration.runtime ?? runtime,
               watcherFor(runId),
             );
@@ -176,7 +179,7 @@ export const openRunner = (options: RunnerOptions): Runner => {
               graph,
               engineRunId,
               answer,
-              registration.executor({ runId }),
+              registration.executor({ runId, input: inputs.get(runId) }),
               registration.runtime ?? runtime,
               watcherFor(runId),
             );

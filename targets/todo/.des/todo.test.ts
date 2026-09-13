@@ -43,7 +43,10 @@ import { oracleIsRed, oracleRunsOf } from "../../../examples/nwave/distill/runs.
 import { roadmapGraph, seed as seedRoadmap, type State as RoadmapState } from "../../../examples/nwave/roadmap/graph.ts";
 import type { Roadmap } from "../../../examples/nwave/roadmap/schema.ts";
 import { roadmapDefs } from "../../../examples/nwave/roadmap/steps.ts";
+import { project } from "@des/server";
 import { REQUEST } from "./request.ts";
+import { openReport } from "./report.ts";
+import { todoRegistrations } from "./registrations.ts";
 import {
   createRunDir,
   designSource,
@@ -549,13 +552,15 @@ describe("the todo target, delivered", () => {
         'throw new Error("not implemented")',
       );
       // Only `src/` exists on a fresh checkout: the oracle is written into
-      // `test/` by a later command, and tracking follows what is there.
+      // `test/` by the oracle graph, and tracking follows what is there.
       expect(first.vcs.registry.files().map((f) => f.path)).toEqual(["src/todo.ts"]);
-      first.save({ name, request: REQUEST, roadmapRunId: "run-abc", roadmapReason: "roadmap-ready" });
+      first.artifacts.upsert({ table: "notes", id: "n1", expectedVersion: 0, row: { left: "behind" } });
       first.close();
 
+      // A restart of the server against the same name is a second open, and it
+      // continues rather than beginning again: every store is a file.
       const second = await openRunDir(name);
-      expect(second.manifest).toMatchObject({ request: REQUEST, roadmapRunId: "run-abc" });
+      expect(second.artifacts.read("notes", "n1")?.row).toEqual({ left: "behind" });
       expect(second.vcs.registry.files()).toHaveLength(1);
       expect(second.design).toContain("## Symbol inventory");
       second.close();
@@ -565,6 +570,41 @@ describe("the todo target, delivered", () => {
       rmSync(path, { recursive: true, force: true });
     }
   });
+
+  test("the registrations are what the server serves, and they survive an empty roadmap", async () => {
+    // Every registration is built before anything has run, so every reader in
+    // them has to survive the state where there is no roadmap yet — which is
+    // the state the server boots in.
+    const name = `_test-reg-${process.pid}`;
+    const path = join(RUNS, name);
+    try {
+      createRunDir(name);
+      const dir = await openRunDir(name);
+      const report = openReport({ path: join(dir.path, "report.jsonl"), run: name, concurrent: true });
+      const { workflows, pipelines } = todoRegistrations(dir, report);
+
+      expect(workflows.map((w) => w.id)).toEqual(["roadmap", "obligations", "oracle", "deliver"]);
+      expect(pipelines.map((p) => p.id)).toEqual(["oracles", "delivery"]);
+
+      // Every graph is well-formed and projects under the ids its author wrote.
+      for (const workflow of workflows) {
+        const projection = project(workflow.graph({ journal: dir.journal, observe: () => {} }));
+        expect(projection.defects).toEqual([]);
+        expect(projection.nodes.some((n) => n.kind === "terminal")).toBe(true);
+      }
+
+      // With no roadmap yet, a pipeline has no rows and refuses nothing.
+      expect(await pipelines[0]?.rows()).toEqual([]);
+      // And a graph that needs a row refuses BY NAME rather than throwing
+      // something a reader cannot act on.
+      const deliver = workflows.find((w) => w.id === "deliver");
+      expect(() => deliver?.seed({ rowId: "01-01" })).toThrow(/no row 01-01 in the roadmap/);
+
+      dir.close();
+    } finally {
+      rmSync(path, { recursive: true, force: true });
+    }
+  }, 30_000);
 
   test("a target with no commands.ts is refused by name, not defaulted", async () => {
     // The same refusal the test path scope gets, for the same reason: every

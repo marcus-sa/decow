@@ -65,8 +65,37 @@ export type ModelsOptions = {
   onUsage?: (usage: unknown) => void;
 };
 
+/**
+ * The credential, refused at the LEAF rather than at the door.
+ *
+ * The six commands this target used to have checked for a key and exited.
+ * A server cannot: the graphs, the projections, the rows and the event stream
+ * are all readable without one, and a process that refused to start would make
+ * every one of them unreadable to say one thing about a leaf.
+ *
+ * So the refusal is where the need is. A leaf that reaches a model with no key
+ * throws this, `runStep` records it as a trail entry — which is what it does
+ * with any provider error — and the graph routes the exhausted leaf wherever
+ * it routes one. A person reads the message on the run, and the server is
+ * still up.
+ */
+const credentialed = (binding: ModelBinding): ModelBinding => ({
+  id: binding.id,
+  generate: async <T>(req: Parameters<ModelBinding["generate"]>[0]): Promise<T> => {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      throw new Error(
+        `${binding.id}: ANTHROPIC_API_KEY is not set, so this leaf cannot call a model. ` +
+          "Everything else about this run is readable; nothing here fabricates an answer.",
+      );
+    }
+    return await binding.generate<T>(req);
+  },
+});
+
 const agent = (model: string, options: ModelsOptions): ModelBinding =>
-  mastraAgent({ model, ...(options.onUsage === undefined ? {} : { onUsage: options.onUsage }) });
+  credentialed(
+    mastraAgent({ model, ...(options.onUsage === undefined ? {} : { onUsage: options.onUsage }) }),
+  );
 
 /** The roadmap workflow's two leaves: Opus proposes, Haiku judges and refutes. */
 export const todoRoadmapDefs = (options: ModelsOptions = {}): RoadmapDefs =>

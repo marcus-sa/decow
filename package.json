@@ -14,12 +14,7 @@
     "ui:dev": "bun run --filter @des/ui dev",
     "smoke:deliver": "bun run examples/nwave/deliver/smoke.ts",
     "smoke:oracle": "bun run examples/nwave/distill/smoke.ts",
-    "todo:roadmap": "bun run targets/todo/.des/roadmap.ts",
-    "todo:review": "bun run targets/todo/.des/review.ts",
-    "todo:distill": "bun run targets/todo/.des/distill.ts",
-    "todo:deliver": "bun run targets/todo/.des/deliver.ts",
-    "todo:resume": "bun run targets/todo/.des/resume.ts",
-    "todo:report": "bun run targets/todo/.des/summary.ts"
+    "todo": "bun run targets/todo/.des/main.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.13",

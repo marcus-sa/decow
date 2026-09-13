@@ -250,6 +250,40 @@ export const writtenPaths = (vcs: Vcs, row: RoadmapRow): string[] => {
 };
 
 /**
+ * One roadmap row as the step cycle's whole seed state.
+ *
+ * Four facts the graph reads but cannot derive, resolved once where the row
+ * becomes a run: the version the first write claims, the impact floor under
+ * its test selection, the files its quality gate lints, and the test ids its
+ * own oracle names. Every one of them is a question for the registry, and a
+ * graph that asked it would be reading an inventory that has moved since the
+ * oracle was measured.
+ *
+ * Exported because the scheduler is not the only thing that starts one of
+ * these runs: a person starting a single row from the server starts the same
+ * graph, and two ways of seeding it would be two definitions of what a row IS.
+ */
+export const deliverSeed = (spec: {
+  vcs: Vcs;
+  row: RoadmapRow;
+  design: string;
+  /** Verbatim runner output the classifying leaves quote. */
+  evidence: string;
+}): State => {
+  const { symbolVersion, impacted } = predicted(spec.vcs, spec.row);
+  return {
+    ...seed(
+      stepUnderDelivery(spec.row, spec.design),
+      spec.evidence,
+      impacted,
+      writtenPaths(spec.vcs, spec.row),
+    ),
+    symbolVersion,
+    acceptanceTests: oracleTests(spec.vcs, spec.row.oracle),
+  };
+};
+
+/**
  * The scheduler, composed over one roadmap.
  *
  * Every row runs as its own VCS SESSION, named by the row id, so two rows in
@@ -313,14 +347,8 @@ export const openPipeline = (options: PipelineOptions) => {
       ...(row.oracle === undefined ? {} : { protected: [parseOracleLocator(row.oracle).path] }),
     });
 
-  const stateFor = (row: RoadmapRow): State => {
-    const { symbolVersion, impacted } = predicted(vcs, row);
-    return {
-      ...seed(stepUnderDelivery(row, design), options.evidence ?? "", impacted, writtenPaths(vcs, row)),
-      symbolVersion,
-      acceptanceTests: oracleTests(vcs, row.oracle),
-    };
-  };
+  const stateFor = (row: RoadmapRow): State =>
+    deliverSeed({ vcs, row, design, evidence: options.evidence ?? "" });
 
   /**
    * Every resource this row's own declared commands name.

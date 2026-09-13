@@ -46,8 +46,16 @@ export type WorkflowRegistration<S = unknown, I = unknown> = {
   graph: (ctx: GraphContext) => Workflow<S>;
   /** The graph's seed state, from the validated input. */
   seed: (input: I) => S;
-  /** What this graph's effects mean here, for one run. */
-  executor: (ctx: { runId: string }) => EffectExecutor;
+  /**
+   * What this graph's effects mean here, for one run.
+   *
+   * The validated input travels with the run id because an executor's two
+   * ownership options are facts about what the run is ABOUT rather than about
+   * the run: which oracle this row's crafter is walled off from, and which
+   * failing tests it did not cause. An executor that could not see them could
+   * not wall anything off.
+   */
+  executor: (ctx: { runId: string; input: I }) => EffectExecutor;
   /** One journal for every run of this graph. */
   journal: Journal;
   /** Where the snapshots live. The server's own runtime by default. */
@@ -101,7 +109,7 @@ export type AnyWorkflowRegistration = {
   input: z.ZodType<unknown>;
   graph: (ctx: GraphContext) => Workflow<unknown>;
   seed: (input: unknown) => unknown;
-  executor: (ctx: { runId: string }) => EffectExecutor;
+  executor: (ctx: { runId: string; input: unknown }) => EffectExecutor;
   journal: Journal;
   runtime?: WorkflowRuntime;
   observe?: StepObserver;

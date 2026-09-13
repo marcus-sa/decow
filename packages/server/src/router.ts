@@ -51,13 +51,20 @@ const apiPath = (url: URL): string[] | undefined => {
 /** A pipeline's run tree: its rows, each with the status it projects. */
 const runTree = async (
   pipeline: PipelineRegistration,
-): Promise<{ id: string; title: string; rows: (PipelineRow & { status: RowStatus })[] }> => {
+  error?: string,
+): Promise<{
+  id: string;
+  title: string;
+  rows: (PipelineRow & { status: RowStatus })[];
+  error?: string;
+}> => {
   const rows = await pipeline.rows();
   const statuses = await Promise.all(rows.map((row) => pipeline.status(row.id)));
   return {
     id: pipeline.id,
     title: pipeline.title,
     rows: rows.map((row, i) => ({ ...row, status: statuses[i] as RowStatus })),
+    ...(error === undefined ? {} : { error }),
   };
 };
 
@@ -68,6 +75,15 @@ export const openRouter = (options: RouterOptions) => {
   const lastSeen = new Map<string, Map<string, RowStatus>>();
   /** Pipelines currently running, so a second POST does not start a second. */
   const running = new Set<string>();
+  /**
+   * Why a pipeline's last run stopped early, when one did.
+   *
+   * A pipeline refuses by NAME — DELIVER's refuses a row whose oracle has not
+   * been measured red — and a refusal nobody can read is a pipeline that
+   * silently did nothing. It is held rather than thrown into the void because
+   * the run is asynchronous: the POST that started it has long since answered.
+   */
+  const lastError = new Map<string, string>();
 
   const projectionOf = (id: string): GraphProjection => {
     const cached = options.projections.get(id);
@@ -112,6 +128,7 @@ export const openRouter = (options: RouterOptions) => {
   /** Drive a pipeline to quiescence, sweeping its rows while it goes. */
   const drive = async (pipeline: PipelineRegistration, work: () => Promise<void>): Promise<void> => {
     running.add(pipeline.id);
+    lastError.delete(pipeline.id);
     let ticking = true;
     const poll = (async () => {
       while (ticking) {
@@ -121,6 +138,10 @@ export const openRouter = (options: RouterOptions) => {
     })();
     try {
       await work();
+    } catch (error) {
+      // A consumer's own refusal, held where a reader can find it. Rethrowing
+      // it here would be an unhandled rejection in a run nobody is awaiting.
+      lastError.set(pipeline.id, String(error));
     } finally {
       ticking = false;
       await poll;
@@ -261,7 +282,7 @@ export const openRouter = (options: RouterOptions) => {
       }
       const pipeline = pipelineById.get(first);
       if (pipeline === undefined) return notFound(`pipeline ${first}`);
-      if (second === undefined) return json(await runTree(pipeline));
+      if (second === undefined) return json(await runTree(pipeline, lastError.get(first)));
       if (second === "run" && request.method === "POST") {
         return startPipeline(pipeline, () => pipeline.run());
       }

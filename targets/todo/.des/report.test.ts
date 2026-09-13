@@ -8,9 +8,9 @@
  * exhaustion trail only exists when the validator was never satisfied. A
  * successful step that took two attempts leaves no other trace at all.
  *
- * The second is that the table adds up: `calls` counts attempts, `decided`
- * counts (row, step) pairs, and the gap between them is what the validator and
- * the mechanical checks cost in inference.
+ * The second is that a line says what it cost, in whichever shape the provider
+ * layer reported, and says NOTHING rather than zero when it reported a shape
+ * nobody here recognises.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -21,7 +21,7 @@ import { z } from "zod";
 import { memoryJournal } from "@des/core/journal";
 import type { Requirement } from "@des/core/requirement";
 import { runStep, stepOutput, type ModelBinding, type StepAttempt, type StepDef } from "@des/core/step";
-import { openReport, readReport, readTokens, renderTable, summarize, type ReportLine } from "./report.ts";
+import { openReport, readReport, readTokens, type ReportLine } from "./report.ts";
 
 /* ------------------------------------------------------------ the fixtures */
 
@@ -197,53 +197,5 @@ describe("the report", () => {
     expect(readTokens({ tokens: 12 })).toEqual({});
     expect(readTokens({ promptTokens: 7 })).toEqual({ input: 7 });
     expect(readTokens({ inputTokens: 9, outputTokens: 3 })).toEqual({ input: 9, output: 3 });
-  });
-
-  test("calls count attempts and decided counts decisions, so the gap is the cost", () => {
-    const line = (over: Partial<ReportLine>): ReportLine => ({
-      run: "first",
-      row: "01-01",
-      step: "deliver.gates",
-      attempt: 1,
-      model: "haiku",
-      accepted: false,
-      violations: [],
-      mechanical: [],
-      ...over,
-    });
-
-    const summary = summarize([
-      // One decision, two attempts: the first was refused mechanically.
-      line({ mechanical: [{ requirementId: "r.anchored", evidence: "x" }] }),
-      line({ attempt: 2, verdict: "pass", accepted: true, workerTokens: { input: 10, output: 2 } }),
-      // A second row, accepted first try.
-      line({ row: "01-02", verdict: "pass", accepted: true }),
-      // A third that never got there.
-      line({ row: "01-03", verdict: "fail", violations: [{ requirementId: "r.anchored", evidence: "y" }] }),
-      line({ row: "01-03", attempt: 2, verdict: "fail", violations: [{ requirementId: "r.anchored", evidence: "y" }] }),
-    ]);
-
-    expect(summary).toHaveLength(1);
-    expect(summary[0]).toMatchObject({
-      step: "deliver.gates",
-      calls: 5,
-      decisions: 3,
-      firstAttempt: 1,
-      exhausted: 1,
-      validatorRejections: 2,
-      mechanicalFailures: 1,
-      input: 10,
-      output: 2,
-    });
-
-    const table = renderTable(summary);
-    expect(table).toContain("deliver.gates");
-    expect(table).toContain("1/3");
-    expect(table).toContain("TOTAL");
-  });
-
-  test("an empty report is said so rather than rendered as zeroes", () => {
-    expect(summarize([])).toEqual([]);
-    expect(renderTable([])).toBe("(no leaf calls recorded)");
   });
 });
