@@ -23,7 +23,14 @@
  */
 
 import type { z } from "zod";
-import { compileWorkflow, readTrace, SuspensionPayload, type WorkflowRuntime } from "./compile.ts";
+import {
+  compileWorkflow,
+  pumpRunEvents,
+  readTrace,
+  SuspensionPayload,
+  type RunWatcher,
+  type WorkflowRuntime,
+} from "./compile.ts";
 import type { Effect, EffectResult } from "./effects.ts";
 import type { Journal } from "./journal.ts";
 import { runStep, type StepDef, type StepObserver, type StepResult } from "./step.ts";
@@ -59,6 +66,18 @@ export type Node<S> =
       run: (s: S) => Promise<{ state: S; effects: Effect[] }>;
       absorb: (s: S, results: EffectResult[]) => S;
       next: NodeId;
+      /**
+       * The `StepDef` id this node calls, set by `leaf` and by nothing else.
+       *
+       * The compiler does not read it: a leaf IS a step, and telling them
+       * apart would buy the compiler nothing. What reads it is whatever has to
+       * say which nodes are model calls — a drawing of the graph, a report
+       * over what each leaf decided — and the honest place for that fact is
+       * the node, set by the constructor, rather than a second list somebody
+       * maintains beside the graph. It is the same id `StepAttempt.stepId`
+       * carries, so the two join.
+       */
+      leaf?: string;
     }
   | { type: "fanout"; steps: NodeId[]; join: NodeId }
   | { type: "branch"; on: (s: S) => string; edges: Record<string, NodeId> }
@@ -200,6 +219,7 @@ export const leaf = <S, I, O>(spec: {
   next: NodeId;
 }): Node<S> => ({
   type: "step",
+  leaf: spec.def.id,
   run: async (s) => {
     const result = await runStep(spec.def, spec.input(s), spec.journal, spec.observe);
     const trail: Effect[] =
@@ -265,16 +285,52 @@ export async function run<S>(
   execute: EffectExecutor,
   /** Where the snapshot lands. The process-wide in-memory runtime by default. */
   runtime?: WorkflowRuntime,
+  /**
+   * Where the run reports the nodes it enters and leaves, while it runs.
+   *
+   * Optional and inert: nothing in the graph reads it, removing it changes no
+   * trajectory, and a run without one takes the same path it always took. It
+   * exists because `trace` is only readable once a run has stopped, and a
+   * person watching one wants to see where it is rather than where it ended.
+   */
+  watch?: RunWatcher,
 ): Promise<RunOutcome<S>> {
   const compiled = compileWorkflow(wf, execute, runtime);
   const handle = await compiled.createRun();
-  const result = await handle.start({
+  const start = {
     inputData: state,
     initialState: { trace: [], loops: {} },
     outputOptions: { includeState: true },
-  });
-  return outcome<S>(result as unknown as Record<string, unknown>, handle.runId);
+  };
+  return watch === undefined
+    ? outcome<S>((await handle.start(start)) as unknown as Record<string, unknown>, handle.runId)
+    : await watched<S>(wf, handle.stream(start), handle.runId, watch);
 }
+
+/**
+ * A run driven through the engine's streaming entry point, so its events can
+ * be watched, with the same result read off it either way.
+ *
+ * `stream` and `start` resolve the identical `WorkflowResult` — `success`,
+ * `suspended` and `failed` all arrive through `.result` rather than as a
+ * rejection — so the outcome projection below is the one `run` already used.
+ * The two entry points stay separate because an event stream nobody reads is
+ * a queue that fills: a run with no watcher must not open one.
+ *
+ * The drain is awaited before the outcome is returned, so the last
+ * `node-left` reaches the watcher before the caller learns the run is over.
+ */
+const watched = async <S>(
+  wf: Workflow<S>,
+  output: { fullStream: unknown; result: Promise<unknown> },
+  runId: string,
+  watch: RunWatcher,
+): Promise<RunOutcome<S>> => {
+  const drained = pumpRunEvents(wf, output.fullStream as AsyncIterable<unknown>, watch);
+  const result = await output.result;
+  await drained;
+  return outcome<S>(result as Record<string, unknown>, runId);
+};
 
 /**
  * Continue a parked run with a person's answer. The graph is recompiled — the
@@ -293,12 +349,13 @@ export async function resume<S>(
   execute: EffectExecutor,
   /** Where the snapshot lives. The process-wide in-memory runtime by default. */
   runtime?: WorkflowRuntime,
+  /** Where the resumed run reports the nodes it enters and leaves. */
+  watch?: RunWatcher,
 ): Promise<RunOutcome<S>> {
   const compiled = compileWorkflow(wf, execute, runtime);
   const handle = await compiled.createRun({ runId });
-  const result = await handle.resume({
-    resumeData: answer,
-    outputOptions: { includeState: true },
-  });
-  return outcome<S>(result as unknown as Record<string, unknown>, runId);
+  const resumption = { resumeData: answer, outputOptions: { includeState: true } };
+  return watch === undefined
+    ? outcome<S>((await handle.resume(resumption)) as unknown as Record<string, unknown>, runId)
+    : await watched<S>(wf, handle.resumeStream(resumption), runId, watch);
 }

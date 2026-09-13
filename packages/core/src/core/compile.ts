@@ -49,6 +49,20 @@ export const SuspensionPayload = z.object({
 export type SuspensionPayload = z.infer<typeof SuspensionPayload>;
 
 /**
+ * A node the run entered or left, as the engine reported it while it ran.
+ *
+ * `node` is an AUTHORED node id. The compiler mints step ids of its own — a
+ * loop's counter, a loop's exit, a branch tail's nested workflow, a mapping
+ * step — and the projection below drops every one of them, so a watcher never
+ * sees a name the graph does not declare. That is the same guarantee `trace`
+ * gives after the fact, one event at a time while it happens.
+ */
+export type RunEvent = { kind: "node-entered" | "node-left"; node: NodeId };
+
+/** Where a run's node events are reported. Nothing branches on one. */
+export type RunWatcher = (event: RunEvent) => void;
+
+/**
  * The compiled workflow's Mastra state. It carries the provenance record and
  * the live loop counters, and nothing else: state survives suspend/resume,
  * which is exactly the lifetime both need. A run that parks inside a loop body
@@ -445,6 +459,72 @@ const compileSegment = <S>(
  * same graph always yields the same workflow id and the same step ids, which
  * is what lets `resume` rebuild it and reattach to a persisted run.
  */
+/**
+ * The authored node a compiled step id names, and the one event it may
+ * produce — or `undefined` for one of the compiler's own steps.
+ *
+ * The compiler names a step after the node it compiles, so most ids are the
+ * answer already. Three things complicate it, and all three are this file's
+ * own doing:
+ *
+ *   a nested workflow prefixes its steps with its own id and a dot, so the
+ *   `accept` inside `wf:cycle>route=go` arrives as `wf:cycle>route=go.accept`
+ *
+ *   a loop mints `<loop>#iteration` and `<loop>#exit`. The first is the loop
+ *   ENTERING an iteration and the second is the loop LEAVING for good, so each
+ *   reports one half under the loop's own name. Reporting both halves of both
+ *   would put three entries on a loop that ran twice, and the trace — which
+ *   carries the loop's id once per iteration — would disagree with the events
+ *
+ *   a branch tail, a fanout, a `#continue` and Mastra's own `mapping_*` are
+ *   machinery with no node behind them, and are dropped
+ *
+ * The match is by suffix on a dot boundary, longest first, because a node id
+ * may itself contain dots (`test.route`, `cycle.verdict`) and the longest
+ * match is the one the compiler actually named.
+ */
+const eventFor = <S>(
+  wf: Workflow<S>,
+  stepId: string,
+  kind: RunEvent["kind"],
+): RunEvent | undefined => {
+  const loop = /#(iteration|exit)$/.exec(stepId);
+  const bare = loop === null ? stepId : stepId.slice(0, -loop[0].length);
+  const node = Object.keys(wf.nodes)
+    .sort((a, b) => b.length - a.length)
+    .find((id) => bare === id || bare.endsWith(`.${id}`));
+  if (node === undefined) return undefined;
+  if (loop === null) return { kind, node };
+  const half = loop[1] === "iteration" ? "node-entered" : "node-left";
+  return kind === half ? { kind, node } : undefined;
+};
+
+/**
+ * Drain a compiled run's event stream into a watcher, as authored nodes.
+ *
+ * The stream is drained to completion whether or not anything matches: an
+ * unread `ReadableStream` is a queue that fills, and a run whose events nobody
+ * takes would stall behind its own backpressure.
+ */
+export const pumpRunEvents = async <S>(
+  wf: Workflow<S>,
+  stream: AsyncIterable<unknown>,
+  watch: RunWatcher,
+): Promise<void> => {
+  for await (const raw of stream) {
+    const event = raw as { type?: unknown; payload?: { id?: unknown } };
+    const kind =
+      event.type === "workflow-step-start"
+        ? "node-entered"
+        : event.type === "workflow-step-result" || event.type === "workflow-step-suspended"
+          ? "node-left"
+          : undefined;
+    if (kind === undefined || typeof event.payload?.id !== "string") continue;
+    const reported = eventFor(wf, event.payload.id, kind);
+    if (reported !== undefined) watch(reported);
+  }
+};
+
 export const compileWorkflow = <S>(
   wf: Workflow<S>,
   execute: EffectExecutor,

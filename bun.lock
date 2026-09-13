@@ -6,6 +6,7 @@
       "name": "deterministic-workflows",
       "dependencies": {
         "@des/core": "workspace:*",
+        "@des/server": "workspace:*",
         "zod": "^4.6.2",
       },
       "devDependencies": {
@@ -25,6 +26,14 @@
         "@mastra/libsql": "^1.22.5",
         "tree-sitter": "^0.25.1",
         "tree-sitter-typescript": "^0.23.2",
+        "zod": "^4.6.2",
+      },
+    },
+    "packages/server": {
+      "name": "@des/server",
+      "version": "0.0.0",
+      "dependencies": {
+        "@des/core": "workspace:*",
         "zod": "^4.6.2",
       },
     },
@@ -87,6 +96,8 @@
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.13", "", { "os": "win32", "cpu": "x64" }, "sha512-VOofU/nW761XWzUeUNE8zzYNyPrxuMuNFMizL0qz7J75yeV8N7WFheUlk1/K6dOkaFpH9wJ+lDKlwjAbw0346w=="],
 
     "@des/core": ["@des/core@workspace:packages/core"],
+
+    "@des/server": ["@des/server@workspace:packages/server"],
 
     "@hono/node-server": ["@hono/node-server@2.1.1", "", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
 

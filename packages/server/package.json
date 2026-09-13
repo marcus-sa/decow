@@ -1,0 +1,14 @@
+{
+  "name": "@des/server",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "description": "One HTTP surface over the registered graphs: the authored projection, the runs, the suspensions, the artifact rows, and the pipelines.",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@des/core": "workspace:*",
+    "zod": "^4.6.2"
+  }
+}
