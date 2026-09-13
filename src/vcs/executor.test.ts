@@ -14,10 +14,16 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { measurementOf, memoryEffects, type EffectResult } from "../core/effects.ts";
+import {
+  commandOf,
+  measurementOf,
+  memoryEffects,
+  type Effect,
+  type EffectResult,
+} from "../core/effects.ts";
 import { stepOutput, type StepDef } from "../core/step.ts";
 import { branch, leaf, run, type Node, type Workflow } from "../core/workflow.ts";
 import { ok, stubJournal } from "../harness/stub-journal.ts";
@@ -667,5 +673,91 @@ describe("the executor: measuring an oracle", () => {
     const { execute: memory } = memoryEffects();
     const results = await memory([{ type: "measure-oracle", oracle: "test/a.test.ts" }]);
     expect(results[0]?.outcome).toBe("infra-failed");
+  });
+});
+
+/**
+ * `run-command`, through the VCS executor.
+ *
+ * It is the same runner `memoryEffects` uses — a command is a command — and
+ * the two things this executor adds are the repository root as the base for a
+ * relative `cwd`, and the event log, because every effect this executor
+ * performs is on it.
+ */
+describe("run-command through the VCS executor", () => {
+  const openRunner = () => {
+    const root = tempProject({ "a.ts": SOURCE });
+    const vcs = openVcs({
+      root,
+      verifier: passingVerifier(),
+      clock: manualClock(1_000),
+      ids: counterIds(),
+    });
+    const execute = vcsExecutor({
+      vcs,
+      session: "session-cmd",
+      intent: { taskId: "task-cmd", description: "run a declared command" },
+    });
+    return { root, vcs, execute };
+  };
+
+  const command = (argv: readonly string[], cwd?: string): Effect => ({
+    type: "run-command",
+    argv,
+    ...(cwd === undefined ? {} : { cwd }),
+    timeoutMs: 10_000,
+  });
+
+  test("exit zero commits at the sequence number of its own event", async () => {
+    const { vcs, execute } = openRunner();
+    const [result] = await execute([command(["bash", "-c", "echo ok"])]);
+
+    expect(result).toMatchObject({ outcome: "committed" });
+    expect(commandOf(result)?.stdout.trim()).toBe("ok");
+
+    const trail = vcs.log.byTask("task-cmd").filter((e) => e.kind === "trail");
+    expect(trail).toHaveLength(1);
+    expect(JSON.parse(String(trail[0]?.detail))).toMatchObject({
+      ran: ["bash", "-c", "echo ok"],
+      outcome: "committed",
+      exit: 0,
+    });
+    expect(result?.outcome === "committed" ? result.version : -1).toBe(trail[0]?.seq ?? -1);
+    vcs.close();
+  });
+
+  test("a non-zero exit is rejected by command, and the refusal is on the log", async () => {
+    const { vcs, execute } = openRunner();
+    const [result] = await execute([command(["bash", "-c", "exit 7"])]);
+
+    expect(result).toMatchObject({ outcome: "rejected", by: "command" });
+    expect(JSON.parse(String(vcs.log.byTask("task-cmd")[0]?.detail))).toMatchObject({
+      outcome: "rejected",
+      exit: 7,
+    });
+    vcs.close();
+  });
+
+  test("a command that cannot be spawned is infra-failed, not a refusal", async () => {
+    const { vcs, execute } = openRunner();
+    const [result] = await execute([command(["a-binary-that-does-not-exist-anywhere"])]);
+    expect(result).toMatchObject({ outcome: "infra-failed" });
+    expect(commandOf(result)).toBeUndefined();
+    vcs.close();
+  });
+
+  test("a relative cwd resolves against the repository root", async () => {
+    const { root, vcs, execute } = openRunner();
+    // The basename rather than the whole path: macOS reaches the temp root
+    // through a symlink and `pwd` prints the resolved one.
+    const name = root.slice(root.lastIndexOf("/"));
+    const [here] = await execute([command(["pwd"])]);
+    expect(commandOf(here)?.stdout.trim().endsWith(name)).toBe(true);
+
+    // A relative `cwd` is relative to the repository, not to the process.
+    mkdirSync(join(root, "sub"), { recursive: true });
+    const [below] = await execute([command(["pwd"], "sub")]);
+    expect(commandOf(below)?.stdout.trim().endsWith(`${name}/sub`)).toBe(true);
+    vcs.close();
   });
 });

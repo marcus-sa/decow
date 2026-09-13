@@ -3,15 +3,16 @@
  *
  * Every other test in this module injects its stages, which is what keeps the
  * write path assertable in milliseconds. That seam is only honest if the
- * production stages behind it work, so this file runs them for real once:
- * `bunx tsc --noEmit` and `bun test <file> -t <name>` against a two-file
- * project on disk, with three writes that differ only in which gate they
- * should trip.
+ * production stages behind it work, so this file runs them for real once,
+ * through a real consumer DECLARATION: the four commands in
+ * `bunCommands` — `bunx tsc --noEmit`, `bunx biome check`, and `bun test`
+ * with its JUnit reporter — against a small project on disk, with four writes
+ * that differ only in which gate they should trip.
  *
  * The project is a temp directory whose `node_modules` is a symlink to this
- * repo's, so `bunx tsc` resolves the same TypeScript the repo compiles with
- * and nothing is fetched. Measured at roughly two seconds for the whole file,
- * so it is not gated behind an environment variable.
+ * repo's, so `bunx tsc` and `bunx biome` resolve the same tools the repo uses
+ * and nothing is fetched. Measured at roughly three seconds for the whole
+ * file, so it is not gated behind an environment variable.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -19,7 +20,7 @@ import { readFileSync, symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openVcs, type Vcs } from "./index.ts";
 import type { Intent } from "./log.ts";
-import { counterIds, manualClock, tempProject } from "./testing.ts";
+import { bunCommands, counterIds, manualClock, tempProject } from "./testing.ts";
 import { defaultVerifier } from "./verify.ts";
 
 /** This file is `<root>/src/vcs/real-tools.test.ts`. */
@@ -57,11 +58,28 @@ test("add sums its arguments", () => {
 });
 `;
 
+const BIOME = `${JSON.stringify(
+  { linter: { enabled: true }, formatter: { enabled: false }, assist: { enabled: false } },
+  null,
+  2,
+)}\n`;
+
 const open = () => {
-  const root = tempProject({ "tsconfig.json": TSCONFIG, "lib.ts": LIB, "lib.test.ts": LIB_TEST });
+  const root = tempProject({
+    "tsconfig.json": TSCONFIG,
+    "biome.json": BIOME,
+    "lib.ts": LIB,
+    "lib.test.ts": LIB_TEST,
+  });
   symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"));
 
-  const vcs = openVcs({ root, verifier: defaultVerifier(), clock: manualClock(1_000), ids: counterIds() });
+  const vcs = openVcs({
+    root,
+    // The REAL pipeline, built from a consumer's four declared commands.
+    verifier: defaultVerifier({ commands: bunCommands, root }),
+    clock: manualClock(1_000),
+    ids: counterIds(),
+  });
   // Tracked in dependency order, so the test file's import edge resolves.
   const lib = vcs.track("lib.ts");
   vcs.track("lib.test.ts");
@@ -134,7 +152,23 @@ describe("the default verification stages, run for real", () => {
     vcs.close();
   });
 
-  test("a change that typechecks but breaks its impacted test is rejected by bun test", async () => {
+  test("a change that typechecks but breaks a declared lint rule is rejected by biome", async () => {
+    // The stage that replaced the `policy` stub. It is a real linter over the
+    // file the write touched, and the exit status is the whole verdict.
+    const { vcs, addId, read } = open();
+    const result = await write(
+      vcs,
+      addId,
+      "export function add(a: number, b: number): number {\n  return a == b ? 0 : a + b;\n}",
+    );
+
+    expect(result).toMatchObject({ outcome: "rejected", by: "lint" });
+    expect(result.outcome === "rejected" && result.detail).toContain("suspicious/noDoubleEquals");
+    expect(read()).toBe(LIB);
+    vcs.close();
+  });
+
+  test("a change that typechecks but breaks its impacted test is rejected by the test command", async () => {
     const { vcs, addId, read } = open();
     const result = await write(
       vcs,
@@ -147,6 +181,10 @@ describe("the default verification stages, run for real", () => {
     // exists for.
     expect(result).toMatchObject({ outcome: "rejected", by: "tests" });
     expect(result.outcome === "rejected" && result.detail).toContain("lib.test.ts :: add sums its arguments");
+    // The failing id comes from the JUnit report's own failing case, which is
+    // what makes the rejection nameable without scraping anybody's stdout.
+    const impacted = vcs.impact.impactedTests([addId])[0];
+    expect(result.outcome === "rejected" && result.failed).toEqual([impacted?.id ?? ""]);
     expect(read()).toBe(LIB);
     vcs.close();
   });

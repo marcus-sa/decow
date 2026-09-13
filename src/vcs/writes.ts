@@ -18,10 +18,10 @@
  *      one? A body that removes the symbol it claims to edit fails here, as a
  *      contract violation
  *   7  typecheck stage
- *   8  tests stage, over the impact-scoped subset MINUS any test this write is
+ *   8  lint stage, over the file the write touched
+ *   9  tests stage, over the impact-scoped subset MINUS any test this write is
  *      itself rewriting: the gate asks whether the change broke something
  *      else, and an acceptance test's first honest run fails by design
- *   9  policy stage
  *  10  commit: re-key the file, append the child event, then append the
  *      transaction event naming it, so the parent lands after its children
  *      (§ 4.4)
@@ -52,7 +52,7 @@ import type { Registry, RegisteredSymbol } from "./registry.ts";
 import { identityKey, type Parser } from "./structural/parser.ts";
 import {
   categoryOf,
-  oracleArgv,
+  oracleContext,
   structuralStage,
   wholeFileStage,
   type OracleMeasurement,
@@ -202,8 +202,6 @@ export type WritePath = {
   measureOracle(spec: {
     /** `path::selector`, or a bare path for the whole file. */
     oracle: string;
-    /** Overrides the command the locator derives. */
-    argv?: readonly string[];
     intent: Intent;
   }): Promise<MeasureResult>;
 };
@@ -391,6 +389,7 @@ export const openWritePath = (spec: {
           added: declaration.added,
         }),
       () => verifier.typecheck(ctx),
+      () => verifier.lint(ctx),
       /**
        * The impacted tests, MINUS every test THIS BATCH is rewriting.
        *
@@ -430,7 +429,6 @@ export const openWritePath = (spec: {
           targets: impact.impactedTests(ctx.symbolIds).filter((t) => !excluded.has(t.id)),
         });
       },
-      () => verifier.policy(ctx),
     ];
     for (const stage of stages) {
       const stopped = gate(await stage());
@@ -589,7 +587,9 @@ export const openWritePath = (spec: {
       let status: VerificationStatus = "passed";
 
       // The tests stage is absent from this list, not stubbed inside it. See
-      // the contract above `writeFile` for why.
+      // the contract above `writeFile` for why. Lint is NOT absent: an oracle
+      // is bytes in the repository like any other, and the rules the
+      // repository declares apply to it.
       const stages: Array<() => StageOutcome | Promise<StageOutcome>> = [
         () =>
           wholeFileStage({
@@ -598,7 +598,7 @@ export const openWritePath = (spec: {
             after: observed.map(identityKey),
           }),
         () => verifier.typecheck(ctx),
-        () => verifier.policy(ctx),
+        () => verifier.lint(ctx),
       ];
 
       for (const stage of stages) {
@@ -687,16 +687,18 @@ export const openWritePath = (spec: {
     },
 
     async measureOracle(s) {
-      const argv = s.argv ?? oracleArgv(s.oracle);
-      const measurement = await verifier.measure({ root, argv });
+      const measurement = await verifier.measure(oracleContext(root, s.oracle));
       if (measurement === undefined) {
+        // The declared oracle command never produced an exit status, so there
+        // is no argv on a measurement to record: what the log carries is the
+        // locator nobody managed to run.
         log.append({
           kind: "oracle-measured",
           taskId: s.intent.taskId,
           ...(s.intent.parentTaskId === undefined ? {} : { parentTaskId: s.intent.parentTaskId }),
           description: s.intent.description,
           category: "infrastructure",
-          detail: JSON.stringify({ oracle: s.oracle, argv, status: "runner-did-not-start" }),
+          detail: JSON.stringify({ oracle: s.oracle, status: "runner-did-not-start" }),
         });
         return { outcome: "infra-failed", detail: `the runner for ${s.oracle} did not start` };
       }
@@ -714,7 +716,7 @@ export const openWritePath = (spec: {
         ...(measurement.verdict === "broken" ? { category: "contract" as const } : {}),
         detail: JSON.stringify({
           oracle: s.oracle,
-          argv,
+          argv: measurement.argv,
           verdict: measurement.verdict,
           axis: measurement.axis,
           exit: measurement.exitCode,

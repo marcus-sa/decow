@@ -1,10 +1,11 @@
 /**
  * Measuring one oracle, both halves.
  *
- * The pure half — the locator's command, bun's own summary lines, and the
- * verdict rule over them — is unit-tested. The half that matters is that the
- * rule is right about the runner it is reading, so the second describe runs
- * `bun test` for real against five files that differ only in HOW they fail.
+ * The pure half — the locator, split, and the verdict rule over an exit status
+ * and a set of counts — is unit-tested. The half that matters is that the rule
+ * is right about the runner it is reading, so the second describe runs the
+ * DECLARED oracle command for real against five files that differ only in HOW
+ * they fail.
  *
  * That is the whole reason this is measured rather than inferred: an oracle
  * that errored in its own scaffolding exits 1, the identical status a genuine
@@ -16,39 +17,36 @@ import { describe, expect, test } from "bun:test";
 import { symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openVcs } from "./index.ts";
-import { counterIds, manualClock, tempProject } from "./testing.ts";
-import { bunCounts, defaultVerifier, oracleArgv, oracleVerdict } from "./verify.ts";
+import { bunCommands, counterIds, manualClock, tempProject } from "./testing.ts";
+import { defaultVerifier, oracleContext, oracleVerdict, parseOracleLocator } from "./verify.ts";
 
 /** This file is `<root>/src/vcs/measure.test.ts`. */
 const REPO = dirname(dirname(dirname(import.meta.path)));
 
-describe("the oracle locator's command", () => {
-  test("path::selector runs that one test; a bare path runs the file", () => {
-    expect(oracleArgv("test/todo.test.ts::complete marks the todo done")).toEqual([
-      "bun",
-      "test",
-      "test/todo.test.ts",
-      "-t",
-      "complete marks the todo done",
-    ]);
-    expect(oracleArgv("test/todo.test.ts")).toEqual(["bun", "test", "test/todo.test.ts"]);
+describe("the oracle locator, split", () => {
+  test("path::selector names one test; a bare path names the file", () => {
+    expect(parseOracleLocator("test/todo.test.ts::complete marks the todo done")).toEqual({
+      path: "test/todo.test.ts",
+      selector: "complete marks the todo done",
+    });
+    expect(parseOracleLocator("test/todo.test.ts")).toEqual({ path: "test/todo.test.ts" });
     // An empty selector is a path with a separator stuck on it, not a filter
     // that matches everything by a different name.
-    expect(oracleArgv("test/todo.test.ts::")).toEqual(["bun", "test", "test/todo.test.ts"]);
-  });
-});
-
-describe("bun's own summary, read", () => {
-  test("pass and fail are required; error is optional and defaults to none", () => {
-    expect(bunCounts(" 1 pass\n 0 fail\n")).toEqual({ passed: 1, failed: 0, errored: 0 });
-    expect(bunCounts(" 0 pass\n 1 fail\n 1 error\n")).toEqual({ passed: 0, failed: 1, errored: 1 });
+    expect(parseOracleLocator("test/todo.test.ts::")).toEqual({ path: "test/todo.test.ts" });
   });
 
-  test("no summary at all is undefined, not zero", () => {
-    // The difference matters: "nothing ran" and "nothing failed" are opposite
-    // claims, and the verdict rule branches on which one this is.
-    expect(bunCounts('error: regex "no such test" matched 0 tests.')).toBeUndefined();
-    expect(bunCounts("")).toBeUndefined();
+  test("the locator becomes the arguments a DECLARED oracle command takes", () => {
+    // The framework hands over the file and the selector; what runs them is
+    // the consumer's declaration. Nothing here builds an argv.
+    expect(oracleContext("/repo", "test/todo.test.ts::marks it done")).toEqual({
+      root: "/repo",
+      file: "test/todo.test.ts",
+      selector: "marks it done",
+    });
+    expect(oracleContext("/repo", "test/todo.test.ts")).toEqual({
+      root: "/repo",
+      file: "test/todo.test.ts",
+    });
   });
 });
 
@@ -104,7 +102,12 @@ describe("the real runner", () => {
   const open = () => {
     const root = tempProject(PROJECT);
     symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"));
-    const vcs = openVcs({ root, verifier: defaultVerifier(), clock: manualClock(1_000), ids: counterIds() });
+    const vcs = openVcs({
+      root,
+      verifier: defaultVerifier({ commands: bunCommands, root }),
+      clock: manualClock(1_000),
+      ids: counterIds(),
+    });
     return vcs;
   };
 
@@ -134,19 +137,30 @@ describe("the real runner", () => {
     // The incident this whole measurement exists for: same exit status as a
     // real failure, and charging it to the crafter would burn a paid turn on
     // an oracle nobody could satisfy.
+    //
+    // bun writes NO JUnit report for a file it could not load, so the axis is
+    // `no-summary`: there is no report at all, which is evidence it ran
+    // nothing rather than evidence that nothing failed.
     const measured = await measure("missing.test.ts");
-    expect(measured).toMatchObject({ verdict: "broken", axis: "counts" });
-    expect(measured.counts?.errored).toBeGreaterThan(0);
+    expect(measured).toMatchObject({ verdict: "broken", axis: "no-summary" });
+    expect(measured.counts).toBeUndefined();
   }, 30_000);
 
   test("an oracle that does not parse is broken", async () => {
     const measured = await measure("unparsed.test.ts");
-    expect(measured.verdict).toBe("broken");
+    expect(measured).toMatchObject({ verdict: "broken", axis: "no-summary" });
   }, 30_000);
 
-  test("a selector naming no test is broken, because nothing was measured", async () => {
+  test("a selector naming no test is indeterminate: it failed, and nothing failed", async () => {
+    // Under a JUnit report this is `indeterminate` rather than `broken`, and
+    // that is the reading getting SHARPER rather than a rule changing. bun
+    // does write a report for a selector that matched nothing — two tests, two
+    // skipped, no failure and no error — and exits non-zero anyway. That is
+    // exactly what `indeterminate` is defined as, and answering `red` there
+    // would be a silent-wrong pass into a paid craft turn.
     const measured = await measure("green.test.ts::no such test");
-    expect(measured).toMatchObject({ verdict: "broken", axis: "no-summary", exitCode: 1 });
+    expect(measured).toMatchObject({ verdict: "indeterminate", axis: "counts", exitCode: 1 });
+    expect(measured.counts).toEqual({ passed: 0, failed: 0, errored: 0 });
   }, 30_000);
 
   test("every measurement is on the event log, including the red ones", async () => {
@@ -165,13 +179,20 @@ describe("the real runner", () => {
 
   test("a runner that cannot start is infra-failed rather than a verdict", async () => {
     // Nothing about the oracle was observed, so nothing about it is claimed —
-    // and in particular the defect is not the author's.
-    const vcs = open();
-    const result = await vcs.measureOracle({
-      oracle: "green.test.ts::green",
-      argv: ["a-runner-that-does-not-exist"],
-      intent,
+    // and in particular the defect is not the author's. The effect names only
+    // the oracle now, so what makes the runner unstartable is the DECLARED
+    // command naming a binary that is not there.
+    const root = tempProject(PROJECT);
+    const vcs = openVcs({
+      root,
+      verifier: defaultVerifier({
+        commands: { ...bunCommands, oracle: () => ["a-runner-that-does-not-exist"] },
+        root,
+      }),
+      clock: manualClock(1_000),
+      ids: counterIds(),
     });
+    const result = await vcs.measureOracle({ oracle: "green.test.ts::green", intent });
     expect(result.outcome).toBe("infra-failed");
     const logged = vcs.log.byTask("task-oracle").filter((e) => e.kind === "oracle-measured");
     expect(logged[0]).toMatchObject({ category: "infrastructure" });

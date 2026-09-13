@@ -43,6 +43,7 @@ import { treeSitterTypeScript } from "./structural/typescript.ts";
 import type { Parser } from "./structural/parser.ts";
 import { openWritePath, type MeasureResult, type WritePath, type WriteResult } from "./writes.ts";
 import { defaultVerifier, type Verifier } from "./verify.ts";
+import type { Commands } from "../core/commands.ts";
 import { randomIds, systemClock } from "./defaults.ts";
 
 export type VcsOptions = {
@@ -51,6 +52,15 @@ export type VcsOptions = {
   /** One database per repository. `":memory:"` in tests. */
   dbPath?: string;
   parser?: Parser;
+  /**
+   * How this repository is typechecked, linted, tested, and how one oracle is
+   * executed (`src/core/commands.ts`). Required unless a `verifier` is
+   * supplied outright, and refused BY NAME when neither is: a default set of
+   * commands would work silently for every project that happens to be a bun
+   * project and mis-run every project that is not, which is the whole reason
+   * the declaration exists.
+   */
+  commands?: Commands;
   verifier?: Verifier;
   clock?: Clock;
   ids?: IdGen;
@@ -104,9 +114,20 @@ export type Vcs = {
   close(): void;
 };
 
+/** The declared commands, or a refusal that names what is missing. */
+const requireCommands = (options: VcsOptions): Commands => {
+  if (options.commands !== undefined) return options.commands;
+  throw new Error(
+    `openVcs(${options.root}): no \`commands\` were declared and no \`verifier\` was supplied. ` +
+      "The four commands that typecheck, lint, test and measure a project are the consumer's " +
+      "to declare (src/core/commands.ts); there is no default, because a default would run bun " +
+      "against every project whether or not it is one.",
+  );
+};
+
 export const openVcs = (options: VcsOptions): Vcs => {
   const parser = options.parser ?? treeSitterTypeScript();
-  const verifier = options.verifier ?? defaultVerifier();
+  const verifier = options.verifier ?? defaultVerifier({ commands: requireCommands(options), root: options.root });
   const clock = options.clock ?? systemClock;
   const ids = options.ids ?? randomIds;
 

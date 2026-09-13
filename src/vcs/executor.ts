@@ -57,6 +57,13 @@
  * carries no measurement at all — nothing about the oracle was observed, so
  * nothing about it is claimed, and in particular its author is not blamed.
  *
+ * `run-command` is answered directly, through the framework's own single
+ * process runner (`src/core/commands.ts`) rather than through the write path:
+ * a command takes no lease, claims no version and writes no symbol, so there
+ * is nothing for the write path to do with it. It is still on the event log,
+ * as a trail line carrying the argv and the exit, because every effect this
+ * executor performs is.
+ *
  * `upsert-artifact` is the one effect this executor does not answer out of the
  * VCS. Artifact rows are the other half of the design's state layer and they
  * are not code, so they go to an `ArtifactStore` (`src/artifacts/store.ts`)
@@ -69,7 +76,7 @@
  */
 
 import type { ArtifactStore } from "../artifacts/store.ts";
-import type { Effect, EffectResult } from "../core/effects.ts";
+import { executeCommand, type Effect, type EffectResult } from "../core/effects.ts";
 import { scopeCovers } from "./leases.ts";
 import type { Intent } from "./log.ts";
 import type { Vcs } from "./index.ts";
@@ -274,6 +281,30 @@ export const vcsExecutor = (
           out.push(asEffectResult(effect, result));
           break;
         }
+        case "run-command": {
+          // A declared command, run in the repository this executor owns. The
+          // same runner the verifier's own stages go through, so a `tsc` the
+          // write path asks for and a lint a graph asks for are one code path
+          // with one timeout, one environment overlay and one output cap.
+          //
+          // The command is on the event log like every other effect this
+          // executor performs, as a trail line carrying the argv and the exit.
+          // A command claims no version, so the version it comes back with is
+          // that event's own sequence number, which is the answer `run-tests`
+          // gives one case over and for the same reason.
+          const result = await executeCommand(effect, vcs.root, () => 0);
+          const seq = vcs.appendTrail(
+            JSON.stringify({
+              ran: effect.argv,
+              outcome: result.outcome,
+              exit: result.outcome === "conflict" ? undefined : result.command?.exitCode ?? null,
+              timedOut: result.outcome === "conflict" ? undefined : result.command?.timedOut ?? false,
+            }),
+            intentFor({}),
+          );
+          out.push(result.outcome === "committed" ? { ...result, version: seq } : result);
+          break;
+        }
         case "measure-oracle": {
           // The one effect whose DESIRED answer is a failure. `green` is the
           // only verdict that maps onto `committed`, because it is the only
@@ -283,7 +314,6 @@ export const vcsExecutor = (
           // four answers off one field.
           const measured = await vcs.measureOracle({
             oracle: effect.oracle,
-            ...(effect.argv === undefined ? {} : { argv: effect.argv }),
             intent: intentFor({}),
           });
           if (measured.outcome === "infra-failed") {

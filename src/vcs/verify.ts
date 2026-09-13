@@ -6,29 +6,55 @@
  *
  *   structural   does the edited file still parse, and is the identity delta
  *                the one the caller declared? Pure, free, built in.
- *   typecheck    the language's own diagnostics. Shells out by default.
- *   tests        the impact-scoped subset of the suite. Shells out by default.
- *   policy       repository-specific rules. A stub that passes.
+ *   typecheck    the language's own diagnostics. A declared command.
+ *   lint         the repository's own rules. A declared command.
+ *   tests        the impact-scoped subset of the suite. One declared command
+ *                per impacted test, and a JUnit report read off each.
  *
  * Plus one thing that is NOT a stage and sits here anyway: `measure`, which
  * executes one oracle and reads a verdict off it. No write gates on it, and
  * its interesting answer is a failure. It lives on the verifier because this
- * is the module's one place that knows how to run a runner and read what it
- * printed.
+ * is the module's one place that knows what running a test MEANS.
  *
- * Every stage is injectable. The default implementations spawn `bunx tsc` and
- * `bun test`, which is real and slow; a test supplies its own and the whole
- * write path runs in milliseconds. That seam is the reason a failing typecheck
- * can be asserted without a compiler.
+ * EVERY STAGE IS A COMPOSITION OF `run-command`, and that is the change this
+ * file exists to carry. It used to spawn `bunx tsc --noEmit` and
+ * `bun test <file> -t <name>` itself, which made the verifier a thing only a
+ * bun project could be verified by. Now the four jobs are the framework's and
+ * the four COMMANDS are the consumer's (`src/core/commands.ts`): a stage
+ * builds the declared command into a `run-command` effect and hands it to the
+ * injected executor. Nothing here spawns anything.
  *
- * `RejectedBy` is deliberately the same union as `EffectResult`'s
- * `rejected.by`, minus `schema`, which belongs to `upsert-artifact`. A stage
- * failure therefore maps onto an effect result by the identity function.
+ * That seam is also what makes the write path assertable without a process. A
+ * test injects an executor that answers each effect from a script, and the
+ * whole pipeline runs in microseconds; `real-tools.test.ts` and
+ * `measure.test.ts` inject the spawning one and pay for it once.
+ *
+ * `RejectedBy` is deliberately a subset of `EffectResult`'s `rejected.by`:
+ * minus `schema`, which belongs to `upsert-artifact`, and minus `command`,
+ * which is what an UNINTERPRETED non-zero exit is. Every stage here
+ * interprets one, so every stage reports its own name. A stage failure
+ * therefore maps onto an effect result by the identity function.
  *
  * No nondeterminism lives in this file. No Date.now, no Math.random, no
  * new Date, no randomUUID. src/harness/no-nondeterminism.test.ts enforces that
  * mechanically.
  */
+
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  commandEffect,
+  commandOf,
+  commandOutput,
+  executeCommand,
+  type Effect,
+  type EffectResult,
+} from "../core/effects.ts";
+import { normalizeCommand, type Commands } from "../core/commands.ts";
+import { failingNames, readJunit, type RunCounts } from "./junit.ts";
+
+export type { RunCounts };
 
 /** § 6.3: every write has one of these, queryable from the event log. */
 export const VERIFICATION_STATUSES = ["pending", "passed", "failed", "advisory"] as const;
@@ -44,16 +70,17 @@ export type VerificationStatus = (typeof VERIFICATION_STATUSES)[number];
 export const FAILURE_CATEGORIES = ["contract", "verification", "infrastructure"] as const;
 export type FailureCategory = (typeof FAILURE_CATEGORIES)[number];
 
-export const STAGE_NAMES = ["structural", "typecheck", "tests", "policy"] as const;
+export const STAGE_NAMES = ["structural", "typecheck", "lint", "tests"] as const;
 export type StageName = (typeof STAGE_NAMES)[number];
 
 /**
  * What a rejected write was rejected by. `structural` is "the edit did not
  * parse"; `contract` is "the edit parsed, and it did something other than what
- * was declared" (§ 4.5, § 5.4), which is also where a policy violation lands,
- * because a policy is a rule the repository declares and the change broke.
+ * was declared" (§ 4.5, § 5.4). `lint` is the repository's own declared rules
+ * refusing the bytes, which used to be the stubbed `policy` stage and is now
+ * a command a consumer names.
  */
-export type RejectedBy = "structural" | "contract" | "typecheck" | "tests";
+export type RejectedBy = "structural" | "contract" | "typecheck" | "lint" | "tests";
 
 export type StageOutcome =
   | { status: "passed" }
@@ -116,9 +143,6 @@ export type OracleVerdict = (typeof ORACLE_VERDICTS)[number];
 export const MEASURE_AXES = ["exit-status", "no-summary", "counts"] as const;
 export type MeasureAxis = (typeof MEASURE_AXES)[number];
 
-/** The runner's own summary of one run. */
-export type RunCounts = { passed: number; failed: number; errored: number };
-
 export type OracleMeasurement = {
   verdict: OracleVerdict;
   axis: MeasureAxis;
@@ -129,21 +153,35 @@ export type OracleMeasurement = {
   argv: readonly string[];
 };
 
+/**
+ * Which oracle to execute. The LOCATOR, split, and never a command: what runs
+ * it is the consumer's declared `commands.oracle`, so a project whose runner
+ * is not bun is measured by naming its runner once rather than by overriding
+ * an argv at every call site.
+ */
 export type MeasureContext = {
   root: string;
-  /** The command to run. Derived from the locator, or supplied by the caller. */
-  argv: readonly string[];
+  /** Root-relative path of the file the oracle lives in. */
+  file: string;
+  /** The one test's name, when the locator named one. */
+  selector?: string;
 };
 
 export type Verifier = {
   typecheck: (ctx: StageContext) => Promise<StageOutcome>;
+  /**
+   * The repository's own declared rules over the files a write touched. This
+   * replaces the `policy` stage, which was a stub that passed because neither
+   * of § 6.1's policy mechanisms was built; a declared lint command is one
+   * that is.
+   */
+  lint: (ctx: StageContext) => Promise<StageOutcome>;
   tests: (ctx: TestStageContext) => Promise<StageOutcome>;
-  policy: (ctx: StageContext) => Promise<StageOutcome>;
   /**
    * Execute one oracle and read a verdict off it. Not a stage: nothing gates
    * on it, it blocks no write, and its interesting answer is a FAILURE. It
    * sits on the verifier because this is the one place in the module that
-   * knows how to run a test runner and read what it printed.
+   * knows what running a test MEANS.
    *
    * `undefined` is the honest answer for a runner that could not be started at
    * all. That is an infrastructure failure rather than a verdict about the
@@ -164,18 +202,10 @@ export const parseOracleLocator = (locator: string): { path: string; selector?: 
   return selector.length === 0 ? { path } : { path, selector };
 };
 
-/**
- * The command one oracle locator names.
- *
- * `path::selector` runs that one test by name; a bare path runs the file. The
- * selector is a regex to `bun test -t`, so a test name carrying regex
- * metacharacters would need an explicit `argv` — stated rather than escaped,
- * because escaping it here would silently disagree with what an operator gets
- * when they run the printed command by hand.
- */
-export const oracleArgv = (locator: string): string[] => {
+/** An oracle locator as the arguments the declared oracle command takes. */
+export const oracleContext = (root: string, locator: string): MeasureContext => {
   const { path, selector } = parseOracleLocator(locator);
-  return selector === undefined ? ["bun", "test", path] : ["bun", "test", path, "-t", selector];
+  return { root, file: path, ...(selector === undefined ? {} : { selector }) };
 };
 
 /**
@@ -269,86 +299,142 @@ export const categoryOf = (outcome: StageOutcome): FailureCategory | undefined =
 
 /* --------------------------------------------------------- default stages */
 
-const spawn = async (cmd: string[], cwd: string): Promise<{ code: number; output: string }> => {
-  const proc = Bun.spawn(cmd, { cwd, stdout: "pipe", stderr: "pipe" });
-  const [stdout, stderr] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-  ]);
-  return { code: await proc.exited, output: `${stdout}${stderr}`.trim() };
-};
+/**
+ * The one thing every stage does: run a declared command.
+ *
+ * This is an `EffectExecutor` narrowed to one effect type, deliberately. A
+ * stage composes the consumer's declared command into a `run-command` effect
+ * and hands it over; whatever is on the other side is what actually spawns.
+ * In production that is the real runner; in a test it is a script, and the
+ * whole verification pipeline runs without a process.
+ */
+export type RunCommandEffect = Extract<Effect, { type: "run-command" }>;
+export type CommandExecutor = (effect: RunCommandEffect) => Promise<EffectResult>;
 
 /** Trim a tool's output to something an event row can carry. */
 const excerpt = (text: string): string => (text.length > 2000 ? `${text.slice(0, 2000)}…` : text);
 
+/** What a stage says when the command it asked for could not be run at all. */
+const infra = (what: string, result: EffectResult): StageOutcome => ({
+  status: "infra-failed",
+  detail: excerpt(
+    commandOf(result) === undefined
+      ? `${what} could not be run`
+      : `${what} was killed at its timeout\n${commandOutput(commandOf(result))}`,
+  ),
+});
+
 /**
- * `bunx tsc --noEmit` over the whole project. Project-scoped rather than
- * file-scoped because a type error an edit introduces usually surfaces in the
- * file that consumes the symbol, not the one that defines it.
+ * One command, run, mapped onto a stage outcome.
+ *
+ * `by` is the STAGE's own name rather than the effect's `command`, because a
+ * stage is exactly the thing that interprets a non-zero exit: "tsc said no" is
+ * a typecheck failure and the caller routes it as one.
  */
-export const bunxTypecheck: Verifier["typecheck"] = async (ctx) => {
-  try {
-    const { code, output } = await spawn(["bunx", "tsc", "--noEmit"], ctx.root);
-    return code === 0 ? { status: "passed" } : { status: "failed", by: "typecheck", detail: excerpt(output) };
-  } catch (err) {
-    return { status: "infra-failed", detail: `tsc could not be run: ${String(err)}` };
+const stageOf = async (
+  run: CommandExecutor,
+  effect: RunCommandEffect,
+  by: Extract<RejectedBy, "typecheck" | "lint">,
+): Promise<StageOutcome> => {
+  const result = await run(effect);
+  switch (result.outcome) {
+    case "committed":
+      return { status: "passed" };
+    case "rejected":
+      return { status: "failed", by, detail: excerpt(commandOutput(commandOf(result))) };
+    default:
+      return infra(by, result);
   }
 };
 
 /**
- * `bun test <file> -t <name>` per impacted test. An empty target set passes:
- * the impact graph said nothing depends on the change, and running the whole
- * suite to disprove that is exactly the cost § 6.2 exists to avoid.
+ * The declared typecheck, over the whole project. Project-scoped rather than
+ * file-scoped because a type error an edit introduces usually surfaces in the
+ * file that consumes the symbol, not the one that defines it, and because the
+ * declaration takes no arguments for exactly that reason.
  */
-export const bunTests: Verifier["tests"] = async (ctx) => {
-  for (const target of ctx.targets) {
+export const typecheckStage =
+  (commands: Commands, run: CommandExecutor): Verifier["typecheck"] =>
+  async () =>
+    stageOf(run, commandEffect(normalizeCommand(commands.typecheck({}))), "typecheck");
+
+/**
+ * The declared lint, over the files the write touched.
+ *
+ * Scoped to the write rather than to the project, because this stage runs
+ * INSIDE the write path and the question it answers is whether these bytes
+ * broke a rule. A consumer whose linter has no useful per-path mode declares
+ * one that ignores `paths`; the framework hands over what it knows and does
+ * not decide what the linter does with it.
+ */
+export const lintStage =
+  (commands: Commands, run: CommandExecutor): Verifier["lint"] =>
+  async (ctx) =>
+    stageOf(run, commandEffect(normalizeCommand(commands.lint({ paths: [ctx.path] }))), "lint");
+
+/** A directory for the JUnit reports of one stage invocation. */
+const junitDir = (): string => mkdtempSync(join(tmpdir(), "dw-junit-"));
+
+/**
+ * The declared test command, once per impacted test, with the verdict read off
+ * the JUnit report each run writes.
+ *
+ * An empty target set passes: the impact graph said nothing depends on the
+ * change, and running the whole suite to disprove that is exactly the cost
+ * § 6.2 exists to avoid.
+ *
+ * The run STOPS at the first target that did not pass, because the question is
+ * "did this break something else" and one answer settles it. The ids on the
+ * rejection come from the report's own failing cases, falling back to the
+ * target that ran when the report named none, which is what a runner that
+ * wrote nothing leaves behind.
+ */
+export const testsStage =
+  (commands: Commands, run: CommandExecutor): Verifier["tests"] =>
+  async (ctx) => {
+    if (ctx.targets.length === 0) return { status: "passed" };
+    const dir = junitDir();
     try {
-      const { code, output } = await spawn(["bun", "test", target.path, "-t", target.name], ctx.root);
-      if (code !== 0) {
+      let n = 0;
+      for (const target of ctx.targets) {
+        const junit = join(dir, `${(n += 1)}.xml`);
+        const effect = commandEffect(
+          normalizeCommand(commands.tests({ file: target.path, selector: target.name, junit })),
+        );
+        const result = await run(effect);
+        if (result.outcome === "conflict" || result.outcome === "infra-failed") {
+          return infra(`the test command for ${target.path}`, result);
+        }
+        const command = commandOf(result);
+        const report = readJunit(junit);
+        const { verdict } = oracleVerdict(command?.exitCode ?? undefined, report.counts);
+        if (verdict === "green") continue;
+
+        const where = `${target.path} :: ${target.name}`;
+        const detail = excerpt(`${where}\n${commandOutput(command)}`);
+        // The runner exited non-zero while its own report records neither a
+        // failure nor an error. Nothing was established, so nothing blocks
+        // and the write's recorded status is downgraded instead (§ 6.4).
+        if (verdict === "indeterminate") return { status: "advisory", detail };
+
+        const failing = new Set(failingNames(report.cases));
+        const failed = ctx.targets
+          .filter((t) => t.path === target.path && failing.has(t.name))
+          .map((t) => t.id);
         return {
           status: "failed",
           by: "tests",
-          detail: excerpt(`${target.path} :: ${target.name}\n${output}`),
+          detail,
           // Which test failed, by id, because the caller routes on whether it
-          // is one of its own. The run stops at the first failure, so this is
-          // one id rather than the whole failing set.
-          failed: [target.id],
+          // is one of its own.
+          failed: failed.length > 0 ? failed : [target.id],
         };
       }
-    } catch (err) {
-      return { status: "infra-failed", detail: `bun test could not be run: ${String(err)}` };
+      return { status: "passed" };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
     }
-  }
-  return { status: "passed" };
-};
-
-/**
- * `bun test`'s own summary lines, or `undefined` when it printed none.
- *
- * MEASURED against bun 1.3.12 rather than assumed, because the whole verdict
- * rests on it:
- *
- *   a pass                    exit 0,  ` 1 pass`, ` 0 fail`
- *   an assertion failure      exit 1,  ` 0 pass`, ` 1 fail`
- *   a test body that throws   exit 1,  ` 0 pass`, ` 1 fail`
- *   an import that is missing exit 1,  ` 0 pass`, ` 1 fail`, ` 1 error`
- *   a file that does not parse exit 1, ` 0 pass`, ` 1 fail`, ` 1 error`
- *   `-t` matching no test     exit 1,  no summary at all
- *
- * So the `error` line is a real signal for `broken` — bun reports an unhandled
- * error between tests separately from the failure it also counts — and an
- * ABSENT summary means the runner did not get as far as running anything.
- */
-export const bunCounts = (output: string): RunCounts | undefined => {
-  const read = (label: string): number | undefined => {
-    const match = new RegExp(`^\\s*(\\d+) ${label}$`, "m").exec(output);
-    return match === null ? undefined : Number(match[1]);
   };
-  const passed = read("pass");
-  const failed = read("fail");
-  if (passed === undefined || failed === undefined) return undefined;
-  return { passed, failed, errored: read("error") ?? 0 };
-};
 
 /** Exit statuses that mean the runner completed rather than crashed. */
 const COMPLETED_EXITS = new Set([0, 1]);
@@ -359,12 +445,17 @@ const COMPLETED_EXITS = new Set([0, 1]);
  * Exit status alone admits exactly the artefact this exists to refuse: an
  * oracle that errored in its own scaffolding exits 1, the identical status a
  * genuine assertion failure returns. So the counts are read, and a run that
- * printed no counts is `broken` rather than `red`: bun always summarises a
- * suite it ran, so an absent summary is itself evidence it ran nothing.
+ * produced no report at all is `broken` rather than `red`: a runner
+ * summarises a suite it RAN, so an absent report is itself evidence it ran
+ * nothing.
  *
  * `indeterminate` is not decoration. A run that failed while its own summary
  * records neither a failure nor an error is a world this cannot describe, and
  * answering `red` there would be a silent-wrong pass into a paid craft turn.
+ *
+ * The rule is unchanged by the move from a runner's stdout to a JUnit report.
+ * What changed is where the counts come from, which is the whole point: the
+ * verdict no longer depends on one runner's human output.
  */
 export const oracleVerdict = (
   exitCode: number | undefined,
@@ -380,36 +471,68 @@ export const oracleVerdict = (
   return { verdict: "indeterminate", axis: "counts" };
 };
 
-/** Execute one oracle with `bun test` and read bun's own summary. */
-export const bunOracle: Verifier["measure"] = async (ctx) => {
-  const [command, ...rest] = ctx.argv;
-  if (command === undefined) return undefined;
-  try {
-    const { code, output } = await spawn([command, ...rest], ctx.root);
-    const counts = bunCounts(output);
-    return { ...oracleVerdict(code, counts), output: excerpt(output), exitCode: code, ...(counts === undefined ? {} : { counts }), argv: ctx.argv };
-  } catch {
-    // The runner never started. Nothing about the oracle was observed, so
-    // nothing about it is claimed — and in particular the defect is NOT
-    // charged to its author.
-    return undefined;
-  }
-};
+/** Execute one oracle with the declared oracle command, and read its report. */
+export const measureStage =
+  (commands: Commands, run: CommandExecutor): Verifier["measure"] =>
+  async (ctx) => {
+    const dir = junitDir();
+    try {
+      const junit = join(dir, "oracle.xml");
+      const command = normalizeCommand(
+        commands.oracle({
+          file: ctx.file,
+          ...(ctx.selector === undefined ? {} : { selector: ctx.selector }),
+          junit,
+        }),
+      );
+      const result = await run(commandEffect(command));
+      const ran = commandOf(result);
+      // The runner never started, or was killed before it could produce an
+      // exit status. Nothing about the oracle was observed, so nothing about
+      // it is claimed — and in particular the defect is NOT charged to its
+      // author.
+      if (ran === undefined || ran.exitCode === null) return undefined;
 
-/**
- * The policy stage, as a stub that passes. The document's policy layer is
- * ast-grep patterns plus external scripts (§ 6.1, § 9.3); neither is built, so
- * this says so by passing rather than by pretending to check something.
- */
-export const policyPasses: Verifier["policy"] = async () => ({ status: "passed" });
+      const report = readJunit(junit);
+      return {
+        ...oracleVerdict(ran.exitCode, report.counts),
+        output: excerpt(commandOutput(ran)),
+        exitCode: ran.exitCode,
+        ...(report.counts === undefined ? {} : { counts: report.counts }),
+        argv: command.argv,
+      };
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
 
 /** A stage that passes without looking. The injected default in tests. */
 export const alwaysPasses = async (): Promise<StageOutcome> => ({ status: "passed" });
 
-/** The production pipeline: real tsc, real bun test, stub policy. */
-export const defaultVerifier = (): Verifier => ({
-  typecheck: bunxTypecheck,
-  tests: bunTests,
-  policy: policyPasses,
-  measure: bunOracle,
-});
+/**
+ * The command executor that actually spawns, bound to one repository root.
+ *
+ * The one seam in this module that reaches the world. `runCommand` is the
+ * framework's single process runner (`src/core/commands.ts`), so a `tsc` the
+ * verifier asks for and a `run-command` effect a graph emits go through the
+ * same code, with the same timeout, the same environment overlay and the same
+ * output cap.
+ */
+export const spawningExecutor =
+  (root: string): CommandExecutor =>
+  (effect) =>
+    executeCommand(effect, root, () => 0);
+
+/**
+ * The production pipeline: the consumer's four declared commands, over the
+ * executor that spawns.
+ */
+export const defaultVerifier = (spec: { commands: Commands; root: string }): Verifier => {
+  const run = spawningExecutor(spec.root);
+  return {
+    typecheck: typecheckStage(spec.commands, run),
+    lint: lintStage(spec.commands, run),
+    tests: testsStage(spec.commands, run),
+    measure: measureStage(spec.commands, run),
+  };
+};
