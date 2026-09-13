@@ -16,8 +16,7 @@
 import { describe, expect, test } from "bun:test";
 import { DEFAULT_COMMAND_TIMEOUT_MS, type Commands } from "@des/core/commands";
 import { memoryEffects, type Effect, type EffectResult } from "@des/core/effects";
-import { stepIdFromKey, type Journal } from "@des/core/journal";
-import type { StepResult } from "@des/core/step";
+import type { ModelBinding } from "@des/core/step";
 import {
   loop,
   resume,
@@ -35,7 +34,8 @@ import {
   type EffectOutcomeSpace,
 } from "@des/core/harness";
 import { endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "@des/core/harness";
-import { exhausted, ok, stubJournal } from "@des/core/harness/stub-journal";
+import { noReplayJournal } from "@des/core/harness/no-replay";
+import { scriptedBinding, throws, type ScriptedAnswer } from "@des/core/harness/scripted-binding";
 import {
   cycleDone,
   deliverGraph,
@@ -50,19 +50,9 @@ import {
 } from "./graph.ts";
 import { deliverDefs, LEAF_DECISIONS, leafStepId, type LeafId } from "./steps.ts";
 
-/** A model binding that fails the test if anything reaches a model. */
-const forbidden = (id: string) => ({
-  id,
-  generate: async <T,>(): Promise<T> => {
-    throw new Error(`model "${id}" was called; the enumeration suite must spend zero model calls`);
-  },
-});
-
-const defs = deliverDefs({
-  worker: forbidden("worker"),
-  validator: forbidden("validator"),
-  escalateTo: forbidden("escalate"),
-});
+/** The defs over one scripted binding, which serves every slot. */
+const defsFor = (binding: ModelBinding) =>
+  deliverDefs({ worker: binding, validator: binding, escalateTo: binding });
 
 const STEP = {
   id: "02-03",
@@ -125,7 +115,12 @@ const seedState = (): State => ({
   acceptanceTests: [OWN_AT],
 });
 
-/** One payload shape covers every leaf output schema; the graph reads none of them. */
+/**
+ * One payload shape covers every leaf output schema; the graph reads none of
+ * them. Two fields are not free, because two mechanical checks read them:
+ * `anchor` must be a verbatim substring of the evidence the leaf was handed,
+ * and `extra` must agree with the selection's own decision.
+ */
 const PAYLOAD = {
   anchor: "expected Running, got Pending",
   rationale: "stubbed",
@@ -134,6 +129,23 @@ const PAYLOAD = {
   gap: "the design names no way to observe the allocation's state",
   extra: ["test-alloc-handle-is-dropped"],
 };
+
+/**
+ * The payload for one decision.
+ *
+ * `no-extra` with ids in `extra` is the one contradiction a leaf can write
+ * that costs nothing to catch, and `deliver.selection-matches-its-decision`
+ * catches it — so the selection's payload is a function of its decision here,
+ * exactly as it would be in a real answer.
+ */
+const payloadFor = (leaf: LeafId, decision: string): Record<string, unknown> =>
+  leaf === "select-tests" ? { ...PAYLOAD, extra: decision === "extra" ? PAYLOAD.extra : [] } : PAYLOAD;
+
+/** The answers one leaf's worker gives. The last one repeats. */
+const answersFor = (leaf: LeafId, decision: string): ScriptedAnswer[] =>
+  decision === EXHAUSTED
+    ? throws(`the ${leaf} worker had nothing to say`)
+    : [{ decision, payload: payloadFor(leaf, decision) }];
 
 /** The sentinel for "this leaf's validator was never satisfied". */
 const EXHAUSTED = "$exhausted";
@@ -172,15 +184,15 @@ type TestOutcomeName = keyof typeof TEST_OUTCOMES;
 
 type Script = Partial<Record<LeafId, string>>;
 
-/** A journal seeded per leaf. An unscripted leaf throws rather than reaching a model. */
-const journalFor = (script: Script) =>
-  stubJournal(
+/** One binding per script. An unscripted leaf refuses by name on every attempt. */
+const bindingFor = (script: Script): ModelBinding =>
+  scriptedBinding(
     Object.fromEntries(
       Object.entries(script).map(([leaf, decision]) => [
         leafStepId(leaf as LeafId),
-        decision === EXHAUSTED ? exhausted() : ok({ decision, payload: PAYLOAD }),
+        answersFor(leaf as LeafId, decision),
       ]),
-    ) as Record<string, StepResult<unknown>>,
+    ),
   );
 
 /** Every write lands and the gate is clean. The axis is exercised separately. */
@@ -278,7 +290,7 @@ const HAPPY: Script = {
 };
 
 const start = (script: Script, execute: EffectExecutor = landsCleanly) =>
-  run<State>(deliverGraph(journalFor(script), defs, COMMANDS), seedState(), execute);
+  run<State>(deliverGraph(noReplayJournal(), defsFor(bindingFor(script)), COMMANDS), seedState(), execute);
 
 /** The loop-count row of what a person reads, for asserting on a parked run. */
 const iterationsOf = (trail: readonly unknown[]) =>
@@ -290,7 +302,7 @@ const designGapOf = (trail: readonly unknown[]) =>
 
 describe("deliver graph", () => {
   test("the graph is structurally well-formed", () => {
-    expect(graphDefects(deliverGraph(journalFor(HAPPY), defs, COMMANDS))).toEqual([]);
+    expect(graphDefects(deliverGraph(noReplayJournal(), defsFor(bindingFor(HAPPY)), COMMANDS))).toEqual([]);
   });
 
   test("the happy path implements, runs the suite, refactors, gates and COMMITs", async () => {
@@ -337,7 +349,7 @@ describe("deliver graph", () => {
     const terminals = new Set<string>();
 
     const paths = await enumeratePaths(async (choose) => {
-      const wf = deliverGraph(chooseJournal(choose), defs, COMMANDS);
+      const wf = deliverGraph(noReplayJournal(), defsFor(chooseBinding(choose)), COMMANDS);
       const outcome = await run<State>(wf, seedState(), scriptedExecutor(choose, DELIVER_SPACE));
 
       expect(isDeclaredOutcome(outcome)).toBe(true);
@@ -354,7 +366,7 @@ describe("deliver graph", () => {
 
     // Every node the graph declares was exercised, except the one that is only
     // reachable by answering a suspension. The resume tests below cover it.
-    const reachable = inspectGraph(deliverGraph(journalFor(HAPPY), defs, COMMANDS)).reachable;
+    const reachable = inspectGraph(deliverGraph(noReplayJournal(), defsFor(bindingFor(HAPPY)), COMMANDS)).reachable;
     expect(reachable.filter((id) => !seen.has(id))).toEqual(["human.route"]);
 
     // Every declared reason a person can be handed actually occurs, including
@@ -443,7 +455,7 @@ describe("deliver graph", () => {
     // to fix, which is the same rule the oracle measurement follows one wave
     // over. The run is parked and then answered only so the state the gate
     // left behind can be read off a terminal.
-    const wf = deliverGraph(journalFor({ ...HAPPY, "fix-lint": "fixed" }), defs, COMMANDS);
+    const wf = deliverGraph(noReplayJournal(), defsFor(bindingFor({ ...HAPPY, "fix-lint": "fixed" })), COMMANDS);
     const parked = await run<State>(wf, seedState(), lintsLike(["found", "found"]));
     if (parked.kind !== "suspended") throw new Error("expected the gates bound to park the run");
     expect(parked.reason).toBe("gates-loop-exhausted");
@@ -773,7 +785,7 @@ describe("the suite's outcome decides, and the branch is a pure function of it",
 
 describe("deliver graph, resumed by a person", () => {
   const park = async () => {
-    const wf = deliverGraph(journalFor({ ...HAPPY, refactor: EXHAUSTED }), defs, COMMANDS);
+    const wf = deliverGraph(noReplayJournal(), defsFor(bindingFor({ ...HAPPY, refactor: EXHAUSTED })), COMMANDS);
     const parked = await run<State>(wf, seedState(), landsCleanly);
     if (parked.kind !== "suspended") throw new Error("expected the run to park");
     return { wf, parked };
@@ -801,7 +813,7 @@ describe("deliver graph, resumed by a person", () => {
   });
 
   test("a commit whose validator refuses rejects rather than parking a second time", async () => {
-    const wf = deliverGraph(journalFor({ ...HAPPY, refactor: EXHAUSTED, commit: EXHAUSTED }), defs, COMMANDS);
+    const wf = deliverGraph(noReplayJournal(), defsFor(bindingFor({ ...HAPPY, refactor: EXHAUSTED, commit: EXHAUSTED })), COMMANDS);
     const parked = await run<State>(wf, seedState(), landsCleanly);
     if (parked.kind !== "suspended") throw new Error("expected the run to park");
 
@@ -812,7 +824,7 @@ describe("deliver graph, resumed by a person", () => {
 });
 
 describe("deliver graph defects", () => {
-  const wf = deliverGraph(journalFor(HAPPY), defs, COMMANDS);
+  const wf = deliverGraph(noReplayJournal(), defsFor(bindingFor(HAPPY)), COMMANDS);
   const withNode = (id: string, node: Node<State>): Workflow<State> => ({
     ...wf,
     nodes: { ...wf.nodes, [id]: node },
@@ -868,17 +880,17 @@ describe("deliver graph defects", () => {
 
 /* ------------------------------------------------------------- walk wiring */
 
-/** Answers every leaf from its own closed set, plus "the validator refused". */
-const chooseJournal = (choose: Choose): Journal => ({
-  async get<O>(key: string) {
-    const leaf = stepIdFromKey(key).slice("deliver.".length) as LeafId;
-    const decision = choose(`leaf:${leaf}`, [...LEAF_DECISIONS[leaf], EXHAUSTED]);
-    return (decision === EXHAUSTED ? exhausted() : ok({ decision, payload: PAYLOAD })) as O;
-  },
-  async put() {
-    // The walk never re-infers, so nothing is written back.
-  },
-});
+/**
+ * Answers every leaf from its own closed set, plus "the worker never
+ * answered". Consulted once per INVOCATION, because `scriptedBinding` holds
+ * the chosen answers across a leaf's retries — so a leaf a mechanical check
+ * refused and re-drove is one choice point rather than two.
+ */
+const chooseBinding = (choose: Choose): ModelBinding =>
+  scriptedBinding(({ step }) => {
+    const leaf = step.id.slice("deliver.".length) as LeafId;
+    return answersFor(leaf, choose(`leaf:${leaf}`, [...LEAF_DECISIONS[leaf], EXHAUSTED]));
+  });
 
 /**
  * The walk's second axis: the outcomes each effect this graph emits may come

@@ -8,7 +8,8 @@
  *
  * Its own module rather than `main.ts`, because `main.ts` ends in
  * `await serve(...)` and importing one to reach a registration would start a
- * server. The same trap `request.ts` documents, one layer up.
+ * server. `REQUEST` lives here for the same reason: three things read it and
+ * one of them is a test.
  *
  * TWO WAYS TO START THE SAME GRAPH, and they are the same graph. A WORKFLOW
  * registration is one run over one row, started by a person. A PIPELINE is a
@@ -65,9 +66,21 @@ import {
   todoObligationsDefs,
   todoOracleDefs,
   todoRoadmapDefs,
+  type Models,
 } from "./models.ts";
-import { REQUEST } from "./request.ts";
 import { runSuite, type RunDir } from "./run-dir.ts";
+
+/**
+ * The request the roadmap is authored for.
+ *
+ * Fixed rather than an argument: a roadmap is authored FOR something, and what
+ * the todo target needs is not a judgement call — two stubs, two values. It is
+ * also the `roadmaps` row id, because nWave keys a handover by its request and
+ * so does this.
+ */
+export const REQUEST =
+  "Implement the stubbed behaviours `complete` and `remove` in src/todo.ts so the pending " +
+  "acceptance tests in test/todo.test.ts pass.";
 
 /** The roadmap is keyed by the request it was authored for, as nWave keys one. */
 export const ROADMAP_ID = REQUEST;
@@ -80,16 +93,16 @@ export type TodoRegistrations = {
 
 export type RegistrationOptions = {
   /**
-   * The verbatim runner output a DELIVER run's classifying leaves quote.
+   * Which binding runs which leaf. THE ONLY THING A CALLER INJECTS.
    *
-   * A function rather than a string, and called per run rather than once,
-   * because the red a crafter is looking at is the red the suite prints NOW —
-   * the row before it may have turned a sibling green. The default runs the
-   * project's own suite; the stubbed end-to-end supplies a fixed one, because
-   * a journal keyed by content cannot be seeded against output that carries
-   * its own timings.
+   * Production passes `todoModels()`; a test passes scripted ones. There used
+   * to be a second option here — an `evidence` override — and it existed so a
+   * test could compute the journal key `runStep` would compute, against runner
+   * output that carries its own timings. That was the composition shaped by
+   * its tests, and it is gone: a leaf is stubbed at this seam, so what the
+   * suite actually printed is what every run quotes.
    */
-  evidence?: () => string;
+  models: Models;
 };
 
 /** The row this input names, or a refusal that says which id was not there. */
@@ -121,10 +134,9 @@ const rows = (dir: RunDir): RoadmapRow[] => {
 
 export const todoRegistrations = (
   dir: RunDir,
-  options: RegistrationOptions = {},
+  options: RegistrationOptions,
 ): TodoRegistrations => {
-  const models = {};
-  const evidence = options.evidence ?? (() => runSuite(dir.project).output);
+  const models = options.models;
 
   /** One executor per run, so the event log's task id is the run's own. */
   const executorFor = (session: string, description: string) => () =>
@@ -259,8 +271,11 @@ export const todoRegistrations = (
       return deliverSeed({
         vcs: dir.vcs,
         row,
+        // The red a crafter is looking at is the red the suite prints NOW, in
+        // this run's own checkout: the row before it may have turned a sibling
+        // green. So it is measured per run rather than supplied.
         design: dir.design,
-        evidence: evidence(),
+        evidence: runSuite(dir.project).output,
       });
     },
     /**

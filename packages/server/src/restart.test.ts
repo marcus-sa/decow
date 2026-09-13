@@ -24,11 +24,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openArtifacts } from "@des/core/artifacts";
 import { memoryEffects } from "@des/core/effects";
+import { sqliteJournal } from "@des/core/journal";
 import { serve, type Server } from "./index.ts";
 import { getPipeline, getRun, listRuns, resumeRun, runPipeline, startRun } from "./api.ts";
 import { registration } from "./registration.ts";
 import { openRunDatabase } from "./store.ts";
-import { ARTIFACT_TABLE, gateGraph, gateJournal, GateInput, gateSeed } from "./fixture.ts";
+import { ARTIFACT_TABLE, gateGraph, gateModels, GateInput, gateSeed } from "./fixture.ts";
 
 const dirs: string[] = [];
 const servers: Server[] = [];
@@ -59,10 +60,12 @@ const boot = async (dir: string): Promise<Server> => {
     input: GateInput,
     // `needs-a-person` every time, so the run parks and a person is what
     // continues it.
-    graph: (ctx) => gateGraph(ctx.journal, ctx.observe),
+    graph: (ctx) => gateGraph(ctx.journal, gateModels("needs-a-person", "alph"), ctx.observe),
     seed: gateSeed,
     executor: () => memoryEffects({ store: artifacts }).execute,
-    journal: gateJournal("needs-a-person", "alph"),
+    // A real journal on a real file, so the second process replays what the
+    // first decided rather than calling the binding again.
+    journal: sqliteJournal(join(dir, "journal.sqlite")),
   });
 
   const server = await serve({
@@ -99,9 +102,12 @@ describe("a restarted server", () => {
     expect(parked.status).toBe("suspended");
     expect(parked.suspension?.node).toBe("ask");
     expect(parked.trace.map((entry) => entry.node)).toEqual(["classify", "classify.route", "ask"]);
-    // A journal HIT reports no attempt, because no model was called — which
-    // is what makes a count of attempt rows a count of INFERENCE.
-    expect(parked.attempts).toEqual([]);
+    // The leaf ran for real — worker, mechanical check, validator — because it
+    // is stubbed at the BINDING, so there is an attempt row to survive rather
+    // than only a status.
+    expect(parked.attempts.map((a) => `${a.stepId}:${a.attempt}:${a.accepted}`)).toEqual([
+      "fixture.classify:1:true",
+    ]);
 
     const engineRunId = parked.engineRunId;
     expect(engineRunId).toBeDefined();
@@ -120,6 +126,7 @@ describe("a restarted server", () => {
     expect(reread.engineRunId).toBe(engineRunId as string);
     expect(reread.input).toEqual({ subject: "alphabet" });
     expect(reread.trace.map((entry) => entry.node)).toEqual(["classify", "classify.route", "ask"]);
+    expect(reread.attempts.map((a) => a.stepId)).toEqual(["fixture.classify"]);
     // And the closed enum a person answers from, read off the parked node.
     expect(reread.suspension?.resume?.options).toEqual(["approve", "reject"]);
 

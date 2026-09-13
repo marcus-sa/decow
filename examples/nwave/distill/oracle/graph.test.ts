@@ -8,13 +8,15 @@
  * software's and the walk gets it from `scriptedExecutor` like any other
  * effect result.
  *
- * Zero model calls, no API key, no network.
+ * Zero model calls, no API key, no network. The leaf is stubbed at the
+ * BINDING rather than at the journal, so its three mechanical checks and its
+ * validator run on every path — the scripted payloads below satisfy them,
+ * which is what "the author declared exactly these paths" now means here.
  */
 
 import { describe, expect, test } from "bun:test";
 import { memoryEffects, type Effect, type EffectResult, type OracleVerdict } from "@des/core/effects";
-import { stepIdFromKey, type Journal } from "@des/core/journal";
-import type { StepResult } from "@des/core/step";
+import type { ModelBinding } from "@des/core/step";
 import { resume, run, type EffectExecutor } from "@des/core/workflow";
 import {
   enumeratePaths,
@@ -25,7 +27,8 @@ import {
   type EffectOutcomeSpace,
 } from "@des/core/harness";
 import { endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "@des/core/harness";
-import { exhausted, ok, stubJournal } from "@des/core/harness/stub-journal";
+import { noReplayJournal } from "@des/core/harness/no-replay";
+import { scriptedBinding, throws, type ScriptedAnswer } from "@des/core/harness/scripted-binding";
 import {
   BLOCK_REASONS,
   MAX_AUTHOR_ATTEMPTS,
@@ -36,15 +39,11 @@ import {
 } from "./graph.ts";
 import { AUTHOR_OUTCOMES, oracleDefs, type AuthorOutcome, type ValueUnderOracle } from "./steps.ts";
 
-/** A model binding that fails the test if anything reaches a model. */
-const forbidden = (id: string) => ({
-  id,
-  generate: async <T,>(): Promise<T> => {
-    throw new Error(`model "${id}" was called; the enumeration suite must spend zero model calls`);
-  },
-});
+/** The leaf's step id, which is what a script is keyed by. */
+const AUTHOR = "distill.author-oracle";
 
-const defs = oracleDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
+/** The defs over one scripted binding, which serves both slots. */
+const defsFor = (binding: ModelBinding) => oracleDefs({ worker: binding, validator: binding });
 
 const DESIGN = "TodoStore.complete(id): Todo. Throws UnknownTodoError for an id the store does not hold.";
 const TEST_PATHS = ["test"];
@@ -85,13 +84,14 @@ const REJECTED = {
 const EXHAUSTED = "$exhausted";
 type Script = AuthorOutcome | typeof EXHAUSTED;
 
-const journalFor = (script: Script) =>
-  stubJournal({
-    "distill.author-oracle":
-      script === EXHAUSTED
-        ? exhausted()
-        : ok({ decision: script, payload: script === "authored" ? AUTHORED : REJECTED }),
-  } as Record<string, StepResult<unknown>>);
+/** The answers a worker gives, per script. The last one repeats. */
+const answersFor = (script: Script): ScriptedAnswer[] =>
+  script === EXHAUSTED
+    ? throws("the author had nothing to say")
+    : [{ decision: script, payload: script === "authored" ? AUTHORED : REJECTED }];
+
+const bindingFor = (script: Script): ModelBinding =>
+  scriptedBinding({ [AUTHOR]: answersFor(script) });
 
 /* ------------------------------------------------------------- executors */
 
@@ -138,14 +138,14 @@ const writesAs = (outcome: EffectResult["outcome"], by?: "contract" | "typecheck
 
 const start = (script: Script, execute: EffectExecutor = measuresLike(["red"])) =>
   run<State>(
-    oracleGraph(journalFor(script), defs),
+    oracleGraph(noReplayJournal(), defsFor(bindingFor(script))),
     seed({ value: VALUE, design: DESIGN, testPaths: TEST_PATHS }),
     execute,
   );
 
 describe("the oracle graph", () => {
   test("the graph is structurally well-formed", () => {
-    expect(graphDefects(oracleGraph(journalFor("authored"), defs))).toEqual([]);
+    expect(graphDefects(oracleGraph(noReplayJournal(), defsFor(bindingFor("authored"))))).toEqual([]);
   });
 
   test("the happy path authors, writes, measures red, and accepts", async () => {
@@ -292,7 +292,7 @@ describe("the oracle graph", () => {
   });
 
   test("a person's abandon reaches the rejected terminal", async () => {
-    const wf = oracleGraph(journalFor("cannot-express"), defs);
+    const wf = oracleGraph(noReplayJournal(), defsFor(bindingFor("cannot-express")));
     const parked = await run<State>(
       wf,
       seed({ value: VALUE, design: DESIGN, testPaths: TEST_PATHS }),
@@ -309,17 +309,19 @@ describe("the oracle graph", () => {
     // effects it derived from its own writes, and `write-oracle` takes
     // whichever arrived.
     const asked: Effect[] = [];
-    const journal = stubJournal({
-      "distill.author-oracle": ok({
-        decision: "authored",
-        payload: {
-          ...AUTHORED,
-          proposal: [{ type: "write-file", path: "test/from-a-proposal.ts", body: "// proposed\n" }],
+    const proposing = scriptedBinding({
+      [AUTHOR]: [
+        {
+          decision: "authored",
+          payload: {
+            ...AUTHORED,
+            proposal: [{ type: "write-file", path: "test/from-a-proposal.ts", body: "// proposed\n" }],
+          },
         },
-      }),
-    } as Record<string, StepResult<unknown>>);
+      ],
+    });
     await run<State>(
-      oracleGraph(journal, defs),
+      oracleGraph(noReplayJournal(), defsFor(proposing)),
       seed({ value: VALUE, design: DESIGN, testPaths: TEST_PATHS }),
       async (effects) => {
         asked.push(...effects);
@@ -371,7 +373,7 @@ describe("the oracle graph, exhaustively", () => {
     const terminals = new Set<string>();
 
     const paths = await enumeratePaths(async (choose) => {
-      const wf = oracleGraph(chooseJournal(choose), defs);
+      const wf = oracleGraph(noReplayJournal(), defsFor(chooseBinding(choose)));
       const execute = scriptedExecutor(choose, ORACLE_SPACE);
       let outcome = await run<State>(
         wf,
@@ -395,7 +397,7 @@ describe("the oracle graph, exhaustively", () => {
 
     expect(paths).toHaveLength(EXPECTED_PATHS);
 
-    const reachable = inspectGraph(oracleGraph(journalFor("authored"), defs)).reachable;
+    const reachable = inspectGraph(oracleGraph(noReplayJournal(), defsFor(bindingFor("authored")))).reachable;
     expect(reachable.filter((id) => !seen.has(id))).toEqual([]);
 
     expect([...reasons].sort()).toEqual([...BLOCK_REASONS].sort());
@@ -408,19 +410,17 @@ const EXPECTED_PATHS = 421;
 
 /* ------------------------------------------------------------- walk wiring */
 
-const chooseJournal = (choose: Choose): Journal => ({
-  async get<O>(key: string) {
-    const leaf = stepIdFromKey(key);
-    if (leaf !== "distill.author-oracle") throw new Error(`unexpected leaf ${leaf}`);
-    const script = choose<Script>("leaf:author-oracle", [...AUTHOR_OUTCOMES, EXHAUSTED]);
-    return (script === EXHAUSTED
-      ? exhausted()
-      : ok({ decision: script, payload: script === "authored" ? AUTHORED : REJECTED })) as O;
-  },
-  async put() {
-    // The walk never re-infers, so nothing is written back.
-  },
-});
+/**
+ * Answers the author leaf from its own closed set plus "the worker never
+ * answered". Consulted once per INVOCATION, because `scriptedBinding` holds
+ * the chosen answers across a leaf's retries — so a leaf is one choice point
+ * whether or not it retried.
+ */
+const chooseBinding = (choose: Choose): ModelBinding =>
+  scriptedBinding(({ step }) => {
+    if (step.id !== AUTHOR) throw new Error(`unexpected leaf ${step.id}`);
+    return answersFor(choose<Script>("leaf:author-oracle", [...AUTHOR_OUTCOMES, EXHAUSTED]));
+  });
 
 /**
  * The walk's effect axis. Both effect types the graph emits are named, because

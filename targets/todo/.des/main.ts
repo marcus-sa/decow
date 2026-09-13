@@ -37,7 +37,7 @@
 
 import { join } from "node:path";
 import { serve } from "@des/server";
-import { describeModels } from "./models.ts";
+import { describeModels, todoModels } from "./models.ts";
 import { todoRegistrations, ROADMAP_ID } from "./registrations.ts";
 import { createRunDir, openRunDir, RUNS, shortPath } from "./run-dir.ts";
 import { existsSync } from "node:fs";
@@ -52,7 +52,7 @@ const main = async (): Promise<void> => {
   if (!existsSync(join(RUNS, name))) createRunDir(name);
   const dir = await openRunDir(name);
 
-  const { workflows, pipelines } = todoRegistrations(dir);
+  const { workflows, pipelines } = todoRegistrations(dir, { models: todoModels() });
 
   const server = await serve({
     port,

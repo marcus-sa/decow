@@ -12,8 +12,9 @@
  *              oracle is not red, and runs the step cycle once per row against
  *              a REAL `tsc --noEmit` and a REAL impact-scoped `bun test`
  *
- * Every leaf is a journal hit at the key `runStep` will compute, so the model
- * bindings throw if anything reaches them. Nothing about the RED is asserted by
+ * Every leaf is stubbed at the BINDING — the one seam this composition has —
+ * so the output schema, the mechanical checks and the validator all run for
+ * real and nothing computes a journal key. Nothing about the RED is asserted by
  * this file: the oracle bodies are handed to the author leaf, and what says
  * they fail is the runner. An oracle that was accidentally green would park the
  * run under `vacuous-oracle`, which is the whole reason the measurement exists.
@@ -31,17 +32,17 @@ import { join } from "node:path";
 import { openArtifacts } from "@des/core/artifacts";
 import { memoryEffects } from "@des/core/effects";
 import { memoryJournal } from "@des/core/journal";
-import { journalKey, type StepResult } from "@des/core/step";
+import type { ModelBinding } from "@des/core/step";
 import { resume, run } from "@des/core/workflow";
 import { openVcs, type Vcs } from "@des/core/vcs";
+import { scriptedBinding, type Script, type ScriptedAnswer } from "@des/core/harness/scripted-binding";
 import { readRoadmap, statusOf, stepUnderDelivery } from "../../../examples/nwave/deliver/pipeline.ts";
-import { deliverDefs, LeafInput, type DeliverDefs, type LeafId } from "../../../examples/nwave/deliver/steps.ts";
-import { obligationsDefs, ProposeInput } from "../../../examples/nwave/distill/obligations/steps.ts";
-import { AuthorInput, oracleDefs } from "../../../examples/nwave/distill/oracle/steps.ts";
+import { leafStepId, type LeafId } from "../../../examples/nwave/deliver/steps.ts";
 import { oracleIsRed, oracleRunsOf } from "../../../examples/nwave/distill/runs.ts";
 import { roadmapGraph, seed as seedRoadmap, type State as RoadmapState } from "../../../examples/nwave/roadmap/graph.ts";
 import type { Roadmap } from "../../../examples/nwave/roadmap/schema.ts";
 import { roadmapDefs } from "../../../examples/nwave/roadmap/steps.ts";
+import { todoRoadmapDefs, type Models } from "./models.ts";
 import {
   getPipeline,
   getRun,
@@ -54,8 +55,7 @@ import {
 } from "@des/server";
 import { openWorkflowRuntime } from "@des/core/compile";
 import type { Journal } from "@des/core/journal";
-import { REQUEST } from "./request.ts";
-import { todoRegistrations } from "./registrations.ts";
+import { REQUEST, todoRegistrations } from "./registrations.ts";
 import {
   createRunDir,
   designSource,
@@ -235,75 +235,6 @@ const BODIES: Record<string, string> = {
   }`,
 };
 
-/* -------------------------------------------------------------- seeding */
-
-/** The obligations leaf, at the key `runStep` will compute. */
-const seedObligations = (
-  defs: ReturnType<typeof obligationsDefs>,
-  rows: ReturnType<typeof readRoadmap>,
-  design: string,
-): Record<string, StepResult<unknown>> => {
-  const input = ProposeInput.parse({
-    roadmap: {
-      request: REQUEST,
-      steps: rows.map((row) => ({
-        id: row.id,
-        observation: row.observation,
-        dependencies: row.dependencies,
-        authority: row.authority,
-        predictedTouches: row.predictedTouches,
-        acceptance: row.acceptance,
-        supports: row.supports,
-      })),
-    },
-    design,
-    testPaths: ["test"],
-    defects: [],
-  });
-  return {
-    [journalKey(defs["propose-obligations"], input)]: {
-      decision: "ok",
-      output: { decision: "proposed", payload: { values: MANIFEST, rationale: "stubbed" } },
-    },
-  } as Record<string, StepResult<unknown>>;
-};
-
-/** The author leaf, per value, at the key `runStep` will compute. */
-const seedAuthors = (
-  defs: ReturnType<typeof oracleDefs>,
-  rows: ReturnType<typeof readRoadmap>,
-  design: string,
-): Record<string, StepResult<unknown>> => {
-  const seeded: Record<string, StepResult<unknown>> = {};
-  for (const row of rows) {
-    const oracle = row.oracle as string;
-    const path = oracle.split("::")[0] as string;
-    const input = AuthorInput.parse({
-      value: {
-        stepId: row.id,
-        observation: row.observation,
-        acceptance: row.acceptance,
-        oracle,
-        supports: row.supports,
-        authority: row.authority,
-      },
-      design,
-      testPaths: ["test"],
-    });
-    seeded[journalKey(defs["author-oracle"], input)] = {
-      decision: "ok",
-      output: {
-        decision: "authored",
-        payload: {
-          files: [{ path, body: ORACLE_BODIES[path] as string }],
-          reason: "every obligation is falsified by one of the two assertions",
-        },
-      },
-    } as StepResult<unknown>;
-  }
-  return seeded;
-};
-
 /** The decision each DELIVER leaf of a happy run returns. */
 const HAPPY: Partial<Record<LeafId, string>> = {
   implement: "written",
@@ -312,73 +243,101 @@ const HAPPY: Partial<Record<LeafId, string>> = {
   commit: "committed",
 };
 
-/** Leaves that run BEFORE `implement` carries `wrote`, so they key differently. */
-const BEFORE_THE_WRITE: readonly LeafId[] = ["implement"];
+/* -------------------------------------------------------------- the script */
 
-/** Seed one row's DELIVER leaves at the exact keys `runStep` will compute. */
-const seedRow = (
-  rows: Record<string, StepResult<unknown>>,
-  defs: DeliverDefs,
-  vcs: Vcs,
-  row: ReturnType<typeof readRoadmap>[number],
-  design: string,
-  evidence: string,
-): void => {
-  const step = stepUnderDelivery(row, design);
-  const symbolId = row.predictedTouches[0] as string;
-  const impacted = vcs.impact.impactedTests([symbolId]).map((t) => t.id);
+/**
+ * Every leaf this run reaches, and what its worker answers.
+ *
+ * Keyed by STEP ID, not by journal key — so nothing here computes what
+ * `runStep` will compute, and the composition needs no hook to make that
+ * computation possible. The `evidence` override this file used to pass existed
+ * for exactly that reason and is gone: what the suite actually printed is what
+ * every DELIVER run now quotes.
+ *
+ * The payloads have to be RIGHT rather than merely well-typed, because every
+ * mechanical check runs now. `select-tests` answers `no-extra` with an empty
+ * list, because `deliver.selection-matches-its-decision` refuses a decision
+ * its own payload contradicts.
+ */
+const ROW_IDS = ["01-01", "01-02"] as const;
 
-  for (const [leaf, decision] of Object.entries(HAPPY) as [LeafId, string][]) {
-    const wrote = BEFORE_THE_WRITE.includes(leaf) ? undefined : symbolId;
-    const input = LeafInput.parse({
-      step,
-      evidence,
-      impacted,
-      ...(wrote === undefined ? {} : { wrote }),
-    });
-    rows[journalKey(defs[leaf], input)] = {
-      decision: "ok",
-      output: {
-        decision,
-        payload: {
-          anchor: evidence,
-          rationale: "stubbed",
-          symbolId,
-          body: BODIES[row.id] as string,
-          gap: "",
-          extra: [] as string[],
+/** The row a prompt is about. Every leaf's prompt names it; a model reads it too. */
+const rowIn = (prompt: string): string => ROW_IDS.find((id) => prompt.includes(id)) ?? "01-01";
+
+const leafPayload = (row: string, symbolId: string): Record<string, unknown> => ({
+  anchor: "",
+  rationale: "stubbed",
+  symbolId,
+  body: BODIES[row] ?? "",
+  gap: "",
+  extra: [],
+});
+
+/**
+ * The five roles, all answered by ONE scripted binding, which is the whole of
+ * what this test injects.
+ *
+ * A binding is answered per CALL, and which row a call is about is on the
+ * prompt — `Step 01-01`, `Value 01-02` — exactly where the model it stands in
+ * for would read it. So one script serves both rows without the composition
+ * growing anywhere for a test to reach.
+ */
+const scriptedModels = (symbolFor: (row: string) => string): Models => {
+  const binding: ModelBinding = scriptedBinding(({ step, prompt }): ScriptedAnswer[] | undefined => {
+    if (step.id === "distill.propose-obligations") {
+      return [{ decision: "proposed", payload: { values: MANIFEST, rationale: "stubbed" } }];
+    }
+    if (step.id === "distill.author-oracle") {
+      const path = (ORACLES[rowIn(prompt) as keyof typeof ORACLES] ?? "").split("::")[0] as string;
+      return [
+        {
+          decision: "authored",
+          payload: {
+            files: [{ path, body: ORACLE_BODIES[path] ?? "" }],
+            reason: "every obligation is falsified by one of the two assertions",
+          },
         },
-      },
-    } as StepResult<unknown>;
-  }
+      ];
+    }
+    const leaf = step.id.slice("deliver.".length) as LeafId;
+    const decision = HAPPY[leaf];
+    if (decision === undefined) return undefined;
+    const row = rowIn(prompt);
+    return [{ decision, payload: leafPayload(row, symbolFor(row)) }];
+  });
+
+  return {
+    decompose: binding,
+    authorOracle: binding,
+    implement: binding,
+    other: binding,
+    validator: binding,
+  };
 };
 
 /** The roadmap, persisted the way it is produced: through its own graph. */
 const persistRoadmap = async (roadmap: Roadmap, design: string, effects: ReturnType<typeof memoryEffects>) => {
-  const defs = roadmapDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
-  const seeded = {
-    "roadmap.decompose": {
-      decision: "ok",
-      output: { decision: "proposed", payload: { roadmap, rationale: "one row per stub" } },
-    },
-    "roadmap.validate-slices": {
-      decision: "ok",
-      output: {
+  // The two roadmap leaves, scripted. The slice verdicts quote each step's own
+  // observation because `roadmap.slice-anchor-verbatim` is mechanical and runs
+  // for real — a paraphrase would be refused here rather than judged.
+  const binding = scriptedBinding({
+    "roadmap.decompose": [
+      { decision: "proposed", payload: { roadmap, rationale: "one row per stub" } },
+    ],
+    "roadmap.validate-slices": [
+      {
         decision: "is-slice",
         payload: {
           verdicts: roadmap.steps.map((s) => ({ stepId: s.id, verdict: "is-slice", anchor: s.observation })),
           rationale: "both are reachable through the store's own public surface",
         },
       },
-    },
-  } as Record<string, StepResult<unknown>>;
+    ],
+  });
 
   const wf = roadmapGraph(
-    {
-      get: async <O,>(key: string) => seeded[key.split("@")[0] ?? key] as O | undefined,
-      put: async () => {},
-    },
-    defs,
+    memoryJournal(),
+    roadmapDefs({ worker: binding, validator: binding, decomposeWith: binding }),
   );
   const parked = await run<RoadmapState>(wf, seedRoadmap(REQUEST, design), effects.execute);
   if (parked.kind !== "suspended") throw new Error("expected the roadmap to park for a person");
@@ -402,9 +361,11 @@ const persistRoadmap = async (roadmap: Roadmap, design: string, effects: ReturnT
 const openStubbedServer = (
   project: Awaited<ReturnType<typeof openProject>>,
   design: string,
-  evidence: () => string,
 ) => {
   const artifacts = openArtifacts();
+  // A REAL journal: production replay, nothing seeded. Two runs of the same
+  // step on the same input replay here exactly as they would in a run
+  // directory, which is one more thing this test no longer has to pretend.
   const seeded = memoryJournal();
   const journal: Journal & { close: () => void } = { ...seeded, close: () => {} };
   const store = openRunDatabase();
@@ -421,18 +382,15 @@ const openStubbedServer = (
     design,
     close: () => {},
   };
-  const { workflows, pipelines } = todoRegistrations(dir, { evidence });
+  const { workflows, pipelines } = todoRegistrations(dir, {
+    models: scriptedModels((row) => project.symbolId("src/todo.ts", METHODS[row] ?? "")),
+  });
   const registry = openRegistry({ workflows, pipelines, artifacts, store });
   return { registry, artifacts, journal, dir };
 };
 
-/** Seed a set of journal rows at the keys `runStep` will compute. */
-const seedJournal = async (
-  journal: Journal,
-  rows: Record<string, StepResult<unknown>>,
-): Promise<void> => {
-  for (const [key, value] of Object.entries(rows)) await journal.put(key, value);
-};
+/** Which method each row rewrites, so `implement` can name the symbol. */
+const METHODS: Record<string, string> = { "01-01": "complete", "01-02": "remove" };
 
 /** Drive one pipeline to quiescence and answer with its tree. */
 const drivePipeline = async (registry: Registry, id: string) => {
@@ -451,11 +409,11 @@ describe("the todo target, delivered", () => {
     expect(project.read("src/todo.ts")).toContain('throw new Error("not implemented")');
     expect(existsSync(join(project.root, "test"))).toBe(false);
 
-    // The evidence a DELIVER leaf quotes. Fixed rather than measured, because
-    // a journal keyed by CONTENT cannot be seeded against runner output that
-    // carries its own timings — see `RegistrationOptions.evidence`.
-    const EVIDENCE = "2 fail\n0 pass";
-    const { registry, artifacts, journal } = openStubbedServer(project, design, () => EVIDENCE);
+    // Nothing is injected but the bindings. The evidence every DELIVER leaf
+    // quotes is what the project's OWN suite printed, measured per run by the
+    // composition, because a script keyed by step id needs no key computed
+    // from it.
+    const { registry, artifacts } = openStubbedServer(project, design);
 
     /* ---- ROADMAP ------------------------------------------------------ */
 
@@ -466,9 +424,6 @@ describe("the todo target, delivered", () => {
 
     /* ---- DISTILL, first half: the acceptance facts --------------------- */
 
-    const obligations = obligationsDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
-    await seedJournal(journal, seedObligations(obligations, readRoadmap(artifacts, REQUEST), design));
-
     const facts = startRun(registry, "obligations", {});
     await registry.idle();
     expect(getRun(registry, facts.runId).status).toBe("accepted");
@@ -478,9 +433,6 @@ describe("the todo target, delivered", () => {
     expect(enriched.map((r) => r.acceptance.length)).toEqual([2, 2]);
 
     /* ---- DISTILL, second half: the oracle, authored and measured ------- */
-
-    const oracles = oracleDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
-    await seedJournal(journal, seedAuthors(oracles, enriched, design));
 
     const oracleTree = await drivePipeline(registry, "oracles");
 
@@ -517,13 +469,6 @@ describe("the todo target, delivered", () => {
     // The oracles are on disk now, so the impact graph can see them.
     project.vcs.trackTree("test");
     expect(runSuite(project.root).exitCode).not.toBe(0);
-
-    const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
-    const rows: Record<string, StepResult<unknown>> = {};
-    for (const row of readRoadmap(artifacts, REQUEST)) {
-      seedRow(rows, defs, project.vcs, row, design, EVIDENCE);
-    }
-    await seedJournal(journal, rows);
 
     const deliveryTree = await drivePipeline(registry, "delivery");
 
@@ -575,7 +520,7 @@ describe("the todo target, delivered", () => {
   test("a value whose oracle is not red is refused by name, and blocks its dependents", async () => {
     const project = await openProject();
     const design = designSource(project.root, project.vcs);
-    const { registry, artifacts } = openStubbedServer(project, design, () => "");
+    const { registry, artifacts } = openStubbedServer(project, design);
     await persistRoadmap(roadmapFor(project.symbolId), design, memoryEffects({ store: artifacts }));
 
     expect(oracleIsRed(artifacts, "01-01")).toBe(false);
@@ -642,7 +587,9 @@ describe("the todo target, delivered", () => {
     try {
       createRunDir(name);
       const dir = await openRunDir(name);
-      const { workflows, pipelines } = todoRegistrations(dir);
+      const { workflows, pipelines } = todoRegistrations(dir, {
+        models: scriptedModels(() => ""),
+      });
 
       expect(workflows.map((w) => w.id)).toEqual(["roadmap", "obligations", "oracle", "deliver"]);
       expect(pipelines.map((p) => p.id)).toEqual(["oracles", "delivery"]);

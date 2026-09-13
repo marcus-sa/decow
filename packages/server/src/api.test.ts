@@ -41,7 +41,7 @@ import {
   busyGraph,
   GateInput,
   gateGraph,
-  gateJournal,
+  gateModels,
   gateSeed,
   overlapTracker,
   type BusyState,
@@ -66,8 +66,9 @@ const gateRegistry = (decision: ClassifyDecision, subject: string) => {
         id: "gate",
         title: "A leaf, a person, and a row",
         input: GateInput,
-        journal: gateJournal(decision, subject.slice(0, 4)),
-        graph: (ctx) => gateGraph(ctx.journal, ctx.observe as never),
+        journal: memoryJournal(),
+        graph: (ctx) =>
+          gateGraph(ctx.journal, gateModels(decision, subject.slice(0, 4)), ctx.observe as never),
         seed: gateSeed,
         executor: () => effects.execute,
       }),
@@ -125,10 +126,13 @@ describe("the graphs, and one run of one", () => {
     expect(record.status).toBe("accepted");
     expect(record.trace.map((t) => t.node)).toEqual(entered);
     expect(record.trace.every((t) => t.iteration === 1)).toBe(true);
-    // Every leaf answered from the journal, so no model was called and no
-    // attempt was made. Counting a replay as a call would make the number a
-    // fiction.
-    expect(record.attempts).toEqual([]);
+    // The leaf ran for real against a scripted binding — worker, mechanical
+    // check, validator — so the attempt seam reported one attempt, accepted.
+    // A journal HIT would report none, because no model would be called.
+    expect(record.attempts.map((a) => `${a.stepId}:${a.attempt}:${a.verdict}`)).toEqual([
+      "fixture.classify:1:pass",
+    ]);
+    expect(record.attempts[0]?.accepted).toBe(true);
 
     // And the step's one effect landed in the store the executor was built on.
     expect(artifacts.read(ARTIFACT_TABLE, "ship the cut")?.row).toEqual({
@@ -214,8 +218,12 @@ describe("the graphs, and one run of one", () => {
     expect(lines[0]).not.toHaveProperty("trace");
     expect(lines[0]).not.toHaveProperty("attempts");
     expect(lines.slice(1).map((line) => line.event ?? line.kind)).toEqual([
+      // Every attempt first, then every event, so the costly half of a run is
+      // at the top of the document rather than scattered through it.
+      "leaf-attempt",
       "run-started",
       "node-entered",
+      "leaf-attempt",
       "node-left",
       "node-entered",
       "node-left",
@@ -295,8 +303,11 @@ const twoRows = (options: {
   let minted = 0;
 
   const rows: PipelineRow[] = [
+    // Both subjects carry `alph`, because the leaf's anchor check is
+    // mechanical and runs for real: one script answers two rows only when its
+    // anchor is a verbatim substring of both.
     { id: "a", dependencies: [], description: "the first row", workflowId: "gate", input: { subject: "alpha" } },
-    { id: "b", dependencies: ["a"], description: "the row that waits", workflowId: "gate", input: { subject: "bravo" } },
+    { id: "b", dependencies: ["a"], description: "the row that waits", workflowId: "gate", input: { subject: "alpha bravo" } },
   ];
 
   const pipeline: PipelineRegistration = {
@@ -322,8 +333,9 @@ const twoRows = (options: {
         id: "gate",
         title: "A leaf, a person, and a row",
         input: GateInput,
-        journal: gateJournal(options.decision ?? "ready", "alph"),
-        graph: (ctx) => gateGraph(ctx.journal, ctx.observe as never),
+        journal: memoryJournal(),
+        graph: (ctx) =>
+          gateGraph(ctx.journal, gateModels(options.decision ?? "ready", "alph"), ctx.observe as never),
         seed: gateSeed,
         executor: () => effects.execute,
       }),

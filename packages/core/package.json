@@ -20,7 +20,8 @@
     "./vcs/testing": "./src/vcs/testing.ts",
     "./vcs/structural/parser": "./src/vcs/structural/parser.ts",
     "./harness": "./src/harness/index.ts",
-    "./harness/stub-journal": "./src/harness/stub-journal.ts",
+    "./harness/scripted-binding": "./src/harness/scripted-binding.ts",
+    "./harness/no-replay": "./src/harness/no-replay.ts",
     "./bindings/mastra": "./src/bindings/mastra.ts",
     "./bindings/claude-code": "./src/bindings/claude-code.ts",
     "./checks/*": "./src/checks/*.ts"

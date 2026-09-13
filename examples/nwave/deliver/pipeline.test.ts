@@ -12,8 +12,9 @@
  * writes: rows are data, `readiness` is the RED precondition, `record` appends
  * the `step_runs` row. Nothing in this file calls `run()`.
  *
- * Every leaf is a journal hit, so nothing reaches a model. The journal is one
- * SHARED journal keyed by content, which is the point of one of the
+ * Every leaf is scripted at the BINDING, so nothing reaches a model. The
+ * journal is one SHARED journal keyed by content, which is the point of one of
+ * the
  * assertions: the row id is in every leaf's input, so two rows cannot collide
  * on a key and one row's decision cannot replay as another's.
  *
@@ -28,7 +29,8 @@ import { dirname, join } from "node:path";
 import { openArtifacts, type ArtifactStore } from "@des/core/artifacts";
 import { memoryEffects } from "@des/core/effects";
 import { memoryJournal } from "@des/core/journal";
-import { journalKey, type StepResult } from "@des/core/step";
+import { journalKey, type ModelBinding } from "@des/core/step";
+import { scriptedBinding, type ScriptedAnswer } from "@des/core/harness/scripted-binding";
 import { resume, run } from "@des/core/workflow";
 import { openVcs, type Vcs } from "@des/core/vcs";
 import { vcsExecutor } from "@des/core/vcs/executor";
@@ -55,6 +57,7 @@ import {
   knownRedTests,
   readRoadmap,
   recordStepRun,
+  ROADMAP_STEPS_TABLE,
   runsOf,
   statusOf,
   stepUnderDelivery,
@@ -153,32 +156,58 @@ const roadmapFor = (symbolId: (path: string, name: string) => string): Roadmap =
   ],
 });
 
-/** A model binding that fails the test if anything reaches a model. */
-const forbidden = (id: string) => ({
-  id,
-  generate: async <T,>(): Promise<T> => {
-    throw new Error(`model "${id}" was called; this suite spends zero model calls`);
-  },
+/**
+ * The roadmap as ROADMAP itself proposes it: no acceptance facts anywhere.
+ *
+ * `roadmap.acceptance-facts-are-distills` is a mechanical check on
+ * `decompose`, so a proposal carrying obligations, an oracle or a support list
+ * is refused before a validator is spent — a decomposer cannot return one. The
+ * fixture above is the roadmap AFTER DISTILL; this is what the graph is given.
+ */
+const asProposed = (roadmap: Roadmap): Roadmap => ({
+  ...roadmap,
+  steps: roadmap.steps.map((step) => {
+    const { oracle: _oracle, ...rest } = step;
+    return { ...rest, acceptance: [], supports: [] };
+  }),
 });
 
 /**
+ * DISTILL's own write, which this file skips the wave for.
+ *
+ * `persist` in the obligations graph upserts each `roadmap_steps` row with its
+ * acceptance facts filled in; the rows are what DELIVER reads, so they have to
+ * carry them. Written here through the same store and the same table.
+ */
+const enrichWithDistill = (artifacts: ArtifactStore, roadmap: Roadmap): void => {
+  for (const step of roadmap.steps) {
+    const current = artifacts.read(ROADMAP_STEPS_TABLE, step.id);
+    artifacts.upsert({
+      table: ROADMAP_STEPS_TABLE,
+      id: step.id,
+      expectedVersion: current?.version ?? 0,
+      row: step,
+    });
+  }
+};
+
+/**
  * Persist the roadmap the way it is actually produced: through the roadmap
- * workflow's own graph, with `decompose` and `validate-slices` answered from a
- * journal, a person approving, and `persist` writing the rows.
+ * workflow's own graph, with `decompose` and `validate-slices` answered by a
+ * scripted binding, a person approving, and `persist` writing the rows.
  */
 const persistRoadmap = async (roadmap: Roadmap, effects: ReturnType<typeof memoryEffects>) => {
-  const defs = roadmapDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
-  const seeded = {
-    "roadmap.decompose": {
-      decision: "ok",
-      output: { decision: "proposed", payload: { roadmap, rationale: "two slices" } },
-    },
-    "roadmap.validate-slices": {
-      decision: "ok",
-      output: {
+  const binding = scriptedBinding({
+    "roadmap.decompose": [
+      { decision: "proposed", payload: { roadmap: asProposed(roadmap), rationale: "two slices" } },
+    ],
+    "roadmap.validate-slices": [
+      {
         decision: "is-slice",
         payload: {
-          verdicts: roadmap.steps.map((s) => ({
+          // Each verdict quotes THAT step's observation, because
+          // `roadmap.slice-anchor-verbatim` is mechanical and runs for real.
+          verdicts: asProposed(roadmap).steps.map((s) => ({
             stepId: s.id,
             verdict: "is-slice",
             anchor: s.observation,
@@ -186,15 +215,12 @@ const persistRoadmap = async (roadmap: Roadmap, effects: ReturnType<typeof memor
           rationale: "both are production-drivable",
         },
       },
-    },
-  } as Record<string, StepResult<unknown>>;
+    ],
+  });
 
   const wf = roadmapGraph(
-    {
-      get: async <O,>(key: string) => seeded[key.split("@")[0] ?? key] as O | undefined,
-      put: async () => {},
-    },
-    defs,
+    memoryJournal(),
+    roadmapDefs({ worker: binding, validator: binding, decomposeWith: binding }),
   );
   const parked = await run<RoadmapState>(wf, seedRoadmap(REQUEST, DESIGN), effects.execute);
   if (parked.kind !== "suspended") throw new Error("expected the roadmap to park for a person");
@@ -225,10 +251,12 @@ const recordRedOracle = (artifacts: ArtifactStore, stepId: string): void =>
 /* ---------------------------------------------------------------- the leaves */
 
 /**
- * The journal, keyed by CONTENT, exactly as production is. Every leaf a happy
- * run reaches is seeded per row, which means computing the row's own leaf
- * input and hashing it — and that is the claim one of the tests makes: the row
- * id is in the input, so two rows never share a key.
+ * What each leaf a happy run reaches answers, per row.
+ *
+ * Scripted at the BINDING rather than seeded into the journal: the journal is
+ * production replay and nothing here writes to it. Which row a call is about
+ * is on the PROMPT — `Step 01-01` — exactly where the model this stands in for
+ * would read it.
  */
 const HAPPY: Partial<Record<LeafId, string>> = {
   implement: "written",
@@ -248,40 +276,24 @@ const payloadFor = (leaf: LeafId, rowId: string, symbolId: string, body: string)
   leaf,
 });
 
-/**
- * Which leaves see `wrote` in their input, and which do not.
- *
- * The leaf input is `{ step, evidence, impacted, wrote }` and `implement`
- * CARRIES the symbol it wrote into state, so every leaf after it reads one
- * more field than every leaf before it — and the journal key is a hash of the
- * input, so the two halves key differently.
- */
-const BEFORE_THE_WRITE: readonly LeafId[] = ["implement"];
+/** What each row writes: the symbol it rewrites, and the body it rewrites it to. */
+type RowScript = { symbolId: string; body: string };
 
-/** Seed one row's leaves, at the exact keys `runStep` will compute. */
-const seedRow = (
-  rows: Record<string, StepResult<unknown>>,
-  defs: ReturnType<typeof deliverDefs>,
-  rowId: string,
-  step: ReturnType<typeof stepUnderDelivery>,
-  impacted: string[],
-  symbolId: string,
-  body: string,
-): void => {
-  for (const [leaf, decision] of Object.entries(HAPPY) as [LeafId, string][]) {
-    const wrote = BEFORE_THE_WRITE.includes(leaf) ? undefined : symbolId;
-    const input = LeafInput.parse({
-      step,
-      evidence: "",
-      impacted,
-      ...(wrote === undefined ? {} : { wrote }),
-    });
-    rows[journalKey(defs[leaf], input)] = {
-      decision: "ok",
-      output: { decision, payload: payloadFor(leaf, rowId, symbolId, body) },
-    } as StepResult<unknown>;
-  }
-};
+/**
+ * Every DELIVER leaf a happy run reaches, for however many rows the caller
+ * scripted. One binding serves both slots: it dispatches on the call's role,
+ * so the worker answers and the validator passes.
+ */
+const scriptedFor = (rows: Record<string, RowScript>): ModelBinding =>
+  scriptedBinding(({ step, prompt }): ScriptedAnswer[] | undefined => {
+    const leaf = step.id.slice("deliver.".length) as LeafId;
+    const decision = HAPPY[leaf];
+    if (decision === undefined) return undefined;
+    const rowId = Object.keys(rows).find((id) => prompt.includes(id)) ?? "";
+    const row = rows[rowId];
+    if (row === undefined) return undefined;
+    return [{ decision, payload: payloadFor(leaf, rowId, row.symbolId, row.body) }];
+  });
 
 /* -------------------------------------------------------------- the server */
 
@@ -375,24 +387,18 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     // 1. The roadmap is persisted the way it is produced: through the roadmap
     //    workflow's own `persist`, into the artifact store.
     await persistRoadmap(roadmapFor(project.symbolId), memoryEffects({ store: artifacts }));
+    enrichWithDistill(artifacts, roadmapFor(project.symbolId));
     expect(readRoadmap(artifacts, REQUEST).map((r) => r.id)).toEqual(["01-01", "01-02"]);
 
-    // 2. Every leaf of every row, seeded at the key `runStep` will compute.
-    const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
-    const seeded: Record<string, StepResult<unknown>> = {};
+    // 2. Every leaf of every row, scripted at the binding.
     const bodies: Record<string, string> = { "01-01": IMPLEMENTED.alpha, "01-02": IMPLEMENTED.bravo };
-    for (const row of readRoadmap(artifacts, REQUEST)) {
-      const target = row.predictedTouches[0] as string;
-      seedRow(
-        seeded,
-        defs,
+    const scripts: Record<string, RowScript> = Object.fromEntries(
+      readRoadmap(artifacts, REQUEST).map((row) => [
         row.id,
-        stepUnderDelivery(row, DESIGN),
-        project.vcs.impact.impactedTests([target]).map((t) => t.id),
-        target,
-        bodies[row.id] as string,
-      );
-    }
+        { symbolId: row.predictedTouches[0] as string, body: bodies[row.id] as string },
+      ]),
+    );
+    const defs = deliverDefs({ worker: scriptedFor(scripts), validator: scriptedFor(scripts) });
 
     // 3. DISTILL measured both oracles red, which is what makes the rows
     //    deliverable at all.
@@ -402,7 +408,7 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     const registry = openServerRegistry({
       vcs: project.vcs,
       artifacts,
-      journal: memoryJournal(seeded),
+      journal: memoryJournal(),
       defs,
       concurrency: 2,
     });
@@ -470,28 +476,24 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     const project = openProject();
     const artifacts = openArtifacts();
     await persistRoadmap(roadmapFor(project.symbolId), memoryEffects({ store: artifacts }));
+    enrichWithDistill(artifacts, roadmapFor(project.symbolId));
 
-    const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
-    const seeded: Record<string, StepResult<unknown>> = {};
     const [row] = readRoadmap(artifacts, REQUEST);
     if (row === undefined) throw new Error("the fixture has two rows");
-    const target = row.predictedTouches[0] as string;
     // A body that compiles and does not make the acceptance test pass.
-    seedRow(
-      seeded,
-      defs,
-      row.id,
-      stepUnderDelivery(row, DESIGN),
-      project.vcs.impact.impactedTests([target]).map((t) => t.id),
-      target,
-      source("alpha", 5).trimEnd(),
-    );
+    const scripts: Record<string, RowScript> = {
+      [row.id]: {
+        symbolId: row.predictedTouches[0] as string,
+        body: source("alpha", 5).trimEnd(),
+      },
+    };
+    const defs = deliverDefs({ worker: scriptedFor(scripts), validator: scriptedFor(scripts) });
 
     recordRedOracle(artifacts, "01-01");
     const registry = openServerRegistry({
       vcs: project.vcs,
       artifacts,
-      journal: memoryJournal(seeded),
+      journal: memoryJournal(),
       defs,
     });
     const tree = await deliverAll(registry);
@@ -520,7 +522,9 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
 
   test("two rows never share a journal key, because the row id is in every leaf's input", () => {
     const project = openProject();
-    const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
+    // Nothing runs here: the claim is about the key derivation, which is a
+    // pure function of the def and the input.
+    const defs = deliverDefs({ worker: scriptedFor({}), validator: scriptedFor({}) });
     const roadmap = roadmapFor(project.symbolId);
     const [a, b] = roadmap.steps;
     if (a === undefined || b === undefined) throw new Error("the fixture has two steps");
@@ -574,12 +578,15 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     const project = openProject();
     const artifacts = openArtifacts();
     await persistRoadmap(roadmapFor(project.symbolId), memoryEffects({ store: artifacts }));
+    enrichWithDistill(artifacts, roadmapFor(project.symbolId));
 
-    const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
+    // Nothing is scripted, because nothing should run: an unscripted leaf
+    // would refuse by name, and reaching one at all would be the failure.
+    const defs = deliverDefs({ worker: scriptedFor({}), validator: scriptedFor({}) });
     const registry = openServerRegistry({
       vcs: project.vcs,
       artifacts,
-      journal: memoryJournal({}),
+      journal: memoryJournal(),
       defs,
     });
     const tree = await deliverAll(registry);
@@ -625,29 +632,25 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     const project = openProject();
     const artifacts = openArtifacts();
     await persistRoadmap(roadmapFor(project.symbolId), memoryEffects({ store: artifacts }));
+    enrichWithDistill(artifacts, roadmapFor(project.symbolId));
     recordRedOracle(artifacts, "01-01");
 
-    const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
     const [row] = readRoadmap(artifacts, REQUEST);
     if (row === undefined) throw new Error("the fixture has two rows");
-    const target = row.predictedTouches[0] as string;
     const oracleSymbol = project.vcs.registry
       .symbolsOf(project.vcs.registry.file("src/alpha.test.ts")?.id ?? "")
       .find((s) => s.kind === "test");
     // The crafter's own effect shape, pointed at the oracle.
-    const seeded: Record<string, StepResult<unknown>> = {};
-    seedRow(
-      seeded,
-      defs,
-      row.id,
-      stepUnderDelivery(row, DESIGN),
-      project.vcs.impact.impactedTests([target]).map((t) => t.id),
-      oracleSymbol?.id ?? "",
-      'test("alpha returns 42", () => {\n  expect(1).toBe(1);\n});',
-    );
+    const scripts: Record<string, RowScript> = {
+      [row.id]: {
+        symbolId: oracleSymbol?.id ?? "",
+        body: 'test("alpha returns 42", () => {\n  expect(1).toBe(1);\n});',
+      },
+    };
+    const defs = deliverDefs({ worker: scriptedFor(scripts), validator: scriptedFor(scripts) });
 
     await deliverAll(
-      openServerRegistry({ vcs: project.vcs, artifacts, journal: memoryJournal(seeded), defs }),
+      openServerRegistry({ vcs: project.vcs, artifacts, journal: memoryJournal(), defs }),
     );
 
     // The write never landed, and the oracle is byte-identical.
@@ -690,28 +693,23 @@ describe("a declared resource serializes two rows", () => {
     const project = openProject();
     const artifacts = openArtifacts();
     await persistRoadmap(independent(project.symbolId), memoryEffects({ store: artifacts }));
+    enrichWithDistill(artifacts, independent(project.symbolId));
 
-    const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
-    const seeded: Record<string, StepResult<unknown>> = {};
     const bodies: Record<string, string> = { "01-01": IMPLEMENTED.alpha, "01-02": IMPLEMENTED.bravo };
+    const scripts: Record<string, RowScript> = {};
     for (const row of readRoadmap(artifacts, REQUEST)) {
-      const target = row.predictedTouches[0] as string;
-      seedRow(
-        seeded,
-        defs,
-        row.id,
-        stepUnderDelivery(row, DESIGN),
-        project.vcs.impact.impactedTests([target]).map((t) => t.id),
-        target,
-        bodies[row.id] as string,
-      );
+      scripts[row.id] = {
+        symbolId: row.predictedTouches[0] as string,
+        body: bodies[row.id] as string,
+      };
       recordRedOracle(artifacts, row.id);
     }
+    const defs = deliverDefs({ worker: scriptedFor(scripts), validator: scriptedFor(scripts) });
 
     const registry = openServerRegistry({
       vcs: project.vcs,
       artifacts,
-      journal: memoryJournal(seeded),
+      journal: memoryJournal(),
       defs,
       commands,
       concurrency: 2,

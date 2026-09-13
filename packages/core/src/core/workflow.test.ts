@@ -9,7 +9,8 @@ import { describe, expect, test } from "bun:test";
 import { createWorkflowStateReader } from "@mastra/core/workflows";
 import { z } from "zod";
 import { visitCount } from "../harness/matchers.ts";
-import { exhausted, ok, stubJournal } from "../harness/stub-journal.ts";
+import { noReplayJournal } from "../harness/no-replay.ts";
+import { says, scriptedBinding, throws } from "../harness/scripted-binding.ts";
 import { compileWorkflow, workflowRuntime } from "./compile.ts";
 import type { Effect, EffectResult } from "./effects.ts";
 import { stepOutput, type ModelBinding, type StepDef, type StepResult } from "./step.ts";
@@ -513,19 +514,27 @@ describe("leaf", () => {
     },
   };
 
-  const def: StepDef<{ text: string }, Answer> = {
+  const ANSWER: Answer = { decision: "yes", payload: { anchor: "quoted" } };
+  const REFUSED = "the scripted worker had nothing to say";
+
+  /** The leaf's step, bound to whatever the test scripted. */
+  const def = (model: ModelBinding): StepDef<{ text: string }, Answer> => ({
     id: "leaf.answer",
     version: 1,
     input: Text,
     output: Answer,
     requirements: [],
-    worker: { model: forbidden, system: "answer", prompt: (i) => i.text },
-    validator: { model: forbidden },
+    worker: { model, system: "answer", prompt: (i) => i.text },
+    validator: { model },
     maxAttempts: 1,
-  };
+  });
 
-  const ANSWER: Answer = { decision: "yes", payload: { anchor: "quoted" } };
-  const TRAIL = [{ model: "fake", violations: [{ requirementId: "r", evidence: "e" }] }];
+  /**
+   * The trail one refused attempt produces. `runStep` builds it — the leaf
+   * constructor only has to carry it — so it is read back rather than
+   * supplied, which is what makes the assertion about the constructor.
+   */
+  const TRAIL = [{ model: "scripted", violations: [], error: `Error: ${REFUSED}` }];
 
   /** Run one leaf node in isolation and report what it produced. */
   const fire = async (node: Node<LeafState>, state: LeafState) => {
@@ -534,13 +543,18 @@ describe("leaf", () => {
     return { ...out, absorb: node.absorb, next: node.next };
   };
 
-  const journalWith = (result: StepResult<Answer>) =>
-    stubJournal({ "leaf.answer": result as StepResult<unknown> });
+  /** A leaf spec over one scripted answer. The journal never replays here. */
+  const answering = (answers: ReturnType<typeof says>) => ({
+    def: def(scriptedBinding({ "leaf.answer": answers })),
+    journal: noReplayJournal(),
+  });
+
+  const decides = () => answering(says("yes", { anchor: "quoted" }));
+  const refuses = () => answering(throws(REFUSED));
 
   test("exhaustion emits the trail line even when the leaf declares no effects", async () => {
     const node = leaf<LeafState, { text: string }, Answer>({
-      def,
-      journal: journalWith(exhausted(TRAIL)),
+      ...refuses(),
       input: (s) => ({ text: s.text }),
       absorb: (s) => s,
       // no `effects` hook at all: the constructor still owes the trail
@@ -556,8 +570,7 @@ describe("leaf", () => {
   test("exhaustion adds the trail line to whatever the leaf's own effects returned", async () => {
     const node = leaf<LeafState, { text: string }, Answer>({
       id: "short",
-      def,
-      journal: journalWith(exhausted(TRAIL)),
+      ...refuses(),
       input: (s) => ({ text: s.text }),
       absorb: (s) => s,
       effects: () => [{ type: "append-trail", line: "mine" }],
@@ -573,8 +586,7 @@ describe("leaf", () => {
 
   test("a decided leaf emits only the effects it asked for", async () => {
     const node = leaf<LeafState, { text: string }, Answer>({
-      def,
-      journal: journalWith(ok(ANSWER)),
+      ...decides(),
       input: (s) => ({ text: s.text }),
       absorb: (s) => s,
       effects: () => [{ type: "append-trail", line: "mine" }],
@@ -587,10 +599,9 @@ describe("leaf", () => {
 
   test("absorb receives the exact StepResult, both ways round", async () => {
     const seen: StepResult<Answer>[] = [];
-    const build = (result: StepResult<Answer>) =>
+    const build = (spec: ReturnType<typeof decides>) =>
       leaf<LeafState, { text: string }, Answer>({
-        def,
-        journal: journalWith(result),
+        ...spec,
         input: (s) => ({ text: s.text }),
         absorb: (s, r) => {
           seen.push(r);
@@ -601,8 +612,8 @@ describe("leaf", () => {
         next: "after",
       });
 
-    const decided = await fire(build(ok(ANSWER)), { text: "t" });
-    const refused = await fire(build(exhausted(TRAIL)), { text: "t" });
+    const decided = await fire(build(decides()), { text: "t" });
+    const refused = await fire(build(refuses()), { text: "t" });
 
     expect(seen).toEqual([
       { decision: "ok", output: ANSWER },
@@ -614,8 +625,7 @@ describe("leaf", () => {
 
   test("absorbEffects folds the executor's results, and defaults to identity", async () => {
     const spec = {
-      def,
-      journal: journalWith(ok(ANSWER)),
+      ...decides(),
       input: (s: LeafState) => ({ text: s.text }),
       absorb: (s: LeafState) => s,
       effects: () => [{ type: "append-trail" as const, line: "mine" }],
@@ -639,10 +649,18 @@ describe("leaf", () => {
   });
 
   test("the leaf is a step node, and the input projection is what the step saw", async () => {
-    const journal = journalWith(ok(ANSWER));
+    const prompts: string[] = [];
+    const watching: ModelBinding = {
+      id: "watching",
+      generate: async <T,>(req: { prompt: string }): Promise<T> => {
+        prompts.push(req.prompt);
+        // Both halves: the worker's answer, then the validator's verdict.
+        return (req.prompt === "QUIET" ? ANSWER : { verdict: "pass", violations: [] }) as T;
+      },
+    };
     const node = leaf<LeafState, { text: string }, Answer>({
-      def,
-      journal,
+      def: def(watching),
+      journal: noReplayJournal(),
       input: (s) => ({ text: s.text.toUpperCase() }),
       absorb: (s) => s,
       next: "after",
@@ -651,8 +669,8 @@ describe("leaf", () => {
     expect(node.type).toBe("step");
     expect(node.type === "step" && node.next).toBe("after");
     await fire(node, { text: "quiet" });
-    // The journal key is derived from the projected input, so a hit proves the
-    // projection ran: the stub throws on a miss.
-    expect(journal.reads).toEqual(["leaf.answer"]);
+    // The step's prompt is built from the PROJECTED input, so what the worker
+    // was asked is what the projection produced.
+    expect(prompts[0]).toBe("QUIET");
   });
 });

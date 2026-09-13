@@ -9,7 +9,8 @@
  *
  * Between them they cover every node type the projection has a shape for, and
  * `gate` has a leaf in it so the attempt seam is exercised by a real `runStep`
- * — against a stub journal, so no model is called and none could be.
+ * — against a scripted binding, so the output schema, the mechanical check and
+ * the validator all run and no model is called.
  */
 
 import { z } from "zod";
@@ -17,7 +18,7 @@ import { stepOutput, type ModelBinding, type StepDef } from "@des/core/step";
 import { verbatimRequirement } from "@des/core/checks/verbatim";
 import { branch, leaf, loop, suspend, type LoopExit, type Workflow } from "@des/core/workflow";
 import type { Journal } from "@des/core/journal";
-import { ok, stubJournal } from "@des/core/harness/stub-journal";
+import { scriptedBinding } from "@des/core/harness/scripted-binding";
 
 /** A binding that fails the test if anything reaches a model. */
 export const forbidden = (id: string): ModelBinding => ({
@@ -38,8 +39,11 @@ export const ClassifyOutput = stepOutput(CLASSIFY_DECISIONS, {
 });
 export type ClassifyOutput = z.infer<typeof ClassifyOutput>;
 
+/** What the fixture's one leaf is bound to. The server's own `Models`. */
+export type GateModels = { worker: ModelBinding; validator: ModelBinding };
+
 /** The one leaf: a worker, a mandatory validator, one mechanical check. */
-export const classifyDef: StepDef<ClassifyInput, ClassifyOutput> = {
+export const classifyDef = (models: GateModels): StepDef<ClassifyInput, ClassifyOutput> => ({
   id: "fixture.classify",
   version: 1,
   input: ClassifyInput,
@@ -55,13 +59,13 @@ export const classifyDef: StepDef<ClassifyInput, ClassifyOutput> = {
     }),
   ],
   worker: {
-    model: forbidden("worker"),
+    model: models.worker,
     system: "Classify the subject.",
     prompt: (input) => input.subject,
   },
-  validator: { model: forbidden("validator") },
+  validator: { model: models.validator },
   maxAttempts: 2,
-};
+});
 
 /** What the `gate` graph carries. */
 export type GateState = {
@@ -93,11 +97,15 @@ export const ARTIFACT_TABLE = "gate_rows";
  * the person's answer exactly as it routed the model's; `persist` emits the
  * one effect, and the branch after it reads the outcome the executor returned.
  */
-export const gateGraph = (journal: Journal, observe?: (attempt: never) => void): Workflow<GateState> => ({
+export const gateGraph = (
+  journal: Journal,
+  models: GateModels,
+  observe?: (attempt: never) => void,
+): Workflow<GateState> => ({
   start: "classify",
   nodes: {
     classify: leaf<GateState, ClassifyInput, ClassifyOutput>({
-      def: classifyDef,
+      def: classifyDef(models),
       journal,
       input: (s) => ({ subject: s.subject }),
       absorb: (s, r) =>
@@ -149,9 +157,19 @@ export const gateGraph = (journal: Journal, observe?: (attempt: never) => void):
   },
 });
 
-/** The journal the gate graph's one leaf answers from. */
-export const gateJournal = (decision: ClassifyDecision, anchor: string): Journal =>
-  stubJournal({ "fixture.classify": ok({ decision, payload: { anchor } }) });
+/**
+ * The bindings the gate graph's one leaf answers from.
+ *
+ * Both slots are the same scripted binding: it dispatches on the call's role,
+ * so the worker answers from the script and the validator passes. The anchor
+ * must be a verbatim substring of the subject, because the leaf's own
+ * mechanical check runs for real now — which is the point of stubbing at the
+ * binding rather than at the journal.
+ */
+export const gateModels = (decision: ClassifyDecision, anchor: string): GateModels => {
+  const binding = scriptedBinding({ "fixture.classify": [{ decision, payload: { anchor } }] });
+  return { worker: binding, validator: binding };
+};
 
 /* ------------------------------------------------------------- the loop */
 

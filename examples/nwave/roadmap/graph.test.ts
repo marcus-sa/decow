@@ -30,12 +30,12 @@
 
 import { describe, expect, test } from "bun:test";
 import { memoryEffects, type Effect, type EffectResult } from "@des/core/effects";
-import { stepIdFromKey, type Journal } from "@des/core/journal";
-import type { StepResult } from "@des/core/step";
+import type { ModelBinding } from "@des/core/step";
 import { resume, run, type EffectExecutor } from "@des/core/workflow";
 import { enumeratePaths, graphDefects, inspectGraph, type Choose } from "@des/core/harness";
 import { describeTrace, endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "@des/core/harness";
-import { exhausted, ok, stubJournal } from "@des/core/harness/stub-journal";
+import { noReplayJournal } from "@des/core/harness/no-replay";
+import { scriptedBinding, throws, type ScriptedAnswer } from "@des/core/harness/scripted-binding";
 import { measureDisjointness } from "./disjointness.ts";
 import { shapeDefects } from "./shape.ts";
 import {
@@ -46,6 +46,7 @@ import {
   MALFORMED,
   REQUEST,
   UNRESOLVABLE,
+  UNSHAPED,
 } from "./fixture.ts";
 import {
   BLOCK_REASONS,
@@ -68,19 +69,13 @@ import {
   type SliceVerdict,
 } from "./steps.ts";
 
-/** A model binding that fails the test if anything reaches a model. */
-const forbidden = (id: string) => ({
-  id,
-  generate: async <T,>(): Promise<T> => {
-    throw new Error(`model "${id}" was called; this suite must spend zero model calls`);
-  },
-});
+/** The two leaf step ids, which are what a script is keyed by. */
+const DECOMPOSE = "roadmap.decompose";
+const SLICES = "roadmap.validate-slices";
 
-const defs = roadmapDefs({
-  worker: forbidden("worker"),
-  validator: forbidden("validator"),
-  decomposeWith: forbidden("frontier"),
-});
+/** The defs over one scripted binding, which serves all three slots. */
+const defsFor = (binding: ModelBinding) =>
+  roadmapDefs({ worker: binding, validator: binding, decomposeWith: binding });
 
 /** The sentinel for "this leaf's validator was never satisfied". */
 const EXHAUSTED = "$exhausted";
@@ -90,7 +85,12 @@ const PROPOSALS = {
   "known-good": KNOWN_GOOD,
   disjoint: DISJOINT,
   unresolvable: UNRESOLVABLE,
+  // Every defect at once, including three the LEAF's own checks carry — so
+  // this one never reaches the gate, and the walk covers that route too.
   malformed: MALFORMED,
+  // The defects the leaf cannot see, and only those: a dangling dependency
+  // and a cycle. This is what makes `shape.route`'s `invalid` edge reachable.
+  unshaped: UNSHAPED,
 } as const;
 type ProposalName = keyof typeof PROPOSALS;
 
@@ -101,42 +101,41 @@ type Script = {
   slices?: SliceVerdict | typeof EXHAUSTED;
 };
 
-const decomposeResult = (answer: NonNullable<Script["decompose"]>): StepResult<unknown> => {
-  if (answer === EXHAUSTED) return exhausted();
+const decomposeAnswers = (answer: NonNullable<Script["decompose"]>): ScriptedAnswer[] => {
+  if (answer === EXHAUSTED) return throws("the decomposer had nothing to say");
   if (answer === "cannot-decompose") {
-    return ok({
-      decision: "cannot-decompose",
-      payload: { roadmap: { request: REQUEST, steps: [] }, rationale: "no authority for it" },
-    });
+    return [
+      {
+        decision: "cannot-decompose",
+        payload: { roadmap: { request: REQUEST, steps: [] }, rationale: "no authority for it" },
+      },
+    ];
   }
-  return ok({
-    decision: "proposed",
-    payload: { roadmap: PROPOSALS[answer], rationale: "three slices" },
-  });
+  return [{ decision: "proposed", payload: { roadmap: PROPOSALS[answer], rationale: "three slices" } }];
 };
 
 /** Per-step verdict rows that satisfy the leaf's own mechanical checks. */
 const verdictsFor = (roadmap: Roadmap, verdict: SliceVerdict) =>
   roadmap.steps.map((step) => ({ stepId: step.id, verdict, anchor: step.observation }));
 
-const slicesResult = (
+const slicesAnswers = (
   answer: NonNullable<Script["slices"]>,
   roadmap: Roadmap,
-): StepResult<unknown> =>
+): ScriptedAnswer[] =>
   answer === EXHAUSTED
-    ? exhausted()
-    : ok({ decision: answer, payload: { verdicts: verdictsFor(roadmap, answer), rationale: "judged" } });
+    ? throws("the judge had nothing to say")
+    : [{ decision: answer, payload: { verdicts: verdictsFor(roadmap, answer), rationale: "judged" } }];
 
-/** A journal seeded per leaf. An unscripted leaf throws rather than reaching a model. */
-const journalFor = (script: Script) => {
+/** One binding per script. An unscripted leaf refuses by name on every attempt. */
+const bindingFor = (script: Script): ModelBinding => {
   const proposal =
     script.decompose === undefined || script.decompose === EXHAUSTED || script.decompose === "cannot-decompose"
       ? KNOWN_GOOD
       : PROPOSALS[script.decompose];
-  return stubJournal({
-    ...(script.decompose === undefined ? {} : { "roadmap.decompose": decomposeResult(script.decompose) }),
-    ...(script.slices === undefined ? {} : { "roadmap.validate-slices": slicesResult(script.slices, proposal) }),
-  } as Record<string, StepResult<unknown>>);
+  return scriptedBinding({
+    ...(script.decompose === undefined ? {} : { [DECOMPOSE]: decomposeAnswers(script.decompose) }),
+    ...(script.slices === undefined ? {} : { [SLICES]: slicesAnswers(script.slices, proposal) }),
+  });
 };
 
 /** The happy script: a good proposal, every step a slice. */
@@ -147,7 +146,7 @@ const landsCleanly: EffectExecutor = async (effects) =>
   effects.map((effect) => ({ effect, outcome: "committed" as const, version: 1 }));
 
 const start = (script: Script, execute: EffectExecutor = landsCleanly) =>
-  run<State>(roadmapGraph(journalFor(script), defs), seed(REQUEST, DESIGN_SOURCE), execute);
+  run<State>(roadmapGraph(noReplayJournal(), defsFor(bindingFor(script))), seed(REQUEST, DESIGN_SOURCE), execute);
 
 /** One fixture step, typed. `steps[i]` is `| undefined` under noUncheckedIndexedAccess. */
 const stepAt = (roadmap: Roadmap, i: number): RoadmapStep => {
@@ -167,7 +166,7 @@ const defectsOf = (trail: readonly unknown[]) =>
 
 describe("roadmap graph", () => {
   test("the graph is structurally well-formed", () => {
-    expect(graphDefects(roadmapGraph(journalFor(HAPPY), defs))).toEqual([]);
+    expect(graphDefects(roadmapGraph(noReplayJournal(), defsFor(bindingFor(HAPPY))))).toEqual([]);
   });
 
   test("a good proposal reaches a person, who is the only route to persist", async () => {
@@ -192,12 +191,28 @@ describe("roadmap graph", () => {
     expect(parked.kind === "suspended" && edgesOf(parked.trail).addedEdges).toEqual([]);
   });
 
-  test("an invalid shape iterates rather than blocking, with the defects named", async () => {
+  test("a defect the leaf's own check catches never reaches the gate", async () => {
+    // `decompose` carries `empty-authority`, `observation-too-short` and
+    // `duplicate-id` as mechanical checks. A proposal breaking one is refused
+    // before a validator is spent, and a worker that keeps proposing it
+    // exhausts its budget at the LEAF — which is a different block from the
+    // gate's, and one a seeded journal could not tell apart because it never
+    // ran the check.
     const outcome = await start({ decompose: "malformed", slices: "is-slice" });
 
     expect(outcome.kind).toBe("suspended");
     if (outcome.kind !== "suspended") return;
-    // Two attempts at the same malformed proposal is the bound, and the person
+    expect(outcome.reason).toBe("validator-exhausted");
+    expect(visitCount(outcome.trace, "decompose")).toBe(1);
+    expect(visited(outcome.trace, "validate-shape")).toBe(false);
+  });
+
+  test("an invalid shape iterates rather than blocking, with the defects named", async () => {
+    const outcome = await start({ decompose: "unshaped", slices: "is-slice" });
+
+    expect(outcome.kind).toBe("suspended");
+    if (outcome.kind !== "suspended") return;
+    // Two attempts at the same unshaped proposal is the bound, and the person
     // is told which budget was spent.
     expect(outcome.reason).toBe("author-loop-exhausted");
     expect(visitCount(outcome.trace, "decompose")).toBe(MAX_AUTHOR_ATTEMPTS);
@@ -207,12 +222,11 @@ describe("roadmap graph", () => {
 
     // The person reads the same named defects `decompose` was re-prompted
     // with, which is the whole reason they are rows rather than a boolean.
+    // The two the gate owns alone, and only those: the other three never get
+    // this far, because the leaf's own checks refuse a proposal carrying one.
     expect([...new Set(defectsOf(outcome.trail).map((d) => d.kind))].sort()).toEqual([
       "cycle",
       "dangling-dependency",
-      "duplicate-id",
-      "empty-authority",
-      "observation-too-short",
     ]);
   });
 
@@ -278,7 +292,7 @@ describe("roadmap graph, exhaustively", () => {
     const terminals = new Set<string>();
 
     const paths = await enumeratePaths(async (choose) => {
-      const wf = roadmapGraph(chooseJournal(choose), defs);
+      const wf = roadmapGraph(noReplayJournal(), defsFor(chooseBinding(choose)));
       const execute = chooseExecutor(choose);
       let outcome = await run<State>(wf, seed(REQUEST, DESIGN_SOURCE), execute);
 
@@ -301,11 +315,18 @@ describe("roadmap graph, exhaustively", () => {
     });
 
     // The bound is what makes this a number rather than an infinity.
-    expect(paths).toHaveLength(169);
+    //
+    // It was 169 when every leaf answered from a seeded journal, which skipped
+    // the six mechanical checks `decompose` carries and the three
+    // `validate-slices` does. Stubbing at the binding runs them, and the walk
+    // gained a fifth proposal so the gate's own `invalid` edge stays
+    // reachable — `MALFORMED` breaks three rules the LEAF owns, so it exhausts
+    // there, and `UNSHAPED` breaks only the two the gate owns alone.
+    expect(paths).toHaveLength(176);
 
     // Every node the graph declares was exercised. Nothing is excused here:
     // the walk resumes, so there is no node only a resume test can reach.
-    const reachable = inspectGraph(roadmapGraph(journalFor(HAPPY), defs)).reachable;
+    const reachable = inspectGraph(roadmapGraph(noReplayJournal(), defsFor(bindingFor(HAPPY)))).reachable;
     expect(reachable.filter((id) => !seen.has(id))).toEqual([]);
 
     // Every declared reason either suspend node may park under occurs.
@@ -539,7 +560,7 @@ describe("measure-disjointness", () => {
 /** One test per answer a person may give, at each of the two suspend nodes. */
 describe("roadmap graph, resumed by a person", () => {
   const park = async (script: Script = HAPPY, execute: EffectExecutor = landsCleanly) => {
-    const wf = roadmapGraph(journalFor(script), defs);
+    const wf = roadmapGraph(noReplayJournal(), defsFor(bindingFor(script)));
     const parked = await run<State>(wf, seed(REQUEST, DESIGN_SOURCE), execute);
     if (parked.kind !== "suspended") throw new Error("expected the run to park");
     return { wf, parked, execute };
@@ -609,7 +630,7 @@ describe("roadmap graph, resumed by a person", () => {
  */
 describe("roadmap graph, persisted", () => {
   const approve = async (effects: ReturnType<typeof memoryEffects>) => {
-    const wf = roadmapGraph(journalFor(HAPPY), defs);
+    const wf = roadmapGraph(noReplayJournal(), defsFor(bindingFor(HAPPY)));
     const parked = await run<State>(wf, seed(REQUEST, DESIGN_SOURCE), effects.execute);
     if (parked.kind !== "suspended") throw new Error("expected the run to park");
     return await resume<State>(wf, parked.runId, { decision: "approve" }, effects.execute);
@@ -669,28 +690,40 @@ const answersFor = (reason: string): (ReviewAnswer | HumanAnswer)[] =>
     ? [{ decision: "approve" }, { decision: "revise" }, { decision: "abandon" }]
     : [{ decision: "abandon" }];
 
-/** Answers `decompose` from the proposal set, and `validate-slices` from its own. */
-const chooseJournal = (choose: Choose): Journal => ({
-  async get<O>(key: string) {
-    const leaf = stepIdFromKey(key).slice("roadmap.".length);
-    if (leaf === "decompose") {
+/**
+ * Answers `decompose` from the proposal set, and `validate-slices` from its
+ * own. Consulted once per INVOCATION, because `scriptedBinding` holds the
+ * chosen answers across a leaf's retries — so a leaf a mechanical check
+ * refused and re-drove is one choice point rather than two.
+ */
+const chooseBinding = (choose: Choose): ModelBinding => {
+  /**
+   * The roadmap `decompose` last proposed on this path.
+   *
+   * `validate-slices` carries `everyStepIsAnswered` and
+   * `sliceAnchorsAreVerbatim` as mechanical checks, and both are about the
+   * roadmap it was ASKED about — so a verdict set shaped against the wrong
+   * fixture is refused rather than judged. A binding is answered by step id
+   * and never sees the input, so the walk remembers what it proposed: the two
+   * leaves run in that order on every path, so this is read after it is set.
+   */
+  let proposed: Roadmap = KNOWN_GOOD;
+
+  return scriptedBinding(({ step }) => {
+    if (step.id === DECOMPOSE) {
       const proposals: NonNullable<Script["decompose"]>[] = [
         ...(Object.keys(PROPOSALS) as ProposalName[]),
         "cannot-decompose",
         EXHAUSTED,
       ];
-      return decomposeResult(choose("leaf:decompose", proposals)) as O;
+      const answer = choose("leaf:decompose", proposals);
+      proposed = answer === EXHAUSTED || answer === "cannot-decompose" ? KNOWN_GOOD : PROPOSALS[answer];
+      return decomposeAnswers(answer);
     }
     const slices: NonNullable<Script["slices"]>[] = [...SLICE_VERDICTS, EXHAUSTED];
-    const answer = choose("leaf:validate-slices", slices);
-    // The roadmap is not known here, so the rows are shaped against the
-    // fixture the graph will have proposed; the graph reads only the decision.
-    return slicesResult(answer, KNOWN_GOOD) as O;
-  },
-  async put() {
-    // The walk never re-infers, so nothing is written back.
-  },
-});
+    return slicesAnswers(choose("leaf:validate-slices", slices), proposed);
+  });
+};
 
 /** Answers every artifact-row batch from `EffectResult`'s own outcome space. */
 const PERSIST_OUTCOMES = ["committed", "conflict", "rejected", "infra-failed"] as const;

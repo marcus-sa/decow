@@ -38,7 +38,7 @@
 
 import { mastraAgent } from "@des/core/bindings/mastra";
 import type { GenerateRequest, ModelBinding } from "@des/core/step";
-import { deliverDefs, LEAF_IDS, type DeliverDefs, type LeafId } from "../../../examples/nwave/deliver/steps.ts";
+import { deliverDefs, type DeliverDefs } from "../../../examples/nwave/deliver/steps.ts";
 import { obligationsDefs, type ObligationsDefs } from "../../../examples/nwave/distill/obligations/steps.ts";
 import { oracleDefs, type OracleDefs } from "../../../examples/nwave/distill/oracle/steps.ts";
 import { roadmapDefs, type RoadmapDefs } from "../../../examples/nwave/roadmap/steps.ts";
@@ -57,12 +57,28 @@ export const IMPLEMENT_MODEL = "anthropic/claude-sonnet-5";
 export const WORKER_MODEL = "anthropic/claude-haiku-4-5";
 export const VALIDATOR_MODEL = "anthropic/claude-haiku-4-5";
 
-/** Every leaf that is not `implement` runs on the small worker. */
-export const SMALL_LEAVES: readonly LeafId[] = LEAF_IDS.filter((leaf) => leaf !== "implement");
-
-export type ModelsOptions = {
-  /** Handed every call's raw usage, for the report. */
-  onUsage?: (usage: unknown) => void;
+/**
+ * Which binding runs which leaf. THE ONLY INJECTION POINT THIS COMPOSITION
+ * HAS.
+ *
+ * Five roles rather than one binding per leaf, because five is what the model
+ * table above actually distinguishes: the one act that stays wide, the two
+ * that are code generation, everything else, and the adversary. Production
+ * passes `todoModels()`; a test passes scripted ones, and there is nothing
+ * else for a test to reach — no journal to seed, no evidence to fix, no hook
+ * that exists because a test needed one.
+ */
+export type Models = {
+  /** The decomposition. The one act the design says stays wide. */
+  decompose: ModelBinding;
+  /** The acceptance designer, writing an executable oracle. */
+  authorOracle: ModelBinding;
+  /** The crafter, making one acceptance test pass. */
+  implement: ModelBinding;
+  /** Every leaf that classifies into two, three or four words. */
+  other: ModelBinding;
+  /** Every step's adversarial reviewer. */
+  validator: ModelBinding;
 };
 
 /**
@@ -92,39 +108,39 @@ const credentialed = (binding: ModelBinding): ModelBinding => ({
   },
 });
 
-const agent = (model: string, options: ModelsOptions): ModelBinding =>
-  credentialed(
-    mastraAgent({ model, ...(options.onUsage === undefined ? {} : { onUsage: options.onUsage }) }),
-  );
+const agent = (model: string): ModelBinding => credentialed(mastraAgent({ model }));
+
+/** The real bindings, one per role. What `main.ts` serves with. */
+export const todoModels = (): Models => ({
+  decompose: agent(DECOMPOSE_MODEL),
+  authorOracle: agent(ORACLE_MODEL),
+  implement: agent(IMPLEMENT_MODEL),
+  other: agent(WORKER_MODEL),
+  validator: agent(VALIDATOR_MODEL),
+});
 
 /** The roadmap workflow's two leaves: Opus proposes, Haiku judges and refutes. */
-export const todoRoadmapDefs = (options: ModelsOptions = {}): RoadmapDefs =>
+export const todoRoadmapDefs = (models: Models): RoadmapDefs =>
   roadmapDefs({
-    worker: agent(WORKER_MODEL, options),
-    validator: agent(VALIDATOR_MODEL, options),
-    decomposeWith: agent(DECOMPOSE_MODEL, options),
+    worker: models.other,
+    validator: models.validator,
+    decomposeWith: models.decompose,
   });
 
 /** DISTILL's first half: one small model proposing, a pure function judging. */
-export const todoObligationsDefs = (options: ModelsOptions = {}): ObligationsDefs =>
-  obligationsDefs({
-    worker: agent(WORKER_MODEL, options),
-    validator: agent(VALIDATOR_MODEL, options),
-  });
+export const todoObligationsDefs = (models: Models): ObligationsDefs =>
+  obligationsDefs({ worker: models.other, validator: models.validator });
 
 /** DISTILL's second half: the acceptance designer, on the open-output class. */
-export const todoOracleDefs = (options: ModelsOptions = {}): OracleDefs =>
-  oracleDefs({
-    worker: agent(ORACLE_MODEL, options),
-    validator: agent(VALIDATOR_MODEL, options),
-  });
+export const todoOracleDefs = (models: Models): OracleDefs =>
+  oracleDefs({ worker: models.authorOracle, validator: models.validator });
 
 /** The DELIVER step cycle: Sonnet writes code, Haiku does everything else. */
-export const todoDeliverDefs = (options: ModelsOptions = {}): DeliverDefs =>
+export const todoDeliverDefs = (models: Models): DeliverDefs =>
   deliverDefs({
-    worker: agent(WORKER_MODEL, options),
-    validator: agent(VALIDATOR_MODEL, options),
-    workers: { implement: agent(IMPLEMENT_MODEL, options) },
+    worker: models.other,
+    validator: models.validator,
+    workers: { implement: models.implement },
   });
 
 /** What the commands print, so a reader knows what a report's numbers are of. */

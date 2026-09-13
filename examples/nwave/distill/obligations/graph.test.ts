@@ -6,14 +6,25 @@
  * — which is a choice of MANIFEST, because the branch after it reads a pure
  * function of the data — and how the artifact rows landed.
  *
- * Zero model calls, no API key, no network. The stub journal throws on a miss
- * and the model bindings throw if called at all.
+ * Zero model calls, no API key, no network. Every leaf is stubbed at the
+ * BINDING rather than at the journal, so the output schema, the ten mechanical
+ * checks and the validator all run on every path.
+ *
+ * That change surfaced something the seeded journal was hiding. The leaf
+ * carries the same manifest rules as mechanical checks that the gate carries
+ * as a total function — deliberately, "so a rule cannot hold at one and not
+ * the other" — so a proposal breaking one of them never REACHES the gate: the
+ * check refuses it, the worker is re-driven with the defect named, and a
+ * worker that keeps proposing it exhausts. The gate's `invalid` edge is
+ * therefore reachable by exactly one route, `support-ignored`, which is the
+ * one rule the leaf cannot carry because its context has no repository in it.
+ * The walk says so rather than pretending otherwise.
  */
 
 import { describe, expect, test } from "bun:test";
 import type { Effect, EffectResult } from "@des/core/effects";
-import { stepIdFromKey, type Journal } from "@des/core/journal";
-import type { StepResult } from "@des/core/step";
+import type { Journal } from "@des/core/journal";
+import type { ModelBinding } from "@des/core/step";
 import { resume, run, type EffectExecutor } from "@des/core/workflow";
 import {
   enumeratePaths,
@@ -22,7 +33,8 @@ import {
   type Choose,
 } from "@des/core/harness";
 import { endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "@des/core/harness";
-import { exhausted, ok, stubJournal } from "@des/core/harness/stub-journal";
+import { noReplayJournal } from "@des/core/harness/no-replay";
+import { scriptedBinding, throws, type ScriptedAnswer } from "@des/core/harness/scripted-binding";
 import { ROADMAP_STEPS_TABLE } from "../../roadmap/graph.ts";
 import type { Roadmap } from "../../roadmap/schema.ts";
 import { manifestDefects, type ProposedValue } from "../manifest.ts";
@@ -35,15 +47,12 @@ import {
 } from "./graph.ts";
 import { obligationsDefs } from "./steps.ts";
 
-/** A model binding that fails the test if anything reaches a model. */
-const forbidden = (id: string) => ({
-  id,
-  generate: async <T,>(): Promise<T> => {
-    throw new Error(`model "${id}" was called; this suite must spend zero model calls`);
-  },
-});
+/** The leaf's step id, which is what a script is keyed by. */
+const PROPOSE = "distill.propose-obligations";
 
-const defs = obligationsDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
+/** The defs over one scripted binding, which serves both slots. */
+const defsFor = (binding: ModelBinding) =>
+  obligationsDefs({ worker: binding, validator: binding });
 
 const DESIGN = "TodoStore.complete(id) returns the todo with done set. UnknownTodoError otherwise.";
 const TEST_PATHS = ["test"];
@@ -90,16 +99,17 @@ const PROPOSALS: Record<string, ProposedValue[]> = {
 };
 type ProposalName = keyof typeof PROPOSALS;
 
-/** The sentinel for "this leaf's validator was never satisfied". */
+/** The sentinel for "this leaf's worker never produced an answer". */
 const EXHAUSTED = "$exhausted";
 
-const journalFor = (proposal: ProposalName | typeof EXHAUSTED) =>
-  stubJournal({
-    "distill.propose-obligations":
-      proposal === EXHAUSTED
-        ? exhausted()
-        : ok({ decision: "proposed", payload: { values: PROPOSALS[proposal] ?? [], rationale: "stubbed" } }),
-  } as Record<string, StepResult<unknown>>);
+/** The answers a worker gives, per proposal. The last one repeats. */
+const answersFor = (proposal: ProposalName | typeof EXHAUSTED): ScriptedAnswer[] =>
+  proposal === EXHAUSTED
+    ? throws("the proposer had nothing to say")
+    : [{ decision: "proposed", payload: { values: PROPOSALS[proposal] ?? [], rationale: "stubbed" } }];
+
+const bindingFor = (proposal: ProposalName | typeof EXHAUSTED): ModelBinding =>
+  scriptedBinding({ [PROPOSE]: answersFor(proposal) });
 
 /** The one path this repository "ignores", for the injected predicate. */
 const ignores = (path: string) => path === "test/generated.ts";
@@ -109,14 +119,14 @@ const landsCleanly: EffectExecutor = async (effects) =>
 
 const start = (proposal: ProposalName | typeof EXHAUSTED, execute: EffectExecutor = landsCleanly) =>
   run<State>(
-    obligationsGraph(journalFor(proposal), defs, ignores),
+    obligationsGraph(noReplayJournal(), defsFor(bindingFor(proposal)), ignores),
     seed({ roadmap: ROADMAP, design: DESIGN, testPaths: TEST_PATHS, versions: { "01-01": 1 } }),
     execute,
   );
 
 describe("the obligations graph", () => {
   test("the graph is structurally well-formed", () => {
-    expect(graphDefects(obligationsGraph(journalFor("good"), defs))).toEqual([]);
+    expect(graphDefects(obligationsGraph(noReplayJournal(), defsFor(bindingFor("good"))))).toEqual([]);
   });
 
   test("a valid manifest persists the enriched rows, with no person in the way", async () => {
@@ -162,8 +172,29 @@ describe("the obligations graph", () => {
     expect((row.acceptance as unknown[])).toHaveLength(1);
   });
 
-  test("an invalid manifest iterates with the defects named, then hands the bound to a person", async () => {
+  test("a defect the leaf's own check catches never reaches the gate", async () => {
+    // The leaf carries ten of the eleven manifest rules as mechanical checks,
+    // so a proposal that breaks one is refused before a validator is spent and
+    // the worker is re-driven with the defect named. A worker that keeps
+    // proposing it exhausts its attempt budget at the LEAF, which is a
+    // different block from the gate's — and the seeded journal this test used
+    // to run on could not tell them apart, because it never ran the check.
     const outcome = await start("no-obligations");
+
+    expect(outcome.kind).toBe("suspended");
+    if (outcome.kind !== "suspended") return;
+    expect(outcome.reason).toBe("validator-exhausted");
+    expect(visitCount(outcome.trace, "propose-obligations")).toBe(1);
+    expect(visited(outcome.trace, "validate-manifest")).toBe(false);
+    expect(visited(outcome.trace, "persist")).toBe(false);
+  });
+
+  test("the one rule the leaf cannot carry iterates the loop, then hands the bound to a person", async () => {
+    // `support-ignored` is a question about the REPOSITORY, so the leaf's own
+    // checks cannot carry it and the gate owns it alone. It is therefore the
+    // only way a manifest reaches `validate-manifest` and is refused there —
+    // which is what makes the loop's second iteration reachable at all.
+    const outcome = await start("ignored-support");
 
     expect(outcome.kind).toBe("suspended");
     if (outcome.kind !== "suspended") return;
@@ -171,9 +202,9 @@ describe("the obligations graph", () => {
     expect(visitCount(outcome.trace, "propose-obligations")).toBe(MAX_PROPOSALS);
     expect(visitCount(outcome.trace, "validate-manifest")).toBe(MAX_PROPOSALS);
     expect(visited(outcome.trace, "persist")).toBe(false);
-    // The person reads the same NAMED defects the leaf was re-prompted with,
+    // The person reads the same NAMED defect the leaf was re-prompted with,
     // which is the whole reason they are rows rather than a boolean.
-    expect(outcome.trail[2]).toMatchObject({ defects: [{ kind: "no-obligations" }] });
+    expect(outcome.trail[2]).toMatchObject({ defects: [{ kind: "support-ignored" }] });
   });
 
   test("the repository's own ignore list is the gate's rule, not the leaf's", async () => {
@@ -190,7 +221,7 @@ describe("the obligations graph", () => {
     // And with no predicate the same manifest is admissible, because an
     // unanswered ignore question is not a defect.
     const unasked = await run<State>(
-      obligationsGraph(journalFor("ignored-support"), defs),
+      obligationsGraph(noReplayJournal(), defsFor(bindingFor("ignored-support"))),
       seed({ roadmap: ROADMAP, design: DESIGN, testPaths: TEST_PATHS }),
       landsCleanly,
     );
@@ -224,7 +255,7 @@ describe("the obligations graph", () => {
   });
 
   test("a person's abandon reaches the rejected terminal with the trail attached", async () => {
-    const wf = obligationsGraph(journalFor(EXHAUSTED), defs, ignores);
+    const wf = obligationsGraph(noReplayJournal(), defsFor(bindingFor(EXHAUSTED)), ignores);
     const parked = await run<State>(
       wf,
       seed({ roadmap: ROADMAP, design: DESIGN, testPaths: TEST_PATHS }),
@@ -296,7 +327,7 @@ describe("the obligations graph, exhaustively", () => {
     const terminals = new Set<string>();
 
     const paths = await enumeratePaths(async (choose) => {
-      const wf = obligationsGraph(chooseJournal(choose), defs, ignores);
+      const wf = obligationsGraph(noReplayJournal(), defsFor(chooseBinding(choose)), ignores);
       const execute = chooseExecutor(choose);
       let outcome = await run<State>(
         wf,
@@ -324,7 +355,7 @@ describe("the obligations graph, exhaustively", () => {
 
     // Every node the graph declares was exercised, with nothing excused: the
     // walk resumes, so there is no node only a resume test can reach.
-    const reachable = inspectGraph(obligationsGraph(journalFor("good"), defs)).reachable;
+    const reachable = inspectGraph(obligationsGraph(noReplayJournal(), defsFor(bindingFor("good")))).reachable;
     expect(reachable.filter((id) => !seen.has(id))).toEqual([]);
 
     expect([...reasons].sort()).toEqual([...BLOCK_REASONS].sort());
@@ -332,8 +363,16 @@ describe("the obligations graph, exhaustively", () => {
   }, 60_000);
 });
 
-/** The count the walk produces, pinned so a graph change has to restate it. */
-const EXPECTED_PATHS = 55;
+/**
+ * The count the walk produces, pinned so a graph change has to restate it.
+ *
+ * It was 55 when every leaf answered from a seeded journal, which skipped the
+ * ten mechanical checks the leaf carries. Stubbing at the binding runs them, so
+ * nine of the proposals now exhaust at the leaf rather than iterating the loop
+ * through the gate — and the paths that disappeared were ones production could
+ * not take.
+ */
+const EXPECTED_PATHS = 28;
 
 /* ------------------------------------------------------------- walk wiring */
 
@@ -341,24 +380,21 @@ const EXPECTED_PATHS = 55;
  * Answers the leaf from the proposal set. A choice of MANIFEST rather than of
  * decision, because the branch after `validate-manifest` reads a pure function
  * of the data: reaching its `invalid` edge means varying the manifest.
+ *
+ * Consulted once per INVOCATION rather than per call — `scriptedBinding` holds
+ * the chosen answers across a leaf's retries — so a leaf that a mechanical
+ * check refused and re-drove is one choice point, exactly as it was when the
+ * journal answered.
  */
-const chooseJournal = (choose: Choose): Journal => ({
-  async get<O>(key: string) {
-    const leaf = stepIdFromKey(key);
-    if (leaf !== "distill.propose-obligations") throw new Error(`unexpected leaf ${leaf}`);
+const chooseBinding = (choose: Choose): ModelBinding =>
+  scriptedBinding(({ step }) => {
+    if (step.id !== PROPOSE) throw new Error(`unexpected leaf ${step.id}`);
     const proposals: (ProposalName | typeof EXHAUSTED)[] = [
       ...(Object.keys(PROPOSALS) as ProposalName[]),
       EXHAUSTED,
     ];
-    const proposal = choose("leaf:propose-obligations", proposals);
-    return (proposal === EXHAUSTED
-      ? exhausted()
-      : ok({ decision: "proposed", payload: { values: PROPOSALS[proposal] ?? [], rationale: "stubbed" } })) as O;
-  },
-  async put() {
-    // The walk never re-infers, so nothing is written back.
-  },
-});
+    return answersFor(choose("leaf:propose-obligations", proposals));
+  });
 
 /**
  * Answers the artifact-row batch from `EffectResult`'s own outcome space, one

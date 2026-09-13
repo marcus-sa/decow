@@ -182,3 +182,44 @@ export const MALFORMED: Roadmap = {
     malformed("03-04", "a deploy reaches D", ["03-03"], "ADR-0084"),
   ],
 };
+
+/**
+ * The defects the LEAF's own checks cannot see, and nothing else.
+ *
+ * `decompose` carries `empty-authority`, `observation-too-short` and
+ * `duplicate-id` as mechanical checks, so a proposal breaking one of those
+ * never reaches `validate-shape`: the check refuses it and the worker is
+ * re-driven. The three the leaf does NOT carry — `no-steps`,
+ * `dangling-dependency` and `cycle` — are the gate's alone, and they are what
+ * makes `shape.route`'s `invalid` edge reachable at all.
+ *
+ * So every row here is well-formed on its own: a unique id, a real authority,
+ * an observation past the floor. `04-01` depends on a step nobody declared,
+ * and `04-02` / `04-03` declare each other.
+ */
+export const UNSHAPED: Roadmap = {
+  request: REQUEST,
+  steps: [
+    step(
+      "04-01",
+      "A deployed reconciler waking on a row change is observed as a converge tick in the trace.",
+      ["04-09"],
+      "ADR-0084 § interests()",
+      ["Reconciler::interests"],
+    ),
+    step(
+      "04-02",
+      "A deployed reconciler ticking on its own cadence is observed as a converge tick after a clean boot.",
+      ["04-03"],
+      "ADR-0084 § resync_schedule()",
+      ["Reconciler::resync_schedule"],
+    ),
+    step(
+      "04-03",
+      "The producer handoff still wakes its consumer, observed as a converge tick after a deploy.",
+      ["04-02"],
+      "ADR-0084 § the interest router",
+      ["ExitObserver::write"],
+    ),
+  ],
+};

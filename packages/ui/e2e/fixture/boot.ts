@@ -4,10 +4,11 @@
  * `bun run packages/ui/e2e/fixture/boot.ts` — Playwright starts it, waits for
  * the port, and stops it afterwards.
  *
- * EVERY LEAF IS A JOURNAL HIT. The journal is seeded at the exact keys
- * `runStep` computes, and the model bindings under them throw by name when a
- * key misses — so a browser test that reaches a model fails rather than
- * spending one. Nothing here has a credential and nothing here needs one.
+ * EVERY LEAF IS SCRIPTED AT THE BINDING. `todoRegistrations` takes exactly one
+ * thing — `models` — and this supplies scripted ones, so the output schema,
+ * the mechanical checks and the validator all run for real while no model is
+ * called and none could be. A leaf with no script refuses by name. Nothing
+ * here has a credential and nothing here needs one.
  *
  * WHAT IS PRE-BAKED, AND WHY. The delivery pipeline is what the last test
  * drives, and a row is only deliverable once its oracle has been measured red
@@ -30,7 +31,8 @@ import { join } from "node:path";
 import { openArtifacts } from "@des/core/artifacts";
 import { openWorkflowRuntime } from "@des/core/compile";
 import { memoryJournal, type Journal } from "@des/core/journal";
-import { journalKey, type StepDef, type StepResult } from "@des/core/step";
+import type { ModelBinding } from "@des/core/step";
+import { scriptedBinding, type ScriptedAnswer } from "@des/core/harness/scripted-binding";
 import { openVcs } from "@des/core/vcs";
 import {
   getPipeline,
@@ -41,15 +43,11 @@ import {
   startRun,
   type Registry,
 } from "@des/server";
-import { deliverDefs, LeafInput, type LeafId } from "../../../../examples/nwave/deliver/steps.ts";
-import { stepUnderDelivery, type RoadmapRow } from "../../../../examples/nwave/deliver/pipeline.ts";
-import { obligationsDefs, ProposeInput } from "../../../../examples/nwave/distill/obligations/steps.ts";
-import { AuthorInput, oracleDefs } from "../../../../examples/nwave/distill/oracle/steps.ts";
+import { leafStepId, type LeafId } from "../../../../examples/nwave/deliver/steps.ts";
 import { readRoadmap } from "../../../../examples/nwave/deliver/pipeline.ts";
-import { DecomposeInput, roadmapDefs, SlicesInput } from "../../../../examples/nwave/roadmap/steps.ts";
 import type { Roadmap } from "../../../../examples/nwave/roadmap/schema.ts";
-import { REQUEST } from "../../../../targets/todo/.des/request.ts";
-import { todoRegistrations } from "../../../../targets/todo/.des/registrations.ts";
+import { REQUEST, todoRegistrations } from "../../../../targets/todo/.des/registrations.ts";
+import type { Models } from "../../../../targets/todo/.des/models.ts";
 import {
   designSource,
   loadCommands,
@@ -58,19 +56,6 @@ import {
   type RunDir,
 } from "../../../../targets/todo/.des/run-dir.ts";
 import { BROWSER_REQUEST, BROWSER_ROADMAP } from "./roadmaps.ts";
-
-/** A binding that fails the boot if anything reaches a model. */
-const forbidden = (id: string) => ({
-  id,
-  generate: async <T>(): Promise<T> => {
-    throw new Error(`model "${id}" was called; the browser tests spend zero model calls`);
-  },
-});
-
-const models = { worker: forbidden("worker"), validator: forbidden("validator") };
-
-/** The verbatim runner output a DELIVER leaf quotes. Fixed, so a key matches. */
-const EVIDENCE = "2 fail\n0 pass";
 
 /* ---------------------------------------------------------- the two values */
 
@@ -208,109 +193,9 @@ const openProject = async () => {
   return { root, vcs, commands, symbolId };
 };
 
-/* ------------------------------------------------------------- the journal */
+/* -------------------------------------------------------------- the script */
 
-/** One seeded decision, at the key `runStep` will compute for it. */
-const seed = async (
-  journal: Journal,
-  def: StepDef<never, never>,
-  input: unknown,
-  result: StepResult<unknown>,
-): Promise<void> => {
-  await journal.put(journalKey(def as unknown as StepDef<unknown, unknown>, input), result);
-};
-
-/** The two roadmap leaves, for one request and one proposal. */
-const seedRoadmapLeaves = async (
-  journal: Journal,
-  design: string,
-  request: string,
-  roadmap: Roadmap,
-): Promise<void> => {
-  const defs = roadmapDefs(models);
-  await seed(
-    journal,
-    defs.decompose as never,
-    DecomposeInput.parse({ request, design, defects: [], notSlices: [] }),
-    {
-      decision: "ok",
-      output: { decision: "proposed", payload: { roadmap, rationale: "one row per value" } },
-    } as StepResult<unknown>,
-  );
-  await seed(journal, defs["validate-slices"] as never, SlicesInput.parse({ roadmap, design }), {
-    decision: "ok",
-    output: {
-      decision: "is-slice",
-      payload: {
-        verdicts: roadmap.steps.map((s) => ({
-          stepId: s.id,
-          verdict: "is-slice",
-          anchor: s.observation,
-        })),
-        rationale: "each one is reachable through the store's own public surface",
-      },
-    },
-  } as StepResult<unknown>);
-};
-
-/** DISTILL's one obligations leaf, over the roadmap as ROADMAP left it. */
-const seedObligations = async (journal: Journal, rows: RoadmapRow[], design: string): Promise<void> => {
-  const defs = obligationsDefs(models);
-  const input = ProposeInput.parse({
-    roadmap: {
-      request: REQUEST,
-      steps: rows.map((row) => ({
-        id: row.id,
-        observation: row.observation,
-        dependencies: row.dependencies,
-        authority: row.authority,
-        predictedTouches: row.predictedTouches,
-        acceptance: row.acceptance,
-        supports: row.supports,
-      })),
-    },
-    design,
-    testPaths: ["test"],
-    defects: [],
-  });
-  await seed(journal, defs["propose-obligations"] as never, input, {
-    decision: "ok",
-    output: { decision: "proposed", payload: { values: MANIFEST, rationale: "stubbed" } },
-  } as StepResult<unknown>);
-};
-
-/** DISTILL's author leaf, once per value. */
-const seedAuthors = async (journal: Journal, rows: RoadmapRow[], design: string): Promise<void> => {
-  const defs = oracleDefs(models);
-  for (const row of rows) {
-    const oracle = row.oracle as string;
-    const path = oracle.split("::")[0] as string;
-    const input = AuthorInput.parse({
-      value: {
-        stepId: row.id,
-        observation: row.observation,
-        acceptance: row.acceptance,
-        oracle,
-        supports: row.supports,
-        authority: row.authority,
-      },
-      design,
-      testPaths: ["test"],
-    });
-    await seed(journal, defs["author-oracle"] as never, input, {
-      decision: "ok",
-      output: {
-        decision: "authored",
-        payload: {
-          files: [{ path, body: ORACLE_BODIES[path] as string }],
-          reason: "every obligation is falsified by one of the two assertions",
-        },
-      },
-    } as StepResult<unknown>);
-  }
-};
-
-/** The four DELIVER leaves a happy run reaches, per row. */
+/** The decision each DELIVER leaf of a happy run returns. */
 const HAPPY: Partial<Record<LeafId, string>> = {
   implement: "written",
   "select-tests": "no-extra",
@@ -318,44 +203,90 @@ const HAPPY: Partial<Record<LeafId, string>> = {
   commit: "committed",
 };
 
-const seedDeliver = async (
-  journal: Journal,
-  rows: RoadmapRow[],
-  design: string,
-  impactedOf: (symbolId: string) => string[],
-): Promise<void> => {
-  const defs = deliverDefs(models);
-  for (const row of rows) {
-    const step = stepUnderDelivery(row, design);
-    const symbolId = row.predictedTouches[0] as string;
-    const impacted = impactedOf(symbolId);
-    for (const [leaf, decision] of Object.entries(HAPPY) as [LeafId, string][]) {
-      // `implement` is the only leaf that runs BEFORE `wrote` is in state, so
-      // it keys differently from the three after it.
-      const wrote = leaf === "implement" ? undefined : symbolId;
-      const input = LeafInput.parse({
-        step,
-        evidence: EVIDENCE,
-        impacted,
-        ...(wrote === undefined ? {} : { wrote }),
-      });
-      await seed(journal, defs[leaf] as never, input, {
-        decision: "ok",
-        output: {
-          decision,
+/** Which method each row rewrites, so `implement` can name a real symbol. */
+const METHODS: Record<string, string> = { "01-01": "complete", "01-02": "remove" };
+
+const ROW_IDS = ["01-01", "01-02"] as const;
+
+/** The row a prompt is about. Every leaf's prompt names it; a model reads it too. */
+const rowIn = (prompt: string): string => ROW_IDS.find((id) => prompt.includes(id)) ?? "01-01";
+
+/** Per-step verdict rows that satisfy `validate-slices`'s own checks. */
+const verdictsFor = (roadmap: Roadmap) =>
+  roadmap.steps.map((step) => ({ stepId: step.id, verdict: "is-slice", anchor: step.observation }));
+
+/**
+ * The five roles, all answered by ONE scripted binding — the whole of what
+ * this fixture injects into the composition.
+ *
+ * Which subject a call is about is on the PROMPT, exactly where the model it
+ * stands in for would read it: the two roadmaps by their request, the two
+ * delivery rows by their step id. Nothing here computes a journal key, and
+ * nothing in `.des/` exists so that it could.
+ */
+const scriptedModels = (symbolFor: (row: string) => string): Models => {
+  const binding: ModelBinding = scriptedBinding(({ step, prompt }): ScriptedAnswer[] | undefined => {
+    if (step.id === "roadmap.decompose") {
+      const roadmap = prompt.includes(BROWSER_REQUEST) ? BROWSER_ROADMAP : DELIVERY_ROADMAP();
+      return [{ decision: "proposed", payload: { roadmap, rationale: "one row per value" } }];
+    }
+    if (step.id === "roadmap.validate-slices") {
+      const roadmap = prompt.includes(BROWSER_REQUEST) ? BROWSER_ROADMAP : DELIVERY_ROADMAP();
+      return [
+        {
+          decision: "is-slice",
           payload: {
-            anchor: EVIDENCE,
-            rationale: "stubbed",
-            symbolId,
-            body: BODIES[row.id] as string,
-            gap: "",
-            extra: [] as string[],
+            verdicts: verdictsFor(roadmap),
+            rationale: "each one is reachable through the store's own public surface",
           },
         },
-      } as StepResult<unknown>);
+      ];
     }
-  }
+    if (step.id === "distill.propose-obligations") {
+      return [{ decision: "proposed", payload: { values: MANIFEST, rationale: "stubbed" } }];
+    }
+    if (step.id === "distill.author-oracle") {
+      const path = (ORACLES[rowIn(prompt) as keyof typeof ORACLES] ?? "").split("::")[0] as string;
+      return [
+        {
+          decision: "authored",
+          payload: {
+            files: [{ path, body: ORACLE_BODIES[path] ?? "" }],
+            reason: "every obligation is falsified by one of the two assertions",
+          },
+        },
+      ];
+    }
+    const leaf = step.id.slice("deliver.".length) as LeafId;
+    const decision = HAPPY[leaf];
+    if (decision === undefined) return undefined;
+    const row = rowIn(prompt);
+    return [
+      {
+        decision,
+        payload: {
+          anchor: "",
+          rationale: "stubbed",
+          symbolId: symbolFor(row),
+          body: BODIES[row] ?? "",
+          gap: "",
+          extra: [],
+        },
+      },
+    ];
+  });
+
+  return {
+    decompose: binding,
+    authorOracle: binding,
+    implement: binding,
+    other: binding,
+    validator: binding,
+  };
 };
+
+/** The delivery roadmap, resolved once the project's symbols are known. */
+let DELIVERY_ROADMAP: () => Roadmap = () => ({ request: REQUEST, steps: [] });
 
 /* ------------------------------------------------------------- the pre-bake */
 
@@ -393,24 +324,22 @@ const main = async (): Promise<void> => {
     design,
     close: () => {},
   };
-  const { workflows, pipelines } = todoRegistrations(dir, { evidence: () => EVIDENCE });
+  DELIVERY_ROADMAP = () => deliveryRoadmap(project.symbolId);
+  const { workflows, pipelines } = todoRegistrations(dir, {
+    models: scriptedModels((row) => project.symbolId("src/todo.ts", METHODS[row] ?? "")),
+  });
 
   const server = await serve({ port, workflows, pipelines, artifacts, store });
   const registry = server.registry;
 
   // ---- pre-bake, through the server's own registry ------------------------
 
-  await seedRoadmapLeaves(journal, design, REQUEST, deliveryRoadmap(project.symbolId));
   const parked = await runToAccepted(registry, "roadmap", { request: REQUEST });
   resumeRun(registry, parked, { decision: "approve" });
   await registry.idle();
 
-  const proposed = readRoadmap(artifacts, REQUEST);
-  await seedObligations(journal, proposed, design);
   await runToAccepted(registry, "obligations", {});
 
-  const enriched = readRoadmap(artifacts, REQUEST);
-  await seedAuthors(journal, enriched, design);
   runPipeline(registry, "oracles");
   await registry.idle();
 
@@ -421,13 +350,6 @@ const main = async (): Promise<void> => {
 
   // The oracles are on disk now, so the impact graph can see them.
   project.vcs.trackTree("test");
-  await seedDeliver(journal, readRoadmap(artifacts, REQUEST), design, (symbolId) =>
-    project.vcs.impact.impactedTests([symbolId]).map((t) => t.id),
-  );
-
-  // ---- what the browser authors for itself --------------------------------
-
-  await seedRoadmapLeaves(journal, design, BROWSER_REQUEST, BROWSER_ROADMAP);
 
   console.log(`e2e server ready on ${server.url}`);
   console.log(`project: ${project.root}`);

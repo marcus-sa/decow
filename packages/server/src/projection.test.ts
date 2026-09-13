@@ -9,10 +9,11 @@
 
 import { describe, expect, test } from "bun:test";
 import { project, resumeOptionsOf } from "./projection.ts";
-import { gateGraph, gateJournal, GateAnswer, spinGraph } from "./fixture.ts";
+import { memoryJournal } from "@des/core/journal";
+import { gateGraph, gateModels, GateAnswer, spinGraph } from "./fixture.ts";
 import { z } from "zod";
 
-const gate = () => project(gateGraph(gateJournal("ready", "x")));
+const gate = () => project(gateGraph(memoryJournal(), gateModels("ready", "x")));
 
 describe("the authored projection", () => {
   test("every reachable node is reported under the id the author wrote", () => {

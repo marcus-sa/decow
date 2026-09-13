@@ -154,11 +154,6 @@ export const createRunDir = (name: string): string => {
   return path;
 };
 
-export type OpenRunOptions = {
-  /** Track the copied project's sources. Idempotent; safe on every open. */
-  track?: boolean;
-};
-
 /**
  * Open every store of a run directory.
  *
@@ -166,7 +161,7 @@ export type OpenRunOptions = {
  * open of the same name — a restart — sees exactly what the first left behind,
  * because every store in it is a file.
  */
-export const openRunDir = async (name: string, options: OpenRunOptions = {}): Promise<RunDir> => {
+export const openRunDir = async (name: string): Promise<RunDir> => {
   const path = join(RUNS, name);
   if (!existsSync(path)) {
     throw new Error(`no run "${name}" at ${path}. Start one with: bun run todo:roadmap ${name}`);
@@ -175,17 +170,15 @@ export const openRunDir = async (name: string, options: OpenRunOptions = {}): Pr
 
   const commands = await loadCommands(project);
   const vcs = openVcs({ root: project, dbPath: join(path, "vcs.sqlite"), commands });
-  if (options.track !== false) {
-    // `track` returns the tracked file untouched when the path is already
-    // known, so a re-open costs a lookup and changes nothing.
-    //
-    // `test/` is tracked only once it EXISTS. The target ships without one:
-    // the oracle is authored by a `write-file` into `test/`, so the first
-    // command to open this directory finds nothing there and the next one
-    // finds the oracle the previous one wrote.
-    for (const dir of TRACKED) {
-      if (existsSync(join(project, dir))) vcs.trackTree(dir);
-    }
+  // `track` returns the tracked file untouched when the path is already known,
+  // so a re-open costs a lookup and changes nothing.
+  //
+  // `test/` is tracked only once it EXISTS. The target ships without one: the
+  // oracle is authored by a `write-file` into `test/`, so the first open of
+  // this directory finds nothing there and the next one finds the oracle the
+  // previous one wrote.
+  for (const dir of TRACKED) {
+    if (existsSync(join(project, dir))) vcs.trackTree(dir);
   }
 
   const artifacts = openArtifacts({ path: join(path, "artifacts.sqlite") });

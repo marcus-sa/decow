@@ -26,7 +26,9 @@ import {
 } from "../core/effects.ts";
 import { stepOutput, type StepDef } from "../core/step.ts";
 import { branch, leaf, run, type Node, type Workflow } from "../core/workflow.ts";
-import { ok, stubJournal } from "../harness/stub-journal.ts";
+import type { Journal } from "../core/journal.ts";
+import { noReplayJournal } from "../harness/no-replay.ts";
+import { says, scriptedBinding } from "../harness/scripted-binding.ts";
 import { vcsExecutor } from "./executor.ts";
 import { openVcs, type Vcs } from "./index.ts";
 import { counterIds, failingStage, manualClock, measuresAs, passingVerifier, tempProject } from "./testing.ts";
@@ -46,13 +48,12 @@ type Input = z.infer<typeof Input>;
 const Output = stepOutput(["written"] as const, { body: z.string() });
 type Output = z.infer<typeof Output>;
 
-/** A model binding that fails the test if anything reaches a model. */
-const forbidden = {
-  id: "forbidden",
-  generate: async <T,>(): Promise<T> => {
-    throw new Error("a model was called; this suite spends zero model calls");
-  },
-};
+/**
+ * The one leaf, bound to a script rather than to a model. It answers `written`
+ * with the new body every time, so what this file is about — the effect the
+ * write produced and the edge it routes — is the only thing that varies.
+ */
+const scripted = scriptedBinding({ implement: says("written", { body: NEW_BODY }) });
 
 const implementDef: StepDef<Input, Output> = {
   id: "implement",
@@ -61,11 +62,11 @@ const implementDef: StepDef<Input, Output> = {
   output: Output,
   requirements: [],
   worker: {
-    model: forbidden,
+    model: scripted,
     system: "Make the acceptance test pass with the minimal change.",
     prompt: (input) => input.criteria,
   },
-  validator: { model: forbidden },
+  validator: { model: scripted },
   maxAttempts: 1,
 };
 
@@ -84,7 +85,7 @@ type State = {
 
 const writeVerdict = (s: State): WriteVerdict => s.write ?? "exhausted";
 
-const graph = (journal: ReturnType<typeof stubJournal>): Workflow<State> => ({
+const graph = (journal: Journal): Workflow<State> => ({
   start: "implement",
   nodes: {
     implement: leaf<State, Input, Output>({
@@ -156,11 +157,9 @@ const open = (verifier: Partial<Verifier> = {}) => {
   return { root, vcs, symbolId, inventoryEvents, read };
 };
 
-const journal = () => stubJournal({ implement: ok({ decision: "written", payload: { body: NEW_BODY } }) });
-
 const drive = (vcs: Vcs, symbolId: string, expectedVersion: number) =>
   run<State>(
-    graph(journal()),
+    graph(noReplayJournal()),
     { symbolId, criteria: "alpha returns 42", expectedVersion },
     vcsExecutor({ vcs, session: "session-executor", intent: TASK }),
   );
