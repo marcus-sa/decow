@@ -2,13 +2,15 @@
 
 A prototype of the framework described in [`DETERMINISTIC-WORKFLOWS.md`](./DETERMINISTIC-WORKFLOWS.md): a finite graph owns control flow, small models own one decision each, and the whole path space is enumerable before anything runs.
 
-The property the rest of the design rests on is testable in this repo right now, on four graphs: **169 paths through the roadmap authoring workflow, 55 through DISTILL's obligations graph, 421 through its oracle graph, and 443 through the DELIVER step cycle — zero model calls, no API key, no network.** The whole suite — 392 tests, including all 1,088 of those walked paths through the real Mastra engine — takes **about 8.7 s**.
+The property the rest of the design rests on is testable in this repo right now, on four graphs: **169 paths through the roadmap authoring workflow, 55 through DISTILL's obligations graph, 421 through its oracle graph, and 347 through the DELIVER step cycle — zero model calls, no API key, no network.** The whole suite — 451 tests, including all 992 of those walked paths through the real Mastra engine — takes **about 9.9 s**.
 
 All four have cycles in them. Their path spaces are two and three figures rather than infinite because every repetition is a `loop` node with a required bound.
 
 The four examples are one consumer's waves, so they live together under [`src/examples/nwave/`](#the-four-worked-examples), and they are one **pipeline** rather than four demonstrations: the roadmap workflow writes rows, [DISTILL](#distill-is-two-graphs) fills in what each value must be observed to do and writes the oracle that observes it, and the DELIVER step cycle runs once per row whose oracle has been measured red.
 
 That last clause is the shape of this cut. **The oracle is authored by one wave, executed by software, and walled off from the next wave.** RED is not a node in the step cycle; it is a recorded verdict the step cycle refuses to run without.
+
+Every process the framework runs is a **declared command**. The consumer says how its project is typechecked, linted, tested and how one oracle is executed, in its own source; the framework knows the four jobs and never the four commands. All four are compositions of one effect, [`run-command`](#declared-commands), and the verdict a test run produces is read off a JUnit report by [one parser](#the-junit-rule) rather than scraped from one runner's stdout.
 
 The second half of the repo is the [VCS module](#vcs-module): `replace-symbol`, `write-file`, `run-tests` and `measure-oracle` execute for real, under a lease, through a verification gate, into an append-only event log. `run-tests` is a **union**: the VCS owns the impact floor and the workflow owns selection above it, so a leaf may add a test and can never subtract one. Artifact rows have [a real database](#artifact-rows) behind them, so a roadmap outlives the process that authored it.
 
@@ -18,7 +20,7 @@ There is something to deliver *to*: [`targets/todo/`](#the-todo-target), a small
 
 ```bash
 bun install
-bun test          # 392 tests, no network, no key, no model, ~8.7 s
+bun test          # 451 tests, no network, no key, no model, ~9.9 s
 bun run typecheck # tsc --noEmit
 bun run check     # both
 ```
@@ -60,6 +62,7 @@ See [The todo target](#the-todo-target).
 | `src/core/workflow.ts` | § Workflow graph and runner. The contract: `NodeId`, `Terminal`, `Node`, `Workflow`, `branch`, `suspend`, `run`, `resume`. |
 | `src/core/compile.ts` | § Workflow graph and runner. The compiler from the node map to a Mastra workflow. |
 | `src/core/effects.ts` | § Effects with typed results. The `Effect` / `EffectResult` unions plus an in-memory executor with optimistic concurrency. |
+| `src/core/commands.ts` | § Effects with typed results → `run-command`. The consumer's `Commands` contract, and the one process runner behind every command the framework runs. |
 | `src/core/journal.ts` | § Journal. The interface, an in-memory implementation, and a persistent one on `bun:sqlite`. |
 | `src/core/scheduler.ts` | § DELIVER runs in parallel. The frontier, the concurrency limit, resource leases, and termination. Generic in rows; the composition is the consumer's. |
 | `src/artifacts/` | § Artifacts are typed rows, not documents. The store: one version column, one append-only event log, one time-travel read. |
@@ -281,11 +284,13 @@ Two options are about ownership rather than plumbing. **`protected`** refuses an
 
 [`src/vcs/`](./src/vcs/README.md) implements [`ai-vcs.md`](./ai-vcs.md) as a library on `bun:sqlite`: a tree-sitter symbol inventory, an identity registry with opaque ids that survive declared renames, an append-only event log, a lease manager with atomic multi-acquire over **symbols and path scopes**, a verification pipeline that runs inside the write path and rolls the file back byte for byte when a stage refuses, and an oracle measurement that is not a gate at all — it executes one test and reads `green | red | broken | indeterminate` off it, because the two roles that hold an oracle cannot run it.
 
-**The dependency runs one way.** `src/core` imports nothing from `src/vcs`. `src/vcs/executor.ts` imports the `Effect` and `EffectResult` types from `src/core/effects.ts` and nothing else from the framework, and every other file under `src/vcs/` does not know the framework exists. The framework is the control plane; the VCS is the data plane for code.
+**The four stages are structural, typecheck, lint and tests**, and every one after the first is a [declared command](#declared-commands) composed into a `run-command` effect and handed to an injected executor. Nothing under `src/vcs/` spawns anything. Lint replaced the `policy` stage, which was a stub that returned "passed"; the tests stage and the measurement read their verdict off a [JUnit report](#the-junit-rule) rather than off a runner's stdout.
+
+**The dependency runs one way.** `src/core` imports nothing from `src/vcs`. What `src/vcs` imports back is the `Effect` / `EffectResult` types and `src/core/commands.ts`, and nothing else from the framework. The framework is the control plane; the VCS is the data plane for code.
 
 The design document's own test for whether the seam works is one path: "the runner executes an `Effect[]` through the VCS with lease, verify, and log, and gets back a typed result a branch can route on." That path is `src/vcs/executor.test.ts`, driven through the real Mastra runner on a temp TypeScript project: a `leaf` emits a `replace-symbol`, the branch after it routes `committed`, and a second run with a stale `expectedVersion` routes `conflict` to a rebase node instead.
 
-**140 tests, 1.8 s.** Full detail, the storage schema, the write path step by step, the deviations and what is still missing: [`src/vcs/README.md`](./src/vcs/README.md).
+**174 tests, 2.3 s.** Full detail, the storage schema, the write path step by step, the deviations and what is still missing: [`src/vcs/README.md`](./src/vcs/README.md).
 
 ## Artifact rows
 
@@ -304,18 +309,82 @@ Both executors route to it, with the same optimistic version check `replace-symb
 
 `memoryEffects().artifacts` survived the change as a live read-only **view** over the store's event log rather than a second `Map`. A getter would have handed out the state at destructuring time, and `const { artifacts } = memoryEffects()` is how every caller reads it.
 
+## Declared commands
+
+Every process this framework ran used to be hardcoded to bun. The verifier spawned `bunx tsc --noEmit`; the tests stage spawned `bun test <file> -t <name>`; an oracle locator derived a `bun test` argv, with an `argv` override bolted on for a project whose runner was not the default; and **lint did not exist**, because the `policy` stage was a stub that returned "passed". A consumer had no way to say how its own project is checked.
+
+[`src/core/commands.ts`](./src/core/commands.ts) is that way. Four functions, from typed arguments to a command:
+
+```ts
+export type CommandArgs = {
+  typecheck: Record<string, never>;
+  lint:   { paths: readonly string[] };
+  tests:  { file: string; selector?: string; junit: string };
+  oracle: { file: string; selector?: string; junit: string };
+};
+export type Command =
+  | readonly string[]
+  | { argv: readonly string[]; env?: Record<string, string>; timeoutMs?: number;
+      resources?: readonly string[] };
+export type Commands = { [K in keyof CommandArgs]: (args: CommandArgs[K]) => Command };
+```
+
+The framework knows the four **jobs**; the consumer knows the four **commands**. `targets/todo/commands.ts` is one, in the consumer's own source, and the run directory loads it out of the copy. It is refused **by name** when absent, the same way the test path scope is: a default would run one project's toolchain against every other project and call the result a verdict.
+
+A bare `string[]` normalises to `{ argv }` at the framework's default timeout. The object form exists for the three things an argv cannot say: an environment overlay (never a replacement, because `bunx biome check` needs a `PATH`), a budget, and a named shared resource.
+
+All four are compositions of **one effect**:
+
+```ts
+| { type: "run-command"; argv: readonly string[]; cwd?: string;
+    env?: Record<string, string>; timeoutMs: number; resources?: readonly string[] }
+```
+
+and the mapping is deliberately coarse, because a branch should read a verdict and not a transcript:
+
+| | `EffectResult` |
+|---|---|
+| could not be spawned | `infra-failed`, carrying nothing: nothing was observed |
+| killed at its timeout | `infra-failed`, carrying what it printed: it **ran** |
+| exit 0 | `committed` |
+| any other exit | `rejected { by: "command" }` |
+
+The output rides on the result as `command` — `{ exitCode, stdout, stderr, durationMs, timedOut }`, each channel capped at **64 000 bytes** with a trailing `…` when it was truncated. It is payload: a person reads it, a correction turn reads it, the event log carries an excerpt of it. The exit and the outcome are the only things a branch reads. A **stage** that interprets a non-zero exit reports its own name instead, so `tsc` saying no is `rejected { by: "typecheck" }` and the linter saying no is `rejected { by: "lint" }`; `command` is what an uninterpreted exit looks like.
+
+`resources` is how shared test infrastructure gets serialised. A row's own declared commands name what they need exclusively, the pipeline's default `resourcesFor` is the union of those names, and the scheduler takes the whole set as a lease before the row runs. Two rows that name `shared-db` take turns; two that name nothing run together. Both halves are asserted against the same two independent rows.
+
+Both effect executors run it, because a command needs no VCS behind it and an executor that refused one would be pretending it could not do a thing it can. The VCS executor adds two things: the repository root as the base for a relative `cwd`, and a `trail` event carrying the argv and the exit, because every effect it performs is on the event log.
+
+### The JUnit rule
+
+The verdict a test run produces used to come from scraping bun's own summary lines. That worked, and it was wrong in one specific way: it made the verdict a function of one runner's human output, so a consumer with any other runner could not be measured at all. Now the declared command is told **where to write a JUnit report**, and [`src/vcs/junit.ts`](./src/vcs/junit.ts) is the one place in the repository that reads one.
+
+The flags in `targets/todo/commands.ts` were **measured against bun 1.3.12**, not assumed: `bun test <file> -t <name> --reporter=junit --reporter-outfile=<path>` writes a `<testsuites>` document with `tests`, `failures` and `skipped` counts and one `<testcase>` per test. It does **not** create the report's parent directory, so the stage mints a temp one. A run whose file does not parse, or whose import does not resolve, writes **no document at all**.
+
+That last fact is why the reader keeps two absences apart, and it is what lets the four-word verdict rule stay exactly as it was:
+
+| What the runner left behind | Counts | Verdict |
+|---|---|---|
+| no file | `undefined` | `broken` on the `no-summary` axis: it ran nothing |
+| a file no reader can count | zeros | a non-zero exit over zeros is `indeterminate`: nothing was established |
+| a report | its own | the rule as before: `green` / `red` / `broken` / `indeterminate` |
+
+One reading changed, and it got sharper rather than looser. A selector naming no test used to be `broken` on `no-summary`, because bun printed no summary; bun's JUnit report says two tests existed and both were skipped, and exits non-zero anyway. That is the definition of `indeterminate`, and it is now what it is called.
+
+`errored` is failures-versus-errors, which is what tells `broken` from `red`. bun does not distinguish them and emits `<failure>` for both, so for a bun project `errored` is always zero and `broken` arrives by the absent-report route. A runner that does distinguish them (`<error>`, or an `errors` attribute) is read correctly, which is the point of reading the interchange format rather than one runner's prose.
+
 ## The four worked examples
 
 They live under `src/examples/nwave/`, together, because they are waves of one consumer's process rather than unrelated demonstrations — and they compose: ROADMAP writes the rows, DISTILL fills in their acceptance facts and writes the oracle that measures each value, and DELIVER runs once per row whose oracle came back red.
 
 | | ROADMAP | DISTILL / obligations | DISTILL / oracle | DELIVER |
 |---|---|---|---|---|
-| Shape | one bounded loop, two leaves, three non-model steps, eight branches, two suspend nodes | one bounded loop, ONE leaf, two non-model steps, four branches | one bounded loop, one leaf, two non-model steps, four branches | three nested bounded loops, ten leaves, one non-model step, twelve branches |
+| Shape | one bounded loop, two leaves, three non-model steps, eight branches, two suspend nodes | one bounded loop, ONE leaf, two non-model steps, four branches | one bounded loop, one leaf, two non-model steps, four branches | three nested bounded loops, eight leaves, two non-model steps, eleven branches |
 | Cycles | `author`, bounded at 2 | `obligations`, at 2 | `author`, at 2 | `cycle` ⊃ `test-loop`, `gates-loop` |
 | Decision space | a sequence, and a choice of *data*: two branches read pure functions of the roadmap | a choice of *manifest*: the branch after the leaf reads a pure function of it | a decision, a write outcome, and an *effect verdict* the runner produced | a sequence, and every effect it asks for has its own outcome space |
 | Enumerated by | `enumeratePaths`, resuming every suspension it reaches | `enumeratePaths`, resuming | `enumeratePaths` + `scriptedExecutor`, resuming | `enumeratePaths` + `scriptedExecutor` |
-| Paths | **169** | **55** | **421** | **443** |
-| Wall clock | ~0.45 s | ~0.13 s | ~0.97 s | ~1.5 s |
+| Paths | **169** | **55** | **421** | **347** |
+| Wall clock | ~0.45 s | ~0.13 s | ~0.97 s | ~1.2 s |
 
 Two of them are worth a second look for opposite reasons. The obligations graph is the smallest thing in the repo that still earns a graph: one leaf, a total function, and no person on the happy path. The oracle graph is the only one whose decisive input is neither a model's answer nor a person's — it is a verdict software measured, and the walk gets it through the same `scriptedExecutor` seam it gets a write outcome from.
 
@@ -435,26 +504,39 @@ So `run-tests` is a plain `step` that emits `{ type: "run-tests", impacted, extr
 
 Three of those arms are positions rather than mechanics. A failure that names **no** failing test is `broke-other` deliberately: "the suite failed and nobody can say which test" is not the claim "this step's own acceptance test is still failing", and treating it as the second would spend the diagnosis leaf on evidence that does not exist. A **conflict** is `harness-failed` because running a suite claims no version, so there is no optimistic check for it to lose and one arriving means the executor is wrong rather than the change being bad. And `selection-refused` is a block rather than a retry because the floor is the VCS's: nothing inside the cycle could repair a selection that reached below it.
 
-That split needed the ids to reach the branch, so `EffectResult`'s `rejected` gained `detail?: { failed?: string[] }`, `StageOutcome`'s failed variant gained `failed?`, and `bunTests` populates it with the target that failed. A stage that cannot name which test failed leaves it absent, and the graph reads the absence honestly rather than guessing.
+That split needed the ids to reach the branch, so `EffectResult`'s `rejected` gained `detail?: { failed?: string[] }`, `StageOutcome`'s failed variant gained `failed?`, and the tests stage populates it from the JUnit report's own failing cases. A stage that cannot name which test failed leaves it absent, and the graph reads the absence honestly rather than guessing.
 
-### DELIVER, why it starts at `implement`, and why 443
+### `gates` is effect-driven too
 
-The DELIVER step cycle is the design's fixed graph: implement until green, refactor, gate, commit. Every leaf is a `runStep` with an injected model binding. Two of them classify and carry the enums the design names:
+`gates` used to be a leaf: a model read a lint result and answered `clean | clippy-in-scope | mutation-below-gate | out-of-scope-structural`. Whether the quality gate found anything is what **running** it answers, and a model asked the same question is a second source of truth for a fact the command already produced. So `gates` is a `step` that emits a `run-command` built from the consumer's declared `commands.lint` over the files the row writes, and `gate.route` is a pure function of the typed result:
+
+| Effect result | Verdict | Route |
+|---|---|---|
+| `committed` (exit 0) | `clean` | leave the gates loop |
+| `rejected` (any other exit) | `lint-failed` | `fix-lint`, then round again |
+| `infra-failed` | `infra-failed` | block → `harness-failed` |
+
+`fix-lint` stays a leaf, because writing the fix is judgement, and the gate's own output becomes the `evidence` it reads so it answers the linter's words rather than a paraphrase. A **clean** run does not overwrite the evidence: it has nothing to say, no leaf downstream reads it, and re-keying every later leaf's journal entry against "no fixes applied" would buy nothing.
+
+Three things went with the model. `out-of-scope-structural` had no producer left. **`mutation-below-gate`** had none either — the mutation gate was a verdict a model reported, and no command produces it yet — so the **`add-test`** leaf it routed to became unreachable and `graphDefects` refuses an unreachable node by name. That leaf was the only thing inside the cycle that could invalidate a green verdict, so the **cycle now runs exactly once and cannot run out**, and `cycle-exhausted` went with it because nothing produces it. The loop node stays: the day a consumer declares a mutation command, the second pass comes back with it.
+
+### DELIVER, why it starts at `implement`, and why 347
+
+The DELIVER step cycle is the design's fixed graph: implement until green, refactor, gate, commit. Every leaf is a `runStep` with an injected model binding. One of them classifies and carries the enum the design names:
 
 - `diagnose` → `impl-wrong | at-wrong | design-missing | harness-failed`
-- `gates` → `clean | clippy-in-scope | mutation-below-gate | out-of-scope-structural`
 
-`select-tests` carries a third, `no-extra | extra`, which is the union rule above. The other seven (`implement`, `fix-acceptance-test`, `surface-design-gap`, `refactor`, `fix-lint`, `add-test`, `commit`) are generative. "Make this AT pass with the minimal change" is code generation, not a closed-enum decision, so their decision space is a singleton and the routable outcome downstream is something else: for `implement`, the **effect result**. It returns a `replace-symbol` effect and the branch after it routes `committed | conflict | rejected | infra-failed`, plus `exhausted` for "the validator was never satisfied".
+`select-tests` carries a second, `no-extra | extra`, which is the union rule above. The other six (`implement`, `fix-acceptance-test`, `surface-design-gap`, `refactor`, `fix-lint`, `commit`) are generative. "Make this AT pass with the minimal change" is code generation, not a closed-enum decision, so their decision space is a singleton and the routable outcome downstream is something else: for `implement`, the **effect result**. It returns a `replace-symbol` effect and the branch after it routes `committed | conflict | rejected | infra-failed`, plus `exhausted` for "the validator was never satisfied".
 
 **The cycle starts at `implement`, and nothing precedes it.** There is no oracle node and no RED node, because neither has anything left to do: the oracle was authored and executed in [its own graph](#the-oracle-graph-the-model-decides-and-software-measures), and this one reads the recorded verdict. So "no edge bypasses RED" is a **readiness precondition** rather than a topology claim — a row whose oracle has no `red` in `oracle_runs` never becomes ready — which mirrors the shipped runner's own rule that with no recorded oracle the next step for a value is `des oracle`, never `des craft`.
 
 That is a stronger guarantee than an edge, not a weaker one. An edge could be reached with a fabricated observation; a row that is not ready has no run at all. `todo:deliver` refuses such a row **by name** rather than skipping it.
 
-Two nodes are **not** leaves: [`run-tests`](#run-tests-is-effect-driven) reads an effect's result, and `test-loop.head` is a pure branch. A node whose answer a cheaper thing already produces does not get a model, and "cheaper" now includes "a measurement another wave already took".
+Three nodes are **not** leaves: [`run-tests`](#run-tests-is-effect-driven) and [`gates`](#gates-is-effect-driven-too) read an effect's result, and `test-loop.head` is a pure branch. A node whose answer a cheaper thing already produces does not get a model, and "cheaper" now includes "a command's exit status" and "a measurement another wave already took".
 
 Nothing in the DELIVER *walk* runs a test or writes a symbol: the leaves answer from a stub journal and `scriptedExecutor` answers the effects, because the walk is a control-flow test and giving it a filesystem would make it something else. `memoryEffects()` returns `infra-failed` for `replace-symbol` and that outcome is **routed, not hidden** — a test drives it through the real graph and asserts the run parks. The same graph against a real checkout is [the pipeline](#the-scheduler-and-the-pipeline), which does run `bun test` and does write symbols.
 
-**443 paths** is every leaf decision, every effect outcome, and every loop count up to its bound, with unreachable combinations never run. Coverage is asserted, not assumed: the walk visits every node the graph declares except `human.route` (reachable only by answering a suspension, which the resume tests cover), produces all nine declared `HUMAN_REASONS`, and produces both terminal kinds.
+**347 paths** is every leaf decision, every effect outcome, and every loop count up to its bound, with unreachable combinations never run. Coverage is asserted, not assumed: the walk visits every node the graph declares except `human.route` (reachable only by answering a suspension, which the resume tests cover), produces all seven declared `HUMAN_REASONS`, and produces both terminal kinds. It went from 443 to 347 when `gates` stopped being a leaf: five leaf decisions plus an exhaustion became three effect outcomes, and one leaf and its branch edges went away with `add-test`.
 
 **Why `MAX_CYCLES` is 1 while the other two bounds are 2.** It was 1270 paths at 7.5 ms each before the diagnosis branch, 2215 at ~15 ms each after it, and adding `select-tests` took it past 7000 paths and 544 s. `select-tests` sits inside `test-loop`, which sits inside `cycle`, so its multiplier compounds once per (cycle × test) iteration, and the branch after it converging two edges on `run-tests` makes the compiler build the rest of the loop body twice per compile on top of that. The documented fallback was applied first and measured: `MAX_GATE_ATTEMPTS: 2 → 1` gives **5615 paths in 254 s**, because the gates loop is not one of the two loops the new leaf is inside. So the bound that gave way is the one the new leaf is actually inside, and the three single-bound cuts were measured rather than guessed:
 
@@ -463,11 +545,11 @@ Nothing in the DELIVER *walk* runs a test or writes a symbol: the leaves answer 
 | 2 / 2 / 2 | > 7000 | > 544 s |
 | `MAX_GATE_ATTEMPTS` → 1 (the documented fallback) | 5615 | 254 s |
 | `MAX_TEST_ATTEMPTS` → 1 | 285 | ~2 s |
-| **`MAX_CYCLES` → 1** | **450**, now **443** | ~4.5 s, now **~1.5 s** |
+| **`MAX_CYCLES` → 1** | **450**, then **443**, now **347** | ~4.5 s, now **~1.2 s** |
 
 The count went DOWN by seven and the walk got three times faster, and both are the same cause read from two ends. Deleting the oracle, the activation and the RED leaf removed the activation write's three ways of not committing, the oracle's `missing-at`, and one leaf `exhausted`; it also removed six nodes and eleven edges from ahead of the outermost loop, and every branch edge compiles to a nested workflow carrying the rest of that path. The walk's cost was never the walking.
 
-`MAX_TEST_ATTEMPTS` is the most expensive to cut in signal: five tests depend on the test loop running twice — the implement retry, the conflict rebase, the rejected-write retry, `broke-other`, and the whole `at-wrong` re-run-without-re-implementing claim. So the cycle gives way, and the one observation that costs is bought back rather than dropped: the test that needs two cycles (`a surviving mutant re-enters the test loop on the next cycle`) rebuilds the `cycle` node at `max: 2` for itself, using nothing but `loop` and the node map. The walk pays for one cycle; the one test that needs two builds two.
+`MAX_TEST_ATTEMPTS` is the most expensive to cut in signal: five tests depend on the test loop running twice — the implement retry, the conflict rebase, the rejected-write retry, `broke-other`, and the whole `at-wrong` re-run-without-re-implementing claim. So the cycle gave way. What that used to cost was one observation, bought back by a test that rebuilt the `cycle` node at `max: 2` for itself; with `add-test` gone the cycle cannot iterate at any bound, so both the cost and the buy-back are gone with it.
 
 ### The diagnosis branch
 
@@ -492,7 +574,7 @@ An effect type the space does **not** declare is refused rather than answered `c
 
 The oracle adds a third thing the DELIVER walk has to vary, and it is neither a decision nor an effect: `oracle.route` reads the *inventory*. That is the same shape the roadmap walk already has, where two branches read pure functions of the roadmap, so the walk chooses between an inventory that locates and one that does not, exactly as the roadmap walk chooses between proposals.
 
-**One `human` node, outside all three loops.** A loop body leaves only through the loop's own id, so an outcome that needs a person does not jump out of the cycle. It sets a block in state, every enclosing `until` goes true, the run unwinds, and `cycle.verdict` routes it. Reaching a bound arrives the same way with its own reason (`test-loop-exhausted`, `gates-loop-exhausted`, `cycle-exhausted`), so a person is told which budget was spent and how many times it ran. Because DELIVER's person sits outside the loops, the "a suspension inside a loop body resumes into the same iteration" guarantee is tested in `src/core/workflow.test.ts` against a hand-built graph, where the assertion can be exact: the trace reads `spin, ask, apply, spin, ask` rather than `spin, ask, spin, ask`.
+**One `human` node, outside all three loops.** A loop body leaves only through the loop's own id, so an outcome that needs a person does not jump out of the cycle. It sets a block in state, every enclosing `until` goes true, the run unwinds, and `cycle.verdict` routes it. Reaching a bound arrives the same way with its own reason (`test-loop-exhausted`, `gates-loop-exhausted`), so a person is told which budget was spent and how many times it ran. The cycle has no such reason, because nothing inside it can ask for a second pass: every way its body can end either leaves cleanly or sets a block. Because DELIVER's person sits outside the loops, the "a suspension inside a loop body resumes into the same iteration" guarantee is tested in `src/core/workflow.test.ts` against a hand-built graph, where the assertion can be exact: the trace reads `spin, ask, apply, spin, ask` rather than `spin, ask, spin, ask`.
 
 ### ROADMAP: the roadmap is data, and this is the graph that writes it
 
@@ -629,7 +711,7 @@ Two things the DELIVER pipeline builds per row are about OWNERSHIP rather than p
 
 That second one was found by running the worked example, not by reading the code. The first end-to-end run of the todo target refused `complete`'s write for `remove`'s red oracle, which is exactly the shape the batch filter had already been widened for once.
 
-**The end-to-end test is the one this cut is for**, and the one test in the repo allowed to shell out. A two-step roadmap (B depends on A) is persisted *through the roadmap workflow's own `persist`* into the artifact store; a temp TypeScript project holds two pending acceptance tests and two production symbols; the leaves are journal hits so nothing reaches a model; and the tests stage is the real `bunTests`. A runs, B runs after A is `accepted`, both `step_runs` rows read `accepted`, the event log shows the activation and the implement write under each row's own session and task id, and `bun test` over the project at the end reports 2 pass. A companion test drives an implementation that does *not* satisfy its activated test and watches the real gate refuse it, roll the file back byte for byte, and leave B unready.
+**The end-to-end test is the one this cut is for**, and the one test in the repo allowed to shell out. A two-step roadmap (B depends on A) is persisted *through the roadmap workflow's own `persist`* into the artifact store; a temp TypeScript project holds two pending acceptance tests and two production symbols; the leaves are journal hits so nothing reaches a model; and the tests stage is the real one, over the declared test command. A runs, B runs after A is `accepted`, both `step_runs` rows read `accepted`, the event log shows the activation and the implement write under each row's own session and task id, and `bun test` over the project at the end reports 2 pass. A companion test drives an implementation that does *not* satisfy its activated test and watches the real gate refuse it, roll the file back byte for byte, and leave B unready.
 
 One honest finding from building that: with the impact floor covering the step's own acceptance test, a wrong implementation is caught at the **write** gate as `rejected: tests` and retried, so `still-red` is reached only when the suite fails for something the write's impacted set does not cover. That is the under-approximation `impact.ts` already documents (a fixture file, an environment variable, a subprocess), not a new gap.
 
@@ -647,11 +729,11 @@ resume(wf, runId, answer, execute, runtime?)
 
 `:memory:` is the default and is what the whole suite runs on. A `file:` URL opens libSQL, and that is what makes the roadmap workflow's human-review gate two commands instead of one: `todo:roadmap` parks a run and exits, a person reads it, `todo:review` opens a new runtime over the same file and continues the same run. `src/core/durable-snapshots.test.ts` proves it the only way that means anything — two runtime instances over one file, the first dropped before the second is built — and pairs it with the negative, a second runtime on a *different* file that cannot see the parked run.
 
-**Two adapters rather than one, and the split is measured.** Running the whole suite on `LibSQLStore({ url: ":memory:" })` also works, and took **20.6 s** against **4.6 s** on `InMemoryStore` when it was measured: the enumerated paths — 1,088 of them now — write a snapshot per step, and a SQL round trip per write is 4.5× the cost of a map write. The durable path needs a database; the in-memory one needs a map.
+**Two adapters rather than one, and the split is measured.** Running the whole suite on `LibSQLStore({ url: ":memory:" })` also works, and took **20.6 s** against **4.6 s** on `InMemoryStore` when it was measured: the enumerated paths — 992 of them now — write a snapshot per step, and a SQL round trip per write is 4.5× the cost of a map write. The durable path needs a database; the in-memory one needs a map.
 
 ## The todo target
 
-[`targets/todo/`](./targets/todo) is what the three waves are pointed at. A `TodoStore` with `add`, `complete`, `remove` and `list`; `add` and `list` implemented; **`complete` and `remove` stubs whose bodies throw**; and a `design.md` that is the authority for the public surface, the driving port, and the test path scope.
+[`targets/todo/`](./targets/todo) is what the three waves are pointed at. A `TodoStore` with `add`, `complete`, `remove` and `list`; `add` and `list` implemented; **`complete` and `remove` stubs whose bodies throw**; a `design.md` that is the authority for the public surface, the driving port, and the test path scope; and a [`commands.ts`](#declared-commands) that is the authority for how it is checked.
 
 **There is no test file**, and that is the point rather than an omission. The oracle for each value is authored by DISTILL into `test/` and measured red before one production byte is written. A pre-written test would make RED a thing the repository asserted rather than a thing the runner measured — which is precisely the model the previous cut of this repo was built on and this one deleted.
 
@@ -664,6 +746,23 @@ The walking-skeleton shape still matters for the production half. `replace-symbo
 ```
 
 Three consumers read it, which is why it is one line and not three constants: the author writes there, the executor walls the oracle there, and the manifest validator refuses a support outside it. `testPathScope` refuses by name when it is absent, because a default of `test/` would work silently for every project whose substrate lives there and mis-scope every project whose does not.
+
+`commands.ts` is the same shape of declaration one layer over, and it is refused by name for the same reason:
+
+```ts
+export const commands: Commands = {
+  typecheck: () => ["bunx", "tsc", "--noEmit"],
+  lint: ({ paths }) => ["bunx", "biome", "check", ...paths],
+  tests:  ({ file, selector, junit }) => ["bun", "test", file, ...(selector ? ["-t", selector] : []),
+                                          "--reporter=junit", `--reporter-outfile=${junit}`],
+  oracle: ({ file, selector, junit }) => ["bun", "test", file, ...(selector ? ["-t", selector] : []),
+                                          "--reporter=junit", `--reporter-outfile=${junit}`],
+};
+```
+
+The target carries `@biomejs/biome` as a dev dependency and a three-line `biome.json`, so **lint is real**: it is the write path's third stage over every file a write touches, and it is the DELIVER cycle's whole quality gate. `biome check` exits 0 on warnings and non-zero on errors, which is why the two stub bodies — whose `id` parameters are unused, and warned about — pass the gate before they are implemented and pass it after.
+
+It imports the `Commands` type and nothing else, so the import is erased before the file is loaded and a copy sitting under `runs/` resolves with no path back to this repository. It is typechecked here anyway: the repo's own `tsconfig.json` includes `targets/*/commands.ts` and excludes everything else in a target, because a declaration nothing checks is a declaration that drifts. The no-nondeterminism scanner covers it for the same reason, one property over.
 
 **The template is never mutated.** Every run copies it to `runs/<name>/todo/` and works there.
 
@@ -691,14 +790,16 @@ Full detail in [`src/examples/nwave/README.md`](./src/examples/nwave/README.md#t
 
 `src/examples/nwave/todo/todo.test.ts` is the same path with the inference removed, and it is the one test that covers all three waves:
 
-- the target copied to a temp directory, tracked with the **default** verifier — a real `bunx tsc --noEmit`, a real impact-scoped `bun test`, a real oracle measurement;
+- the target copied to a temp directory, its own `commands.ts` loaded out of the copy exactly as a run directory loads it, and tracked with the **default** verifier over those commands — a real `bunx tsc --noEmit`, a real `bunx biome check`, a real impact-scoped `bun test`, a real oracle measurement;
 - the roadmap authored through the roadmap workflow's own graph and persisted by its own `persist`, with all three of DISTILL's fields empty;
 - the obligations graph filling them in and `persist` writing the enriched rows back;
 - the oracle graph authoring one test file per value through a real `write-file` and a **real `bun test` measuring each one red** — nothing in the test file asserts the redness, because the runner is what says so;
-- DELIVER refusing nothing (both rows are oracled), writing both stub bodies through the real gate, and leaving both oracle files **byte-identical**;
+- DELIVER refusing nothing (both rows are oracled), writing both stub bodies through the real gate, running `bunx biome check src/todo.ts` for real as the quality gate, and leaving both oracle files **byte-identical**;
 - and the project's own suite: 2 pass, 0 skip, exit 0.
 
-**About 1.6 s, zero model calls.** A companion test asserts the other half: with no `oracle_runs` row, `unoracled()` names both values, the scheduler runs nothing, and the stubs are untouched — the model bindings throw, so reaching a leaf at all would fail it.
+Both halves of the declaration are asserted against what actually ran: the `oracle-measured` event carries the `--reporter=junit` argv the target declared, and the gate's `trail` event carries `["bunx", "biome", "check", "src/todo.ts"]` at exit 0.
+
+**About 2.2 s, zero model calls.** A companion test asserts the other half: with no `oracle_runs` row, `unoracled()` names both values, the scheduler runs nothing, and the stubs are untouched — the model bindings throw, so reaching a leaf at all would fail it.
 
 ## The run report
 
@@ -801,7 +902,7 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 26. **The effect's outcome decides whether the suite passed, and the classifier leaf is gone.** The previous cut left this open: `select-tests` carried a selection nothing consumed, because the design does not say whether a leaf's classification or the effect's outcome wins. It is the effect's outcome, and the classifying `run-tests` leaf is deleted rather than left dead — its enum, its requirement rows, its prompt and its tests. A suite's result is what running it produces, and a model asked the same question is a second source of truth for a fact the runner already answered. The routing table and the three arms that are positions rather than mechanics are under [`run-tests` is effect-driven](#run-tests-is-effect-driven). (`run-tests.red` survived this deviation and not the next one: see 46.)
 
-27. **`MAX_CYCLES` is 1, and the documented fallback was not enough.** The README's own advice was that `MAX_GATE_ATTEMPTS` is the cheapest bound to cut. It was applied first and measured at 5615 paths in 254 s, because `select-tests` sits inside `test-loop` inside `cycle` and the gates loop is neither. All three single-bound cuts were measured and the cycle is the one that gives way; the table and the reasoning are in [DELIVER, why it starts at `implement`, and why 443](#deliver-why-it-starts-at-implement-and-why-443). The one observation it costs is rebuilt locally by the one test that needs it.
+27. **`MAX_CYCLES` is 1, and the documented fallback was not enough.** The README's own advice was that `MAX_GATE_ATTEMPTS` is the cheapest bound to cut. It was applied first and measured at 5615 paths in 254 s, because `select-tests` sits inside `test-loop` inside `cycle` and the gates loop is neither. All three single-bound cuts were measured and the cycle is the one that gave way; the table and the reasoning are in [DELIVER, why it starts at `implement`, and why 347](#deliver-why-it-starts-at-implement-and-why-347). Since `add-test` went away the cycle cannot iterate at any bound, so the bound is now inert rather than tight.
 
 28. **The roadmap's `human` suspend node has a one-member decision enum.** The design names the three answers at `human-review` and routes four things to `human` without naming an answer space for it. One answer is the honest closure: every block reaching it needs work outside a closed enum, and a second answer would be a route the design does not have. Reasoned in full under [One loop, two people](#one-loop-two-people-and-what-revise-costs).
 
@@ -814,7 +915,7 @@ The document's code sketches are sketches. Where one of them is underspecified o
 32. **`RoadmapModels` carries a `decomposeWith` slot beside `worker`.** The design says `decompose`'s worker is "a frontier-class binding (injected)". `DeliverModels` solves the same problem with `workers?: Partial<Record<LeafId, ModelBinding>>` because DELIVER routes three leaves to three different agents; the roadmap workflow has one such leaf, so it has one named slot falling back to `worker` rather than a per-leaf map with one live key.
 
 
-33. **`EffectResult`'s `rejected` gained `detail?: { failed?: string[] }`.** The still-red-versus-broke-other split is a set membership against the step's own acceptance tests, so the failing ids have to reach the branch; the design's union carries only `by`. `StageOutcome`'s failed variant gained `failed?` for the same reason one layer down, and `bunTests` populates it with the target that failed. A stage that cannot name which test failed leaves it absent, and the graph reads the absence honestly rather than guessing — which is why the no-ids case is `broke-other` rather than `still-red`.
+33. **`EffectResult`'s `rejected` gained `detail?: { failed?: string[] }`.** The still-red-versus-broke-other split is a set membership against the step's own acceptance tests, so the failing ids have to reach the branch; the design's union carries only `by`. `StageOutcome`'s failed variant gained `failed?` for the same reason one layer down, and the tests stage populates it from the JUnit report's own failing cases. A stage that cannot name which test failed leaves it absent, and the graph reads the absence honestly rather than guessing — which is why the no-ids case is `broke-other` rather than `still-red`.
 
 34. **The write path's tests stage excludes any test the write is itself rewriting.** Not a design change so much as a design *omission*: running the very test you just rewrote to decide whether you were allowed to rewrite it makes an acceptance test unwritable, since its first honest run fails by design. Every other test that reaches the file still runs, so `ai-vcs.md` § 6.1's actual question ("did you break something else") is still answered, and a production symbol's write is unaffected because its id is not a test id. Widened twice since: to the batch (44) and to known-red targets (49).
 
@@ -862,17 +963,43 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 56. **`support-ignored` is answered by an injected predicate, not by the VCS.** `git check-ignore` is the only thing that can say whether a repository ignores a path, and the VCS has no opinion: its registry tracks what it was told to track. A repository with no git in it answers `false`, because an unanswered ignore question is not a defect and refusing every support in a checkout without git would be inventing one.
 
-Source is ~23,100 lines: ~13,820 of implementation and ~9,280 of tests. The VCS module is ~6,390 of that, split ~3,600 implementation and ~2,800 tests; DISTILL is ~3,130, split ~2,290 and ~840; DELIVER is ~3,240, split ~1,850 and ~1,390; the roadmap example is ~2,450, split ~1,730 and ~720; the todo composition is ~2,250, split ~1,460 and ~800; the artifact store is ~420, split ~190 and ~230.
+57. **`Commands` is new public surface, and it is `src/core`'s.** The design document's effect union has no `run-command` and no notion of a declared command; every process was hardcoded to bun, and `measure-oracle` carried an `argv` override as the escape hatch. `src/core/commands.ts` replaces that with a contract: `CommandArgs`, `Command`, `Commands`, `normalizeCommand`, and the one `runCommand` behind every process the framework runs. `measure-oracle`'s `argv` is **deleted** rather than kept beside it, because two ways to name the runner is one more than "there is one declaration" allows. See [Declared commands](#declared-commands).
+
+58. **`src/vcs` now imports `src/core/commands.ts` as well as the two effect types.** The stated boundary was "`executor.ts` imports `Effect` and `EffectResult` and nothing else from the framework". The verifier is constructed with `Commands` and emits `run-command` effects through an injected executor, which is what makes "typecheck, lint, tests and the oracle are compositions of one effect" structurally true rather than a claim; that needs three types and one function across the seam. The direction is unchanged: `src/core` still imports nothing from `src/vcs`.
+
+59. **`commandOf`, `commandOutput`, `commandEffect` and `executeCommand` sit beside `measurementOf` in `src/core/effects.ts`.** None is named by the design. `commandOf` is the narrowing `measurementOf` already established, one field over; `commandEffect` is the one place a normalised command becomes an effect, so a stage never has to remember which fields are optional; `executeCommand` is shared by both executors, because a command means the same thing to both and duplicating a spawn across the core/VCS boundary is the drift this repo spends its comments avoiding.
+
+60. **The `policy` stage is deleted, not renamed.** It was a stub that returned "passed", justified by neither of `ai-vcs.md` § 6.1's policy mechanisms being built. `lint` is not that stage with a new name: it takes the paths a write touched, runs a command a consumer declared, and rejects with `by: "lint"`. `RejectedBy` gained `lint` for it and `command` for an exit nothing has interpreted yet. `STAGE_NAMES` is `structural | typecheck | lint | tests`.
+
+61. **The tests stage can now answer `advisory`.** § 6.4's "the check could not decide" outcome existed in the type and nothing produced it. A test command that exits non-zero while its own JUnit report records neither a failure nor an error is exactly that world: it is recorded, it downgrades the write's verification status, and it does not block. Answering `failed` there would refuse a write on no evidence.
+
+62. **A selector naming no test moved from `broken` to `indeterminate`.** Under bun's stdout summary it printed nothing, so the verdict was `broken` on the `no-summary` axis. Under bun's JUnit report it says two tests existed and both were skipped, and exits non-zero anyway — which is the definition of `indeterminate`, and is now what it is called. The rule did not change; the input got better. See [The JUnit rule](#the-junit-rule).
+
+63. **`gates` is a step, and `add-test` is deleted.** The design's diagram has a `gates` leaf classifying a lint run and a `mutation-below-gate` arm reaching an `add-test` leaf. A gate run's verdict is its exit status, so `gates` is a step; and no command produces a mutation verdict yet, so that arm has no producer, `add-test` becomes unreachable, and `graphDefects` refuses an unreachable node by name. `HUMAN_REASONS` lost `out-of-scope-structural` and `cycle-exhausted` with them. The consequence worth stating plainly: **the outer cycle can no longer iterate**, because `add-test` was the only thing inside it that could invalidate a green verdict. The loop node stays, and a declared mutation command is what brings the second pass back. See [`gates` is effect-driven too](#gates-is-effect-driven-too).
+
+64. **`State.paths` and a fourth argument to `seed`.** The gate lints the files the row writes, and a `predictedTouches` entry is an opaque SYMBOL id. Only the registry can map one to a path, so `pipeline.ts` resolves them once where the row becomes a run — the same boundary the impact floor and the acceptance-test ids already sit on — and the graph carries the result. `writtenPaths` is exported for the same reason `oracleTests` is.
+
+65. **`openRunDir` is async, and `openVcs` takes `commands`.** The run directory loads the target's `commands.ts` out of the copy, which is a dynamic import, which is a promise. `openVcs` refuses by name when neither `commands` nor a `verifier` is supplied, because a default set of commands would run bun and biome against a project that is neither and call the result a verdict.
+
+66. **The repo's `tsconfig.json` gained an `include`.** It excluded `targets` wholesale. `targets/*/commands.ts` is the one file in a target that declares conformance to a framework type, so it is typechecked here; everything else in a target is that target's own project, checked by the target's own declared typecheck command inside a run.
+
+Source is ~25,340 lines: ~14,950 of implementation and ~10,390 of tests. The VCS module is ~7,410 of that, split ~4,010 implementation and ~3,390 tests; DISTILL is ~3,160, split ~2,320 and ~840; DELIVER is ~3,660, split ~2,050 and ~1,610; the roadmap example is ~2,450, split ~1,730 and ~720; the todo composition is ~2,370, split ~1,500 and ~880; the artifact store is ~420, split ~190 and ~230.
 
 ## Not built yet
 
 - **Emitting a Mastra dynamic-workflow JSON definition from a `Workflow<S>`.** Mastra's dynamic workflows (beta) are the design's "graph topology as data" already built: a JSON graph over registered agents, tools, and nested workflows, validated and persisted by `addDynamicWorkflow()`. The compiler currently emits live `createStep` closures; emitting the JSON definition instead is what would let the authoring workflow write a graph without writing source.
 - **A real-model run.** Every command exists and every one of them refuses without a key. None has been run against a model. See [The real run](#the-real-run).
+- **A declared MUTATION command.** The design's quality gate is clippy plus a mutation kill rate. Lint is a declared command now; mutation is not, so `commands` has four keys and not five, the `gates` step emits one effect rather than two, and the `mutation-below-gate` verdict and the `add-test` leaf it reached are deleted rather than left with no producer. The consequence is that the outer cycle cannot iterate — see deviation 63. Adding the key is additive: a fifth `CommandArgs` member, a second effect from the same node, and a fourth gate verdict.
+
+- **A declared command per LANGUAGE, or per part of a project.** `Commands` is one set per target. A repository whose frontend and backend are checked by different tools has to say so inside one `lint` function, by branching on the paths it is handed. That works and it is not modelled; what is missing is a way to declare more than one toolchain and have the framework pick.
+
+- **`resources` reaching the write path.** The scheduler leases what a row's commands declare, before the row runs. A `run-command` emitted from inside the write path — the typecheck, lint and tests stages — carries its `resources` on the effect and nothing reads it there, because the write path takes no scheduler lease. Today the only resource that matters is one a whole row needs, so the gap is stated rather than closed.
+
 - **A second oracle measurement.** `measure-oracle` runs the oracle once and reads one verdict, so a flaky oracle — red on its first run, green on its second — is indistinguishable from a stable one and the first answer is recorded as the fact. Running it twice would detect it and would double the cost of the one observation that is a fixed floor; nothing has measured how often it matters.
 - **A resume path for a parked ORACLE run.** Its block node takes one answer, `abandon`, and the composition does not offer it: a parked oracle run is read from the trail and the roadmap or the design is changed instead. The projection therefore reads every non-red run as `suspended`, which is exact — every block in that graph *is* a suspension, and the only route to its `reject` terminal is a person answering.
 - **A support that is itself a value.** The manifest admits whole-file supports and refuses a support that names the oracle, but nothing stops two values declaring the same support file, and nothing sequences who writes it first. In a roadmap where that happened the second author's write would land on the first's bytes and the `wholeFileStage` identity check would be the only thing standing between them.
 - **Derived `step_edges`.** The scheduler reads the `dependencies` the roadmap row declares, and the roadmap workflow's disjointness measurement is what adds the ones the author missed. The design's stronger version derives the DAG from symbol overlap *instead of* hand-authored edges, which would remove the highest-error part of roadmap authoring from the model. The measurement exists; the replacement does not.
-- **`src/vcs`'s own remaining items**, in full in [`src/vcs/README.md`](./src/vcs/README.md#not-built-yet). The ones that matter to the framework: the **ast-grep pattern layer** and the **policy stage** it would carry (the stage is a stub that passes); the **LSP layer**, so there is no cross-file reference resolution and the typecheck stage shells out to `tsc` over the whole project; **coverage-refined impact**, so the test-impact graph is the static import graph alone; the **asynchronous verification tier**, so a slow test blocks a write rather than committing it `pending`; **wait-die** and **queued acquires**, so an acquire is fail-fast and hold-and-request has no fallback; **lease-level rollback**, so a lease whose second write fails leaves the first committed; **git export**; **cross-repository coordination**; and **authorization**, because a session is a string and any session may lease anything.
+- **`src/vcs`'s own remaining items**, in full in [`src/vcs/README.md`](./src/vcs/README.md#not-built-yet). The ones that matter to the framework: the **ast-grep pattern layer** (the lint stage is a declared command now, so the stubbed `policy` stage is gone, but an ast-grep layer inside the VCS is still unbuilt); the **LSP layer**, so there is no cross-file reference resolution and the declared typecheck command runs over the whole project; **coverage-refined impact**, so the test-impact graph is the static import graph alone; **per-case impact**, so the tests stage runs one declared command per impacted test rather than one command covering several; the **asynchronous verification tier**, so a slow test blocks a write rather than committing it `pending`; **wait-die** and **queued acquires**, so an acquire is fail-fast and hold-and-request has no fallback; **lease-level rollback**, so a lease whose second write fails leaves the first committed; **git export**; **cross-repository coordination**; and **authorization**, because a session is a string and any session may lease anything.
 - **The symbol-set-difference check.** `deliver.implement-to-the-design` carries no mechanical check, only a model refuting against the rule text. The symbol inventory that would make it a set difference over exported symbols now exists in `src/vcs/structural`; the check that consumes it does not.
 - **The authoring workflow that writes GRAPH rows.** Bootstrap step 4: requirement rows in, graph rows out, diffed against the hand-written graph. Nothing generates a graph; all four here are hand-written, which is what makes them the oracle. The roadmap-authoring workflow is a different thing that the design's table lists on the same line: it writes *roadmap* rows, not graph rows, and it is built.
 - **Graph topology as data.** Nodes and edges are TypeScript, not rows. Exhaustiveness is the compiler's red squiggle, not a constraint query. The design takes the middle path; this prototype takes the typed end of it.

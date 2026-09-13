@@ -2,20 +2,31 @@
 
 An implementation of [`ai-vcs.md`](../../ai-vcs.md) as a TypeScript library on
 `bun:sqlite`, wired to the workflow framework through one seam: an
-`EffectExecutor` that executes `replace-symbol` and `run-tests` for real.
+`EffectExecutor` that executes `replace-symbol`, `write-file`, `run-tests`,
+`measure-oracle` and `run-command` for real.
 
 The framework is the control plane: what happens, in what order, validated how.
 This module is the data plane for code: how a write lands, under what
 concurrency, with what provenance. The dependency runs one way. `src/core`
-imports nothing from here, and `src/vcs/executor.ts` imports the `Effect` and
-`EffectResult` types from `src/core/effects.ts` and nothing else from the
-framework. Everything else under `src/vcs/` does not know the framework exists.
+imports nothing from here. What this module imports back is the `Effect` /
+`EffectResult` types and `src/core/commands.ts`, and nothing else from the
+framework.
 
-**140 tests, 1.8 s, no network, no key, no model.** The verification stages are
-injected everywhere except two files, so "typecheck failed" is an input rather
-than a compiler run; `real-tools.test.ts` runs the real `bunx tsc --noEmit` and
-`bun test` stages once, and `measure.test.ts` runs the real oracle measurement
-against five files that differ only in HOW they fail.
+**NOTHING HERE SPAWNS ANYTHING.** Every stage is a composition of one effect,
+`run-command`, over the consumer's four declared commands
+(`src/core/commands.ts`): a stage builds the declared command into an effect
+and hands it to an injected executor. In production that executor is the one
+that spawns; in a test it is a script, and the whole verification pipeline runs
+in microseconds. That is also what makes the module usable by a project that is
+not a bun project, which the hardcoded `bunx tsc` and `bun test` it used to
+spawn never were.
+
+**174 tests, 2.3 s, no network, no key, no model.** The stages are injected or
+scripted everywhere except three files: `verify.test.ts` drives every stage
+through a scripted command executor, `real-tools.test.ts` runs the real
+`bunx tsc --noEmit`, `bunx biome check` and `bun test` once, and
+`measure.test.ts` runs the real oracle measurement against five files that
+differ only in HOW they fail.
 
 ## Map to the design document
 
@@ -26,7 +37,8 @@ against five files that differ only in HOW they fail.
 | `registry.ts` | § 3.2 Identity persists through change, § 4.3 Symbol identity registry, § 9.1 Out-of-band changes. Opaque ids, versions, tombstones, file ids, desync state, `importExternal` / `rejectExternal`. |
 | `log.ts` | § 4.4 Event log. Append-only, seq-ordered, intent-carrying, lease-linked. `history` / `at` / `byTask` / `byLease` are the four capabilities the section claims over a commit graph. |
 | `leases.ts` | § 5 Coordination protocol. Atomic multi-acquire, the mode matrix and its hierarchy, optimistic version checks, TTL and heartbeat, release-time intent validation. |
-| `verify.ts` | § 6.1 Layers of verification, § 6.4 When verification cannot decide. The four stages, the failure categories, the verification statuses, the default implementations that shell out — plus the oracle measurement, which is not a stage and lives here because this is the module's one place that knows how to run a runner and read what it printed. |
+| `verify.ts` | § 6.1 Layers of verification, § 6.4 When verification cannot decide. The four stages, the failure categories, the verification statuses, and the default implementations over a consumer's declared commands — plus the oracle measurement, which is not a stage and lives here because this is the module's one place that knows what running a test MEANS. |
+| `junit.ts` | The one JUnit XML reader. The tests stage and the oracle measurement both read their verdict off a report a declared command wrote, rather than off one runner's stdout. |
 | `impact.ts` | § 6.2 Test impact analysis, § 6.3 Cold start (mode 3: static graph alone). |
 | `writes.ts` | § 5.4 Release and commit, § 6.1. `replaceSymbolBody`, `renameSymbol`, `deleteSymbol`, `writeFile`, `runTests`, `measureOracle`, and the rollback. |
 | `executor.ts` | The framework seam. `DETERMINISTIC-WORKFLOWS.md` § "The agent-native VCS is the effect executor and mechanical verifier". |
@@ -162,20 +174,29 @@ source, what identity delta they declare, and what lease mode they require.
    something other than what was declared is `rejected: contract`, which is the
    case of § 4.5's "a `structural_disposition` field claiming 'edit to symbol X'
    against a text replacement that removes X entirely".
-7. **Typecheck stage.** Pluggable; `bunx tsc --noEmit` over the project by
-   default. `rejected: typecheck`.
-8. **Tests stage.** Pluggable; `impactedTests(symbolIds)` then
-   `bun test <file> -t <name>` per target by default. `rejected: tests`, with
-   the failing target's id on the result, because a caller routes on whether it
-   is one of its own. The impacted set **excludes every test THIS BATCH is
-   rewriting** — the lease's whole symbol set, not just the write in hand:
-   running the very test you just activated to decide whether you were allowed
-   to activate it makes a pending acceptance test unactivatable, since its
-   first honest run fails by design. Every other test that reaches the file
-   still runs, so "did you break something else" is still answered, and a
-   production symbol's write is unaffected because its id is not a test id.
-9. **Policy stage.** A stub that passes, because neither of § 6.1's policy
-   mechanisms is built and saying so by passing beats pretending to check.
+7. **Typecheck stage.** The consumer's declared `commands.typecheck`, over the
+   whole project, because a type error an edit introduces usually surfaces in
+   the file that consumes the symbol rather than the one that defines it.
+   `rejected: typecheck`.
+8. **Lint stage.** The consumer's declared `commands.lint`, over the file the
+   write touched. `rejected: lint`. This replaced a `policy` stage that was a
+   stub returning "passed" because neither of § 6.1's policy mechanisms was
+   built; a declared lint command is one that is. It is scoped to the write
+   rather than to the project because it runs INSIDE the write path and the
+   question it answers is whether THESE bytes broke a rule.
+9. **Tests stage.** The consumer's declared `commands.tests`, once per
+   impacted test, each told where to write a JUnit report. `rejected: tests`,
+   with the failing ids taken from the report's own failing cases, because a
+   caller routes on whether one of them is its own. The impacted set
+   **excludes every test THIS BATCH is rewriting** — the lease's whole symbol
+   set, not just the write in hand: running the very test you just activated
+   to decide whether you were allowed to activate it makes a pending
+   acceptance test unactivatable, since its first honest run fails by design.
+   Every other test that reaches the file still runs, so "did you break
+   something else" is still answered, and a production symbol's write is
+   unaffected because its id is not a test id. A non-zero exit whose report
+   records neither a failure nor an error is `advisory` rather than a refusal
+   (§ 6.4): nothing was established, so nothing blocks.
 10. **Commit.** Re-key the file, refresh every range and hash, bump the versions
     of everything that changed, append the child event(s), then append the
     `transaction` event naming their sequence numbers. The parent lands last, so
@@ -212,7 +233,9 @@ What changes:
 - **The tests stage is skipped**, and that is the point rather than an
   omission. An oracle's first honest run fails; a stage that ran the suite
   would refuse every oracle for being what an oracle is. Measuring it is a
-  separate observation with its own verdict.
+  separate observation with its own verdict. **Lint is NOT skipped**: an
+  oracle is bytes in the repository like any other, and the rules the
+  repository declares apply to it.
 - **A failed write restores the previous bytes, or removes the file it
   created.** A rollback of a creation is a removal.
 - **The creation is attributed to the TASK.** `file-created` is a new event
@@ -244,12 +267,31 @@ failures > 0                            -> red,           axis "counts"
 otherwise                               -> indeterminate, axis "counts"
 ```
 
-`bunCounts` reads bun's own summary lines, and the table it is written against
-was measured on bun 1.3.12 rather than assumed — it is in that function's
-comment. Two consequences worth naming: bun reports an unhandled error between
-tests as a separate ` N error` line, which is a real signal for `broken`; and
-an ABSENT summary means the runner ran nothing, which is why that is `broken`
-on its own axis rather than `red` on exit status.
+The rule is unchanged from the cut that scraped bun's stdout. What changed is
+where the counts come from: the declared oracle command is told where to write
+a JUnit report and `junit.ts` reads it, so the verdict is no longer a function
+of one runner's human output.
+
+`junit.ts` keeps two absences apart, and that is what lets the rule stay as it
+is. **No report at all** means the runner never got as far as writing one, so
+it ran nothing: the counts are `undefined` and the verdict is `broken` on the
+`no-summary` axis. A test file whose import does not resolve, or that does not
+parse, lands here — measured against bun 1.3.12, which writes no document for
+either. **A report no reader can count** is different: the runner wrote
+something, so nothing was ESTABLISHED rather than nothing having run, the
+counts are zeros, and a non-zero exit over them is `indeterminate`.
+
+One reading moved, and it got sharper. A selector naming no test was `broken`
+on `no-summary`, because bun printed no summary. Its JUnit report says two
+tests existed and both were skipped, and it exits non-zero anyway: that is the
+definition of `indeterminate`, and it is now what it is called.
+
+`errored` is failures-versus-errors, which is the whole reason the counts are
+read rather than the exit status. bun does not distinguish them and emits
+`<failure>` for both, so for a bun project `errored` is always zero and
+`broken` arrives by the absent-report route instead. A runner that does
+distinguish them is read correctly, which is the point of reading the
+interchange format rather than one runner's prose.
 
 A runner that never STARTED is `infra-failed` with no measurement at all.
 Nothing about the oracle was observed, so nothing about it is claimed, and in
@@ -408,7 +450,7 @@ without an import: a fixture file, an environment variable, a subprocess.
 
 ```ts
 const execute = vcsExecutor({
-  vcs,                                  // openVcs({ root, dbPath, parser, verifier, clock, ids })
+  vcs,                    // openVcs({ root, commands, dbPath, parser, verifier, clock, ids })
   session: "session-crafter",
   intent: { taskId: "02-03", parentTaskId: "roadmap-7", description: "make the AT pass" },
 });
@@ -448,12 +490,22 @@ Beyond the write path's own four outcomes, the executor maps the lease layer's:
 | `contract-violation` | `rejected { by: "contract" }` | the agent's own error, retryable as stated |
 | `desync` | `infra-failed` | a channel outside the system changed the file; not the agent's fault, and must not burn its budget |
 
-And the two effects that are not writes:
+And the effects that are not writes:
 
 - **`run-tests`** runs the tests stage over `impactedTests(effect.impacted)`.
   Pass is `committed`, with the sequence number of the `tests-run` event as the
   version; fail is `rejected { by: "tests" }`; a broken runner is
   `infra-failed`.
+- **`run-command`** runs one declared command in the repository this executor
+  owns, through the framework's own single process runner
+  (`src/core/commands.ts`). Exit 0 is `committed`, any other exit is
+  `rejected { by: "command" }`, and a process that could not be spawned or was
+  killed at its budget is `infra-failed`. It takes no lease, claims no version
+  and writes no symbol, so there is nothing for the write path to do with it;
+  it is still on the event log, as a `trail` line carrying the argv and the
+  exit, because every effect this executor performs is. The version a committed
+  run comes back with is that event's own sequence number, which is the answer
+  `run-tests` gives one case over and for the same reason.
 - **`append-trail`** becomes a `trail` event under the task. The exhaustion
   trail of a step whose validator was never satisfied is provenance, and the
   event log is the provenance store.
@@ -546,11 +598,14 @@ not be writing lease ids into effect payloads.
     to `src/core`. `memoryEffects` needed no edit, because it never produced a
     `rejected` outcome.
 
-11. **A policy failure is reported as `rejected: contract`.** The `by` union
-    has no `policy` member, and adding one to the framework's type for a stage
-    that is a stub would be adding surface for nothing. A policy is a rule the
-    repository declares and the change broke, which is the contract category.
-    Stated here because it is a judgement rather than a derivation.
+11. **The `policy` stage is deleted, and `lint` is not it renamed.** The stage
+    was a stub returning "passed", justified by neither of § 6.1's policy
+    mechanisms being built, and it reported a failure it could never produce as
+    `rejected: contract` because the `by` union had no `policy` member. What
+    replaced it takes the paths a write touched, runs a command the CONSUMER
+    declared, and rejects with `by: "lint"` — so the union gained `lint` for a
+    refusal a stage actually produces, and `STAGE_NAMES` is now
+    `structural | typecheck | lint | tests`.
 
 12. **`INVENTORY_CHANNEL`.** First observation of a file is attributed to a
     source channel called `inventory` rather than to a task, on the same
@@ -588,7 +643,7 @@ not be writing lease ids into effect payloads.
 
 16. **`StageOutcome`'s failed variant and `WriteResult`'s rejected gained
     `failed?`.** The ids of the targets that failed, when the stage can name
-    them, which `bunTests` can. A caller routing "the test I was making pass is
+    them, which the tests stage can, out of the JUnit report's own cases. A caller routing "the test I was making pass is
     still failing" against "I broke a different one" needs them, and that is a
     set membership rather than a judgement. A stage with nothing to name leaves
     it absent rather than reporting an empty set, which would claim that
@@ -636,19 +691,51 @@ not be writing lease ids into effect payloads.
     role's ownership of one file becomes structural rather than a rule a
     reviewer applies.
 
+22. **Every stage is a `run-command` over a CONSUMER's declaration.** § 6.1
+    describes the stages and leaves the commands to the implementation, which
+    is how they came to be `bunx tsc --noEmit` and `bun test <file> -t <name>`
+    spawned from inside this module. That made the module usable by exactly one
+    kind of project. The stages now take `Commands` (`src/core/commands.ts`)
+    and a `CommandExecutor`, and compose a `run-command` effect per stage;
+    nothing under `src/vcs/` calls `Bun.spawn`. The cost is the boundary: this
+    module imports three types and one function from `src/core` rather than two
+    types. The direction is unchanged.
+
+23. **The verdict is read off a JUnit report, not off a runner's stdout.**
+    § 6.1 does not say where a test result comes from. The previous cut scraped
+    bun's own summary lines, which made the verdict a function of one runner's
+    human output. A declared command is told where to write a JUnit report and
+    `junit.ts` reads it. The four-word verdict rule is untouched; what moved is
+    where the counts come from. `bunCounts` is deleted rather than kept beside
+    the reader, because two ways to count one run is one more than a single
+    verdict allows.
+
+24. **`measureOracle` lost its `argv` override, and `MeasureContext` carries a
+    locator rather than a command.** The override existed for "a project whose
+    runner is not the default", which is now what the declaration is for. Two
+    ways to name the runner is exactly the ambiguity `Commands` removes.
+
+25. **The tests stage stops at the first target that did not pass, and mints a
+    temp directory for the reports.** The first is unchanged behaviour, stated
+    because the JUnit read makes it visible: one answer settles "did this break
+    something else". The second is forced — a runner will not create the
+    report's parent directory, measured against bun 1.3.12 — so the stage
+    makes one per invocation and removes it afterwards.
+
 ## Not built yet
 
-- **The ast-grep pattern and rewrite layer (§ 4.2), and the policy checks it
-  would carry (§ 6.1, § 9.3).** The policy stage is a stub that passes. An
-  ast-grep pattern layer is also what the design's `checks/symbol-diff.ts`
-  wants, and what would make "implement to the design, never invent public API"
-  a set difference over exported symbols rather than a model refuting prose.
-  The symbol inventory it needs now exists.
+- **The ast-grep pattern and rewrite layer (§ 4.2, § 9.3).** The rule checks
+  § 6.1 put in a policy stage are a declared lint command now, so the stage is
+  no longer a stub; what is still missing is the pattern layer inside the VCS.
+  It is also what the design's `checks/symbol-diff.ts` wants, and what would
+  make "implement to the design, never invent public API" a set difference over
+  exported symbols rather than a model refuting prose. The symbol inventory it
+  needs now exists.
 - **The MCP tool surface (§ 4.5).** See deviation 3. The intent payload is
   built; the tools that would deliver it to a free agent are not.
 - **The LSP layer (§ 4.6, § 7.3).** No cross-file reference resolution, no
   type-aware rename, no compiler diagnostics from a language server. The
-  typecheck stage shells out to `tsc` over the whole project instead, which is
+  declared typecheck command runs over the whole project instead, which is
   correct and slower and cannot answer "which symbols reference this one".
 - **Coverage-refined impact (§ 6.2).** Static graph only, which is § 6.3's
   cold-start mode 3 without the refinement that was supposed to follow. Nothing
@@ -681,6 +768,11 @@ not be writing lease ids into effect payloads.
   path, but nothing recovers a lease held by a process that died; the lease
   simply expires at its deadline, which is the intended behaviour and is
   untested against a real restart.
+- **A JUnit report per RUN rather than per target.** The tests stage runs one
+  declared command per impacted test, each writing its own report, because a
+  target is `path::name` and that is what a runner filters on. A runner that
+  could be handed several names at once would need one command and one report,
+  and the stage does not model that.
 - **A second oracle measurement per run.** `measureOracle` runs the oracle once
   and reads one verdict. A flaky oracle — one that is red on its first run and
   green on its second — is therefore indistinguishable from a stable one, and

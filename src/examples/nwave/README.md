@@ -40,8 +40,8 @@ Three kinds of node matter when reading one:
   and the only thing the graph reads.
 - **A step** is code. It runs a pure function or emits effects and absorbs
   their typed results. `validate-shape`, `measure-disjointness`,
-  `validate-manifest`, `write-oracle`, `measure`, `run-tests` and `persist` are
-  steps.
+  `validate-manifest`, `write-oracle`, `measure`, `run-tests`, `gates` and
+  `persist` are steps.
 - **A branch** is an exhaustive edge table over a closed enum. Every `*.route`
   and `*.verdict` node is one.
 
@@ -50,9 +50,11 @@ A `suspend` parks the run for a person and resumes on a closed decision enum. A
 
 In `bun test`, no leaf ever reaches a model: every answer is pre-seeded in the
 journal, keyed by content exactly as production keys it. The mechanical half
-runs for real, including the VCS, the artifact store, a real `tsc --noEmit` at
-every write gate, and a real `bun test` at every measurement. That is what lets
-the harness enumerate every path.
+runs for real, including the VCS, the artifact store, and every command the
+target declared: a real `bunx tsc --noEmit` and a real `bunx biome check` at
+every write gate, a real `bun test` at every measurement and at the quality
+gate's own impact-scoped runs. That is what lets the harness enumerate every
+path.
 
 ## `roadmap/` — the authoring workflow whose output is rows
 
@@ -106,10 +108,14 @@ Files: `manifest.ts` (the pure rule set), `obligations/` (the first step),
 `oracle/` (the second), `pipeline.ts` (the composition), `runs.ts` (the
 `oracle_runs` projection both this wave and DELIVER read), `smoke.ts`.
 
-### `obligations/` — `des distill`, which buys no model turn of its own
+### `obligations/` — the acceptance facts, which buy no model turn of their own
 
-`des distill` is provider-free: a manifest in, a closed rule set applied, the
-facts persisted. The only reason a model appears here is that something has to
+Mirrors nwave's `des distill` step. There is no dependency on `des` here; the
+graph is this repository's, and the name of the step it models is the only
+thing borrowed.
+
+The shipped step is provider-free: a manifest in, a closed rule set applied,
+the facts persisted. The only reason a model appears here is that something has to
 *propose* the manifest — turning an observation into a stimulus and an expected
 result is the one part that is not a lookup — so the leaf's decision space is a
 **singleton**. Whether the proposal is admissible is `manifest.ts`'s, and that
@@ -139,12 +145,20 @@ a review gate would be a person re-reading what a total function decided.
 
 55 paths, about 0.13 s.
 
-### `oracle/` — `des oracle --value N`, where software measures
+### `oracle/` — the oracle, authored and then measured by software
+
+Mirrors nwave's `des oracle --value N` step. Same note as above: nothing here
+depends on `des`, and the shipped step is what the graph is modelled on.
 
 Two things and one step. `author-oracle` runs on the acceptance designer's
 binding and returns `authored | cannot-express`; then a `write-file` per
 declared path lands the oracle and its supports under a path-scope lease; then
 **software executes the oracle** and reads a verdict off it.
+
+What executes it is the consumer's declared `commands.oracle` — the framework
+knows the job and the target names the runner — and the verdict is read off the
+JUnit report that command was told to write. See
+[Declared commands](../../../README.md#declared-commands).
 
 That last part is the whole arrangement. The two roles that hold an oracle —
 its author, `Read, Edit`, and its reviewer, an enforced empty tool set —
@@ -160,7 +174,7 @@ broken oracle in 27 seconds — is answered by a measurement that is free.
 | `red` | leave the loop, `accepted` | the desired answer: it fails on its assertion before one production byte exists |
 | `broken` | the one correction turn, with the runner's verbatim output as the finding | an import that does not resolve, a fixture that threw, a file that does not parse. The defect is the oracle's and no role downstream may repair it |
 | `green` | a person, `vacuous-oracle` | a test that passes before any production code proves nothing |
-| `indeterminate` | a person, `harness` | a non-zero exit whose own summary records neither a failure nor an error |
+| `indeterminate` | a person, `harness` | a non-zero exit whose own report records neither a failure nor an error |
 
 `cannot-express` is the designer's typed rejection — *the constructive chain
 cannot be expressed through the declared public port without inventing a field,
@@ -210,8 +224,8 @@ cycle (max 1) {
                        ├─ still-red ─► diagnose ─► impl-wrong | at-wrong ─► fix-acceptance-test
                        │                         | design-missing | harness-failed
                        └─ green | broke-other | … }
-  ─► refactor ─► gates-loop (max 2) { gates ─► clean | clippy-in-scope ─► fix-lint
-                                      | mutation-below-gate ─► add-test | out-of-scope }
+  ─► refactor ─► gates-loop (max 2) { gates (run-command: commands.lint)
+                                      ─► clean | lint-failed ─► fix-lint | infra-failed }
 } ─► cycle.verdict ─► commit ─► accepted
 ```
 
@@ -238,11 +252,22 @@ Two things the pipeline builds per row, and both are about ownership:
 What is a model call and what is not:
 
 - **Model leaves:** `implement`, `select-tests`, `diagnose`,
-  `fix-acceptance-test`, `refactor`, `gates`, `fix-lint`, `add-test`,
-  `surface-design-gap`, `commit`. In `smoke.ts` the three diagnosis-side leaves
-  are Claude Code subagents through the `claudeCode` binding.
-- **Steps, no model:** `run-tests` emits the effect and a pure branch routes its
-  typed outcome.
+  `fix-acceptance-test`, `refactor`, `fix-lint`, `surface-design-gap`,
+  `commit`. In `smoke.ts` the three diagnosis-side leaves are Claude Code
+  subagents through the `claudeCode` binding.
+- **Steps, no model:** `run-tests` and `gates` each emit an effect and a pure
+  branch routes its typed outcome.
+- **The gate verdict is the declared lint command's exit status.** `gates` used
+  to be a leaf classifying lint output into four words; it emits a
+  `run-command` built from `commands.lint` over the files the row writes, and
+  `clean | lint-failed | infra-failed` is a pure function of the result. The
+  gate's own output becomes the evidence `fix-lint` reads, so the fixing leaf
+  answers the linter's words rather than a paraphrase. Two verdicts went with
+  the model: `out-of-scope-structural` had no producer left, and
+  `mutation-below-gate` has none until a consumer declares a mutation command,
+  so the `add-test` leaf it reached is deleted. With `add-test` gone nothing
+  inside the cycle can invalidate a green verdict, so the cycle runs exactly
+  once and `cycle-exhausted` is gone with it.
 - **The test verdict is the effect's outcome.** `committed` is green.
   `rejected: tests` is `still-red` when every failing test is one of the row's
   own oracle's and `broke-other` otherwise. `rejected: contract` means the
@@ -252,9 +277,9 @@ What is a model call and what is not:
   the VCS runs the impact floor plus `extra` and refuses any selection that
   omits a floor test.
 
-443 paths, about 1.5 s. `MAX_CYCLES` is 1 because the two-cycle walk measured at
-over 7,000 paths and 544 s; the one observation that costs is rebuilt locally by
-the test that needs it.
+347 paths, about 1.2 s. `MAX_CYCLES` is 1 because the two-cycle walk measured
+at over 7,000 paths and 544 s when the cycle could still iterate; it cannot
+now, so the bound is inert until a mutation command is declared.
 
 ## `todo/` — the three waves pointed at a real project
 
@@ -269,13 +294,17 @@ report), `render.ts`, the command scripts `roadmap.ts` / `review.ts` /
 [`targets/todo/`](../../../targets/todo) is a tiny TypeScript project: a
 `TodoStore` with `add`, `complete`, `remove` and `list`. `add` and `list` are
 implemented; **`complete` and `remove` are stubs whose bodies throw**.
-`design.md` is the authority: the public surface, the behaviour of each method,
-the driving port, and the test path scope.
+`design.md` is the authority for what it is: the public surface, the behaviour
+of each method, the driving port, and the test path scope. `commands.ts` is the
+authority for how it is checked: the four commands that typecheck, lint, test
+and measure it, declared as this consumer's own source and read by the
+framework. `biome.json` and a `@biomejs/biome` dev dependency are what make the
+lint command real.
 
-**There is no test file.** The oracle is authored by `des oracle` into `test/`
-and measured red before one production byte is written. A pre-written test
-would make RED a thing the repository asserted rather than a thing the runner
-measured.
+**There is no test file.** The oracle is authored into `test/` by the oracle
+graph and measured red before one production byte is written. A pre-written
+test would make RED a thing the repository asserted rather than a thing the
+runner measured.
 
 The walking-skeleton shape is the point for the production half: the stub
 *symbols* exist with their declared signatures, so a `replace-symbol` effect has
@@ -289,7 +318,8 @@ body.
 
 ```
 runs/<name>/
-  todo/              the copied target, which the VCS writes into
+  todo/              the copied target, which the VCS writes into, and whose
+                     commands.ts says how it is checked
   vcs.sqlite         symbol registry, lease table, event log
   artifacts.sqlite   roadmaps, roadmap_steps, oracle_runs, step_runs
   journal.sqlite     what each step decided, keyed by content
@@ -301,6 +331,11 @@ runs/<name>/
 Five stores, all files rather than `:memory:`, because the commands are
 separate PROCESSES. `runs/` is gitignored. `test/` is tracked only once it
 exists, because the oracle is what creates it.
+
+Every command the framework runs against the copy comes from that copy's own
+`commands.ts`, loaded by `loadCommands` and refused BY NAME when absent. The
+import in it is type-only, so it is erased before the file is loaded and a copy
+sitting under `runs/` resolves with no path back to this repository.
 
 The **design source** every leaf reads is `design.md` plus the VCS symbol
 inventory, and the addition is load-bearing: `predictedTouches` and
@@ -365,15 +400,22 @@ Every script that calls a model refuses to run without `ANTHROPIC_API_KEY`.
 
 **Nothing in this directory has been run against a real model.** The commands
 exist and every one of them refuses without a key. `todo.test.ts` drives all
-three waves against a real checkout — a real `write-file`, a real measurement, a
-real `tsc` and a real impact-scoped `bun test` at every write gate — in about
-1.6 s with zero model calls. What is untested is the inference itself: whether a
+three waves against a real checkout, through the target's own declared commands
+— a real `write-file`, a real measurement, a real `bunx tsc --noEmit`, a real
+`bunx biome check` and a real impact-scoped `bun test` at every write gate, and
+a real `bunx biome check` at the quality gate — in about 2.2 s with zero model
+calls. What is untested is the inference itself: whether a
 real model, given these prompts and schemas, gives useful answers at an
 acceptable rate. Expect the prompts in `steps.ts` to need a round of tuning the
 first time real output comes back, and expect the report to be how you find out.
 
 ## Not built on the consumer side
 
+- A declared MUTATION command. `commands.ts` has four keys. The quality gate
+  runs lint and nothing else, so `mutation-below-gate` has no producer and the
+  `add-test` leaf that answered it is gone. Adding the key is additive: a fifth
+  `CommandArgs` member, a second effect from `gates`, and a fourth gate
+  verdict — and the outer cycle gets its second pass back with it.
 - DISTILL's obligations leaf reads the roadmap and the design source. It does
   not read the code the design describes, so an obligation naming a behaviour
   the surface cannot express is caught by `author-oracle`'s `cannot-express`

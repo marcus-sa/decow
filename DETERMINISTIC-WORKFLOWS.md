@@ -306,26 +306,53 @@ export type Effect =
   | { type: "write-file";      path: string;     body: string }
   | { type: "upsert-artifact"; table: string;    id: string; expectedVersion: number; row: unknown }
   | { type: "run-tests";       impacted: string[]; extra?: string[] }
-  | { type: "measure-oracle";  oracle: string;   argv?: string[] }
+  | { type: "measure-oracle";  oracle: string }
+  | { type: "run-command";     argv: readonly string[]; cwd?: string;
+                               env?: Record<string, string>; timeoutMs: number;
+                               resources?: readonly string[] }
   | { type: "append-trail";    line: string };
 
 export type EffectResult =
-  | { effect: Effect; outcome: "committed";    version: number; measured?: OracleMeasurement }
+  | { effect: Effect; outcome: "committed";    version: number; measured?: OracleMeasurement;
+                                               command?: CommandResult }
   | { effect: Effect; outcome: "conflict";     currentVersion: number }
   | { effect: Effect; outcome: "rejected";     by: RejectedBy; detail?: RejectionDetail;
-                                               measured?: OracleMeasurement }
-  | { effect: Effect; outcome: "infra-failed"; measured?: OracleMeasurement };
+                                               measured?: OracleMeasurement; command?: CommandResult }
+  | { effect: Effect; outcome: "infra-failed"; measured?: OracleMeasurement;
+                                               command?: CommandResult };
 ```
 
 `outcome` is a decision value. A step absorbs it into state and the next branch routes on it. A lease conflict is an edge to a rebase-and-retry node, never an exception. `infra-failed` is distinct from `rejected` so a flaky test harness does not burn the retry budget on a change that was fine. The distinct-failure-modes discipline matters more here than anywhere else in the framework because each misrouted failure costs model calls.
 
-Two of the six are worth naming, because each exists for one job the other five could not do.
+Three of the seven are worth naming, because each exists for one job the others could not do.
 
 **`write-file`** is the only write that can produce a file. `replace-symbol` names a symbol id, so it can only ever rewrite something the registry already holds — the right shape for a crafter working inside a declared surface, and useless for an author whose job is to write a test that does not exist yet. Its concurrency model is the path scope of the lease rather than a version, because a file has no version to be optimistic about before it exists. What the write path checks instead is that the lease's scope covers the path, that the intent declared it, and that no identity the file already held has vanished.
 
 **`measure-oracle`** executes one test and reads a verdict off it: `green | red | broken | indeterminate`. It is `run-tests` asking a different question, and it is a different effect because of it — `run-tests` asks "did the change break anything" and a failure is a refusal; this asks "what does this one test do, on its own, right now" and a failure is the *desired* answer. Exit status alone cannot tell `red` from `broken`, because a runner exits non-zero for both, so the counts are read and the axis that reached the verdict travels with it. The measurement rides on `EffectResult` as an optional `measured` rather than as a fifth outcome, so every other graph's edge tables stay total over the same four words and a pure branch reads all four verdicts off one field.
 
 Why the framework runs the oracle rather than a leaf is [below](#distill-is-two-graphs).
+
+**`run-command`** is the primitive the other process-running effects are built out of. Typecheck, lint, the tests stage and the oracle measurement are all compositions of it over a consumer's **declared commands**, and nothing in the framework spawns anything else. The declaration is four functions from typed arguments to a command:
+
+```ts
+export type CommandArgs = {
+  typecheck: Record<string, never>;
+  lint:   { paths: readonly string[] };
+  tests:  { file: string; selector?: string; junit: string };
+  oracle: { file: string; selector?: string; junit: string };
+};
+export type Command =
+  | readonly string[]
+  | { argv: readonly string[]; env?: Record<string, string>; timeoutMs?: number;
+      resources?: readonly string[] };
+export type Commands = { [K in keyof CommandArgs]: (args: CommandArgs[K]) => Command };
+```
+
+The framework knows the four jobs; the consumer knows the four commands. That split is the point. Every process this framework ran used to be hardcoded to one runner, so a project whose typechecker, linter or test runner was anything else had no way to be checked at all, and lint did not exist because no declaration could carry it. A bare `string[]` normalises to the object form at the framework's default timeout, and the object form exists for the three things an argv cannot say: an environment overlay, a budget, and a named shared resource.
+
+The result mapping is deliberately coarse, because a branch should read a verdict and not a transcript. A process that could not be spawned, or that was killed at its timeout, is `infra-failed`. Exit zero is `committed`. Any other exit is `rejected { by: "command" }`. The output rides on the result as `command` for a person, a correction turn and the event log to read, capped per channel; the exit and the outcome are the only things a branch reads. A stage that interprets a non-zero exit reports its own name instead, so `tsc` saying no is `rejected { by: "typecheck" }` and the linter saying no is `rejected { by: "lint" }`.
+
+`resources` is how shared test infrastructure is serialised. A row's declared commands name what they need exclusively, the scheduler takes the whole set as a lease before the row runs, and two rows that name the same resource take turns while two that name none run together.
 
 Notably absent from the union: `create-issue`, `send-message`, or anything else that is a shared, outward-facing action. A worker step cannot defer work by opening a ticket. The only way to defer is a `needs-human` suspension with a typed reason, which parks the run for a person rather than handing work to a queue nobody owns. The rule "agents never create issues unilaterally" is unrepresentable rather than enforced.
 
@@ -535,6 +562,7 @@ A separate design (agent-native version control: symbol-level granularity via tr
 
 What works:
 
+- **The verifier runs declared commands, and owns one JUnit parser.** The four stages are structural, typecheck, lint and tests, in that order, and every one after the first is a `run-command` effect built from the consumer's declared command and handed to an injected executor. Lint replaced a `policy` stage that was a stub returning "passed" because neither of the design's policy mechanisms was built; a declared lint command is one that is. The verdict a test run produces no longer comes from scraping a runner's stdout: the declared command is told where to write a JUnit report, and `src/vcs/junit.ts` is the one place in the repository that reads one. The four-word verdict rule is unchanged by that move, and what changed is where the counts come from, which is the whole point. Two absences are kept apart because they are opposite claims: no report at all means the runner ran nothing, which is `broken`; a report no reader can count means nothing was established, which a non-zero exit reads as `indeterminate`.
 - **`replace-symbol` is the code effect, and `write-file` is the one that can create.** The runner hands either to the VCS, which does the lease, the version check or the path-scope check, and the verification gate. The workflow never touches a file. A symbol write claims an optimistic version; a whole-file write claims a **path scope**, because a file has no version to be optimistic about before it exists, and the structural question it answers is weaker by exactly the right amount: what appears is the author's business, what vanishes is not.
 - **Verification at boundaries is the strongest mechanical check.** Typecheck plus impact-scoped tests run synchronously before commit. That is a `Requirement.check` with no model in it. The validator chain for a code-writing step becomes: schema, then VCS gate, then a small model refuting against requirements. The expensive stochastic check runs last and only on outputs that already compile.
 - **Provenance links two logs instead of merging them.** The journal answers what each step decided. The VCS event log answers what changed and why. Every effect carries the journal key and step id as intent. Blame on a symbol resolves to which workflow, which step, which requirement, which model, which validator passed it.
@@ -580,7 +608,7 @@ The same shape written with bounded loops is three nested `loop` nodes, and the
 nesting is the thing the back-edge drawing was hiding.
 
 ```
-cycle  = loop(body: test-loop, until: gates are clean, max: 2) ─► cycle.verdict
+cycle  = loop(body: test-loop, until: gates are clean, max: 1) ─► cycle.verdict
 │
 ├─ test-loop  = loop(body: test-loop.head, until: not still-red and not broke-other, max: 2)
 │  │            ─► test.verdict ─branch─┬─ green ──────► refactor
@@ -596,12 +624,13 @@ cycle  = loop(body: test-loop, until: gates are clean, max: 2) ─► cycle.verd
 ├─ refactor ─► refactor.verdict ─branch─┬─ refactored ──► gates-loop
 │                                       └─ exhausted ───► cycle
 │
-└─ gates-loop = loop(body: gates, until: not clippy-in-scope, max: 2)
-   │            ─► gate.verdict ─branch─┬─ clean ─────────────────► cycle  (until goes true)
-   │                                    ├─ mutation-below-gate ───► add-test ─► cycle
-   │                                    └─ everything else ───────► cycle  (blocked, or the bound)
-   └─ gates ─► gate.route ─branch─┬─ clippy-in-scope ──────► fix-lint ─► gates-loop
-                                  └─ everything else ──────► gates-loop
+└─ gates-loop = loop(body: gates, until: not lint-failed, max: 2)
+   │            ─► gate.verdict ─branch─┬─ clean ────────────► cycle  (until goes true)
+   │                                    ├─ lint-failed ──────► cycle  (the bound)
+   │                                    └─ infra-failed ─────► cycle  (blocked)
+   └─ gates ─► gate.route ─branch─┬─ clean ────────► gates-loop
+                                  ├─ lint-failed ──► fix-lint ─► gates-loop
+                                  └─ infra-failed ─► gates-loop  (blocked)
 
 cycle.verdict ─branch─┬─ clean ──────► commit ─► commit.verdict ─┬─ committed ─► accepted
                       │                                          └─ exhausted ─► rejected
@@ -650,6 +679,25 @@ or a `write-file` landing in it is `rejected: contract` before a lease is
 asked for. RED to GREEN is bought by production, and that is now a property of
 the data plane instead of a rule a reviewer applies.
 
+`gates` is not a leaf either, and for the same reason. Whether the quality gate
+found anything is what RUNNING it answers, so the node emits a `run-command`
+effect built from the consumer's declared lint command over the files the row
+writes, and `gate.route` is a pure function of the typed result. Three answers,
+because three are what the graph routes differently: exit zero is `clean`, any
+other exit is `lint-failed`, and a command that could not be run at all is
+`infra-failed`, which is the harness failing rather than the change being bad.
+The gate's own output becomes the evidence, so `fix-lint` reads the linter's
+words rather than a paraphrase of them, and `fix-lint` stays a leaf because
+writing the fix is judgement.
+
+One thing went with the model that used to classify a gate run. The mutation
+gate was a verdict a model reported, and no command produces it yet, so
+`mutation-below-gate` and the `add-test` leaf it routed to are gone. That was
+the only way anything inside the cycle could invalidate a green verdict, so the
+cycle now runs exactly once and cannot run out. The loop node stays, because
+the day a consumer declares a mutation command the second pass comes back
+with it.
+
 `run-tests` is not a leaf either, and the reason is sharper. Whether the suite
 passed is what running it answers, so the node emits a `run-tests` effect and
 `test.route` is a pure function of the typed result and the step's own
@@ -675,16 +723,18 @@ A loop that reaches its bound goes to the same place by the same route, with a
 reason of its own. When the body has run `max` times and `until` is still false,
 the loop leaves anyway and hands `absorb` an exit with `exhausted: true`. The
 graph folds that into state as "which loop ran out", and `cycle.verdict` sends it
-to `human` under `test-loop-exhausted`, `gates-loop-exhausted`, or
-`cycle-exhausted`. A person therefore gets told which budget was spent and how
-many times it ran, rather than being handed a run that stopped for no stated
-reason. This is what "no effort budget cuts" looks like when it is topology: the
+to `human` under `test-loop-exhausted` or `gates-loop-exhausted`. A person
+therefore gets told which budget was spent and how many times it ran, rather
+than being handed a run that stopped for no stated reason. The cycle is not on
+that list, because nothing inside it can ask for a second pass: every way its
+body can end either leaves cleanly or sets a block, so `until` is true after
+every body and the bound is never what stops it. This is what "no effort budget cuts" looks like when it is topology: the
 bound cannot be raised by a model, and running out of it is not a route to
 `accepted`.
 
 ### What decomposes and what stays wide
 
-The crafter today is one big model doing everything in the diagram. Most nodes are narrow leaves: classify why a suite is still red, classify a lint finding. Each is a small model with a validator. Some nodes decompose further than that and stop being leaves at all: reading whether the suite passed is reading an effect's typed result, and reading whether the oracle was red is reading a row a different wave recorded. A node whose answer a cheaper thing already produces does not get a model, and "cheaper" includes "a measurement somebody already took".
+The crafter today is one big model doing everything in the diagram. Most nodes are narrow leaves: classify why a suite is still red, fix the lint findings inside the step's own scope. Each is a small model with a validator. Some nodes decompose further than that and stop being leaves at all: reading whether the suite passed is reading an effect's typed result, reading whether the quality gate found anything is reading a declared command's exit status, and reading whether the oracle was red is reading a row a different wave recorded. A node whose answer a cheaper thing already produces does not get a model, and "cheaper" includes "a measurement somebody already took".
 
 A failing test is classified before it is retried. `diagnose` answers
 `impl-wrong | at-wrong | design-missing | harness-failed`, and each cause routes
