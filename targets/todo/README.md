@@ -87,7 +87,7 @@ on your own machine.
 |---|---|
 | `DES_OPENAI_COMPATIBLE_URL` | The endpoint. **Setting it is the switch**; leaving it unset keeps the Anthropic defaults. |
 | `DES_OPENAI_COMPATIBLE_MODEL` | The model the endpoint serves. Required alongside a URL, and refused by name without one: an endpoint does not name a model. |
-| `DES_OPENAI_COMPATIBLE_PROVIDER` | The name the model is reported under, in `describeModels()` and in every attempt row. Defaults to `openai-compatible`. |
+| `DES_OPENAI_COMPATIBLE_PROVIDER` | The name the model is reported under, in `describeModels()` and in every attempt row. Defaults to `openai-compatible`, and **any name works** — Mastra's router does not require it to be a provider it knows. |
 | `DES_OPENAI_COMPATIBLE_API_KEY` | Defaults to `unused`, which is what a local server wants — and is also what tells the binding no key is needed, so no leaf refuses for want of one. |
 
 A local [Ollama](https://ollama.com), whose OpenAI-compatible API is at
@@ -115,9 +115,12 @@ credential:    none is read from the environment; the endpoint carries its own
 ```
 
 Two things are worth knowing before reading such a run. **Structured output
-depends on the endpoint honouring the schema**: every leaf asks for one object
-against a zod schema, the step re-parses what comes back, and an endpoint that
-returns prose or a differently-shaped object fails that parse. The failure is
+is `response_format`**, and the endpoint has to honour it: every leaf asks for
+one object against a zod schema, which reaches the endpoint as
+`response_format: { type: "json_schema", json_schema: { name: "response",
+strict: true, schema } }` on a `POST <url>/chat/completions`. The step re-parses
+what comes back, so an endpoint that ignores the field and returns prose or a
+differently-shaped object fails that parse. The failure is
 not silent and it is not a wrong answer — `runStep` records it in the trail and
 the leaf exhausts, so the run parks as `validator-exhausted` with the parse
 error in it. **Token counts may be absent**, because not every

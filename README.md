@@ -2,7 +2,7 @@
 
 A prototype of the framework described in [`DETERMINISTIC-WORKFLOWS.md`](./DETERMINISTIC-WORKFLOWS.md): a finite graph owns control flow, small models own one decision each, and the whole path space is enumerable before anything runs.
 
-The property the rest of the design rests on is testable in this repo right now, on four graphs: **176 paths through the roadmap authoring workflow, 28 through DISTILL's obligations graph, 421 through its oracle graph, and 347 through the DELIVER step cycle — zero model calls, no API key, no network.** The whole suite — 522 tests, including all 972 of those walked paths through the real Mastra engine — takes **about 13.9 s**. Beside it, six Playwright tests drive a real server in a real browser in **about 5.5 s**, also with no model.
+The property the rest of the design rests on is testable in this repo right now, on four graphs: **176 paths through the roadmap authoring workflow, 28 through DISTILL's obligations graph, 421 through its oracle graph, and 347 through the DELIVER step cycle — zero model calls, no API key, no network.** The whole suite — 541 tests, including all 972 of those walked paths through the real Mastra engine — takes **about 14.5 s**. Beside it, six Playwright tests drive a real server in a real browser in **about 5.5 s**, also with no model.
 
 All four have cycles in them. Their path spaces are two and three figures rather than infinite because every repetition is a `loop` node with a required bound.
 
@@ -30,7 +30,7 @@ Two things here are called a step, and they are not the same thing.
 bun install
 bunx playwright install chromium   # once, for the browser tests
 
-bun run test      # 522 tests, no network, no key, no model, ~13.9 s
+bun run test      # 541 tests, no key, no model, no network beyond loopback, ~14.5 s
 bun run typecheck # tsc --noEmit, over every package at once
 bun run check     # both
 bun run ui:build  # the application the server mounts
@@ -52,7 +52,7 @@ targets/todo/      one project to deliver to, plus the composition under `.des/`
 
 The test script names its roots — `packages`, `examples`, `targets/todo/.des` — rather than scanning the tree: a target's own project files and the run copies under `runs/` are not this repository's suite. The browser tests are `*.e2e.ts` and belong to the other runner; `bun test` claims `*.spec.*`, so one suffix keeps them apart.
 
-Nothing in the test suite talks to a model. The two smoke scripts do, and the todo server refuses at the leaf rather than at the door:
+Nothing in the test suite talks to a model. One file opens a socket — [`mastra.endpoint.test.ts`](./packages/core/src/bindings/mastra.endpoint.test.ts) serves an OpenAI-compatible endpoint on a loopback port and counts every `fetch`, so a call to anywhere else fails the test rather than passing quietly. The two smoke scripts do talk to a model, and the todo server refuses at the leaf rather than at the door:
 
 ```bash
 # One oracle, authored by a real Claude Code subagent in the PROPOSAL shape,
@@ -278,7 +278,21 @@ rather than order-based.
 
 **The credential is refused at the leaf, and what a call needs is read off the config.** An endpoint carrying its own `apiKey`, or naming its own `url`, needs nothing from the environment and is never refused; a bare router string needs the variables Mastra's own provider registry declares for that provider — which is why the refusal names `ANTHROPIC_API_KEY` rather than a `<PROVIDER>_API_KEY` this repository guessed at. A provider the registry does not know is not refused either, because there is no variable to name and the router is the honest place for "no such provider" to be said.
 
-Two caveats belong to the endpoint rather than to the binding, and both are the reason a local model is worth trying rather than a reason not to. **Structured output depends on the endpoint honouring the schema.** Every leaf asks for one object against a zod schema and the step re-parses the answer with that schema, so an endpoint that returns prose, or an object of a different shape, fails the parse — and that failure is visible: `runStep` records it in the trail and the leaf exhausts, so the run parks as `validator-exhausted` with the parse error in it rather than proceeding on a wrong answer. **Token usage may be absent**, because not every OpenAI-compatible server reports it; the attempt then records no counts at all rather than zeros, since "nobody said" and "it cost nothing" are different claims.
+**A provider Mastra has never heard of is fine.** The router resolves a gateway for every id, and `models.dev` is the unconditional last resort, so `providerId: "acme-local"` parses as a provider rather than raising `MODEL_ROUTER_NO_GATEWAY_FOUND`. A config carrying a `url` then short-circuits that gateway twice: auth is the config's own `apiKey` rather than an environment variable, and the model is `createOpenAICompatible({ name: providerId, baseURL: url, headers })` rather than anything the gateway builds. So the endpoint is reached as named, with no gateway consulted, no provider package installed, and nothing in the binding to make it happen.
+
+**What your endpoint has to accept**, observed rather than inferred — [`mastra.endpoint.test.ts`](./packages/core/src/bindings/mastra.endpoint.test.ts) drives a real `Agent` against a real HTTP server on a loopback port and asserts each of these:
+
+| On the wire | What arrives |
+|---|---|
+| request | `POST <url>/chat/completions` — the path is appended to the `url` as given |
+| auth | `Authorization: Bearer <apiKey>`, and no such header at all when no key is given |
+| headers | the config's own `headers`, merged in |
+| `model` | the `modelId`, not `providerId/modelId` — the provider was the routing decision |
+| `temperature` | `0`, from the binding |
+| `messages` | the step's `system` as the system turn, its `prompt` as the user turn |
+| `response_format` | `{ type: "json_schema", json_schema: { name: "response", strict: true, schema } }`, where `schema` is the step's zod schema as draft-07 JSON Schema |
+
+**Structured output is that `response_format` field**, not a tool call and not a prompt-engineered instruction — so an endpoint that ignores `response_format` will answer with something the step's schema rejects. Two caveats follow, and both are the reason a local model is worth trying rather than a reason not to. **Structured output depends on the endpoint honouring the schema.** Every leaf asks for one object against a zod schema and the step re-parses the answer with that schema, so an endpoint that returns prose, or an object of a different shape, fails the parse — and that failure is visible: `runStep` records it in the trail and the leaf exhausts, so the run parks as `validator-exhausted` with the parse error in it rather than proceeding on a wrong answer. **Token usage may be absent**, because not every OpenAI-compatible server reports it; the attempt then records no counts at all rather than zeros, since "nobody said" and "it cost nothing" are different claims.
 
 ### Opaque and proposal
 

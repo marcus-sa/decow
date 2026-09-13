@@ -38,6 +38,25 @@ const PLACEHOLDER_INSTRUCTIONS =
  * The rest of `MastraModelConfig` is deliberately not here: a binding that
  * took a `LanguageModelV2` instance would put an `@ai-sdk/*` provider package
  * back in the dependency graph, which is the thing the router removed.
+ *
+ * AN OBJECT'S `providerId` NEED NOT NAME A PROVIDER MASTRA KNOWS, and this
+ * binding needs nothing to make that work. The router resolves a gateway for
+ * every id and `models.dev` is the unconditional last resort, so an
+ * unregistered prefix parses as `providerId` rather than raising
+ * `MODEL_ROUTER_NO_GATEWAY_FOUND`; a config carrying a `url` then
+ * short-circuits that gateway twice over — auth is the config's own `apiKey`
+ * rather than an environment variable, and the model is
+ * `createOpenAICompatible({ name: providerId, baseURL: url, headers })`
+ * rather than anything the gateway builds. The endpoint is reached as named,
+ * with no gateway consulted and no provider package installed.
+ *
+ * `mastra.endpoint.test.ts` is that claim EXERCISED rather than read: a real
+ * `Agent` against a real HTTP server on a loopback port, answering as
+ * `acme-local/test-model`. What arrives is one `POST <url>/chat/completions`
+ * carrying `Authorization: Bearer <apiKey>` (absent entirely when no key is
+ * given), the caller's own headers, `temperature`, the system and user turns,
+ * and the step's schema as `response_format: { type: "json_schema", …,
+ * strict: true }`. That last field is what an endpoint has to support.
  */
 export type MastraModel = string | OpenAICompatibleConfig;
 
