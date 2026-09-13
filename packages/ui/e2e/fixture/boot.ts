@@ -213,7 +213,7 @@ const STEP_IDS = ["01-01", "01-02"] as const;
 /** The step a prompt is about. Every leaf's prompt names it; a model reads it too. */
 const stepIn = (prompt: string): string => STEP_IDS.find((id) => prompt.includes(id)) ?? "01-01";
 
-/** Per-step verdict rows that satisfy `validate-slices`'s own checks. */
+/** Per-step verdicts that satisfy `validate-slices`'s own checks. */
 const verdictsFor = (roadmap: Roadmap) =>
   roadmap.steps.map((step) => ({ stepId: step.id, verdict: "is-slice", anchor: step.observation }));
 

@@ -29,7 +29,7 @@ describe("verbatim", () => {
       evidence: "<empty quote>",
     }));
 
-  test("verbatimRequirement builds a row whose check is the same predicate", () => {
+  test("verbatimRequirement builds a Requirement whose check is the same predicate", () => {
     const row = verbatimRequirement<Ctx>({
       id: "r.verbatim",
       sourceId: "src",

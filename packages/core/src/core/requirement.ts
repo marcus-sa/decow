@@ -1,7 +1,7 @@
 /**
- * A requirement is a row, not a paragraph: the rule verbatim, a foreign key to
- * its source, the closed decision space it admits, and optionally a mechanical
- * check that runs with no model.
+ * A requirement is the rule verbatim, a foreign key to its source, the closed
+ * decision space it admits, and optionally a mechanical check that runs with
+ * no model.
  */
 
 export type Violation = { requirementId: string; evidence: string };

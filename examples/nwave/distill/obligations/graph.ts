@@ -178,7 +178,8 @@ export const manifestOutcome = (s: State): ManifestVerdict => s.manifest ?? "inv
 /**
  * The loop leaves when the manifest validates, or when something is blocking.
  * An invalid manifest is an ITERATION: the defects are the feedback the next
- * proposal reads, which is the whole reason they are named rows.
+ * proposal reads, which is the whole reason they are named rather than a
+ * boolean.
  */
 export const proposalsDone = (s: State): boolean =>
   blockedReason(s) !== undefined || s.manifest === "valid";

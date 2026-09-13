@@ -343,9 +343,9 @@ The result union is deliberately the same shape as `EffectResult`'s:
 An acquire names the complete set it will need — symbols, PATH SCOPES, or both,
 and not neither.
 
-The mode matrix, § 5.2 as a table. Rows are the mode a live lease holds,
-columns the mode being requested, and the cell says whether the request is
-blocked:
+The mode matrix, § 5.2 as a table. Down the side is the mode a live lease
+holds, across the top the mode being requested, and the cell says whether the
+request is blocked:
 
 | held ⧵ requested | `read` | `write` | `exclusive` |
 |---|---|---|---|

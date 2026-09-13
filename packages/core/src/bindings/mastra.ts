@@ -169,12 +169,12 @@ export type MastraAgentOptions = {
  *
  * THE CREDENTIAL IS REFUSED AT THE LEAF, not at the door. A server that
  * checked for a key and exited would make the graphs, the projections, the
- * rows and the event stream unreadable to say one thing about a leaf — so a
- * call that needs a variable the environment does not have throws HERE,
- * `runStep` records it as a trail entry the way it records any provider error,
- * and the graph routes the exhausted leaf wherever it routes one. What the
- * call needs is `requiredCredential`'s to say: an endpoint carrying its own
- * `apiKey`, or one named by `url`, needs nothing and is not refused.
+ * artifact store and the event stream unreadable to say one thing about a
+ * leaf — so a call that needs a variable the environment does not have throws
+ * HERE, `runStep` records it as a trail entry the way it records any provider
+ * error, and the graph routes the exhausted leaf wherever it routes one. What
+ * the call needs is `requiredCredential`'s to say: an endpoint carrying its
+ * own `apiKey`, or one named by `url`, needs nothing and is not refused.
  *
  * WHAT A CALL COST IS REPORTED THROUGH THE REQUEST, verbatim and unshaped.
  * The shape is not ours and has more than one version in the dependency graph:

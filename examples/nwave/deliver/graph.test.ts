@@ -293,11 +293,11 @@ const HAPPY: Script = {
 const start = (script: Script, execute: EffectExecutor = landsCleanly) =>
   run<State>(deliverGraph(noReplayJournal(), defsFor(bindingFor(script)), COMMANDS), seedState(), execute);
 
-/** The loop-count row of what a person reads, for asserting on a parked run. */
+/** The loop counts a person reads, for asserting on a parked run. */
 const iterationsOf = (trail: readonly unknown[]) =>
   (trail[3] as { iterations: Record<string, number> }).iterations;
 
-/** The design-gap row of the same trail. */
+/** The design gap, off the same trail. */
 const designGapOf = (trail: readonly unknown[]) =>
   (trail[4] as { designGap?: string }).designGap;
 

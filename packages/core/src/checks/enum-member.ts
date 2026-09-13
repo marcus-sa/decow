@@ -3,7 +3,7 @@
  * requirement declares? The schema already enforces this for `decision`; this
  * check covers payload fields whose value space is closed but whose schema is
  * a string, and it is the check the authoring workflow runs against a
- * requirement row's `decisions` column.
+ * requirement's `decisions`.
  */
 
 import type { Violation } from "../core/requirement.ts";

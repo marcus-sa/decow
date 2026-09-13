@@ -44,7 +44,7 @@ The framework is provider-agnostic at the leaves. The step sketches below use th
 
 ### Requirement
 
-A requirement is a row, not a paragraph. It carries the rule verbatim, a foreign key to its source, the closed decision space it admits, and optionally a mechanical check that runs with no model.
+A requirement is typed, not a paragraph. It carries the rule verbatim, a foreign key to its source, the closed decision space it admits, and optionally a mechanical check that runs with no model.
 
 ```ts
 export type Violation = { requirementId: string; evidence: string };
@@ -370,7 +370,7 @@ Requirements, test plans, roadmaps, acceptance criteria, and rules are typed str
 
 What collapses once artifacts are rows:
 
-- An extraction step that recovers requirements from prose. Requirements are authored as rows. A verbatim-substring check against a source document was only ever a workaround for prose sources; with rows, the anchor is a foreign key.
+- An extraction step that recovers requirements from prose. Requirements are authored into the store. A verbatim-substring check against a source document was only ever a workaround for prose sources; with a table behind them, the anchor is a foreign key.
 - Stable identity for document sections. A row has a primary key. Nothing needs to parse headings.
 - A second, file-level effect path for documents. `upsert-artifact` and `replace-symbol` share one contract.
 
@@ -378,7 +378,7 @@ A step output schema and an artifact row schema are the same type, derived from 
 
 The store is built, as `src/artifacts/`: a version column on every row, the optimistic version check `upsert-artifact` already declares, an append-only event log of every accepted upsert, and a read of the body a row held at any past version. Both effect executors route to it.
 
-The closed enum lives in the requirement row. A requirement carries `decisions: ["needed", "not-needed", "cannot-tell"]`; the graph reads it rather than hardcoding it.
+The closed enum lives on the requirement itself. A requirement carries `decisions: ["needed", "not-needed", "cannot-tell"]`; the graph reads it rather than hardcoding it.
 
 ### Graph topology as data, decision functions as code
 
@@ -740,7 +740,7 @@ bound cannot be raised by a model, and running out of it is not a route to
 
 ### What decomposes and what stays wide
 
-The crafter today is one big model doing everything in the diagram. Most nodes are narrow leaves: classify why a suite is still red, fix the lint findings inside the step's own scope. Each is a small model with a validator. Some nodes decompose further than that and stop being leaves at all: reading whether the suite passed is reading an effect's typed result, reading whether the quality gate found anything is reading a declared command's exit status, and reading whether the oracle was red is reading a row a different wave recorded. A node whose answer a cheaper thing already produces does not get a model, and "cheaper" includes "a measurement somebody already took".
+The crafter today is one big model doing everything in the diagram. Most nodes are narrow leaves: classify why a suite is still red, fix the lint findings inside the step's own scope. Each is a small model with a validator. Some nodes decompose further than that and stop being leaves at all: reading whether the suite passed is reading an effect's typed result, reading whether the quality gate found anything is reading a declared command's exit status, and reading whether the oracle was red is reading an `oracle_runs` row a different wave recorded. A node whose answer a cheaper thing already produces does not get a model, and "cheaper" includes "a measurement somebody already took".
 
 A failing test is classified before it is retried. `diagnose` answers
 `impl-wrong | at-wrong | design-missing | harness-failed`, and each cause routes
@@ -789,12 +789,12 @@ The one way the graph can be fooled: an AC that depends on a step it does not de
 
 | Framework owns | Consumer owns |
 |---|---|
-| `Workflow`, `Node`, `Terminal`, `Effect`, `EffectResult`, `OracleMeasurement` and the runner | Requirement rows, the source of truth |
-| `StepDef` with a mandatory validator, `runStep`, retry and escalation policy | Graph rows and decision functions, committed and diffed in PRs |
+| `Workflow`, `Node`, `Terminal`, `Effect`, `EffectResult`, `OracleMeasurement` and the runner | Requirements, the source of truth |
+| `StepDef` with a mandatory validator, `runStep`, retry and escalation policy | The graph and its decision functions, committed and diffed in PRs |
 | A library of mechanical checks: verbatim-substring, enum-membership, id-in-set, symbol-set-difference | Model bindings: which small models, which validator family |
 | Journal interface plus a file or SQLite implementation | Effect executors: what `replace-symbol`, `write-file`, `run-tests` and `measure-oracle` mean in this repo |
 | Test harness: scripted bindings, path enumeration, trace matchers | The known-good hand-written graph used to validate the authoring workflow |
-| The authoring workflow: requirement rows to graph rows plus enumeration test. The roadmap-authoring shape of it is built, at `examples/nwave/roadmap/` | Rendered views for humans |
+| The authoring workflow: requirements in, graph rows out, plus enumeration test. The roadmap-authoring shape of it is built, at `examples/nwave/roadmap/` | Rendered views for humans |
 
 Two properties fall out of the split. Generated graphs are source, committed and reviewed, not runtime artifacts; regenerating at run time would put the frontier model back inside the loop. And the framework is self-hosting: the authoring workflow is itself a graph on the runtime, with the same step contract, and its validator is the compiler plus path enumeration, so the one output that needs frontier judgment is checked without a model.
 
@@ -837,8 +837,8 @@ Each piece is what validates the next.
 
 1. **Runtime, step contract, harness, by hand.** Roughly three hundred lines. No model involved. The only code a person writes from scratch.
 2. **One graph by hand.** The obligations graph above. This is the known-good answer.
-3. **The requirement rows for that graph, by hand.** The rules `des distill`'s own validator enforces, as rows. A closed rule set over a typed manifest is the easy case.
-4. **The authoring workflow, as a graph on the runtime.** Feed it the rows from step 3. Diff its output against the hand-written graph from step 2. The harness already exists to reject any graph with an unhandled decision or unreachable terminal.
+3. **The requirements for that graph, by hand.** The rules `des distill`'s own validator enforces, each one typed. A closed rule set over a typed manifest is the easy case.
+4. **The authoring workflow, as a graph on the runtime.** Feed it the requirements from step 3. Diff its output against the hand-written graph from step 2. The harness already exists to reject any graph with an unhandled decision or unreachable terminal.
 5. **Migrate the prose-heavy rules.** Reconciler triage, workflow triage, deferral handling. This is where "does this rule reduce to a closed enum" gets answered honestly, and where you learn which rules become `cannot-tell` edges.
 6. **The oracle graph, then the DELIVER step-cycle graph.** Both fixed, hand-written once, the same for every consumer. In that order, because the step cycle reads a verdict the oracle graph records and a cycle with nothing to read has no RED.
 7. **Roadmap authoring and the scheduler.** The last piece, and the one that keeps frontier judgment in the loop. By now everything downstream of a roadmap diff is a graph.

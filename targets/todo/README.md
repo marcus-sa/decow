@@ -87,7 +87,7 @@ on your own machine.
 |---|---|
 | `DES_OPENAI_COMPATIBLE_URL` | The endpoint. **Setting it is the switch**; leaving it unset keeps the Anthropic defaults. |
 | `DES_OPENAI_COMPATIBLE_MODEL` | The model the endpoint serves. Required alongside a URL, and refused by name without one: an endpoint does not name a model. |
-| `DES_OPENAI_COMPATIBLE_PROVIDER` | The name the model is reported under, in `describeModels()` and in every attempt row. Defaults to `openai-compatible`, and **any name works** — Mastra's router does not require it to be a provider it knows. |
+| `DES_OPENAI_COMPATIBLE_PROVIDER` | The name the model is reported under, in `describeModels()` and in every `leaf_attempts` row. Defaults to `openai-compatible`, and **any name works** — Mastra's router does not require it to be a provider it knows. |
 | `DES_OPENAI_COMPATIBLE_API_KEY` | Defaults to `unused`, which is what a local server wants — and is also what tells the binding no key is needed, so no leaf refuses for want of one. |
 
 A local [Ollama](https://ollama.com), whose OpenAI-compatible API is at

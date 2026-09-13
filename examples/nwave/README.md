@@ -4,7 +4,7 @@ The three directories here are one consumer's waves. The target they are
 pointed at, and the composition that drives it, live under `targets/todo/` and
 `targets/todo/.des/`. The framework is `@des/core`, the server over it is
 `@des/server`, and the UI over that is `@des/ui`; this directory holds what a
-consumer owns: the graphs, the requirement rows, the prompts, the model
+consumer owns: the graphs, the requirements, the prompts, the model
 bindings, and the fixtures. nWave is the consumer, and Overdrive is the first
 project it delivers.
 
@@ -25,7 +25,7 @@ deliver/   the scheduler reads the steps, refuses any value whose oracle is not 
            GREEN is bought by production. Each outcome is a step_runs row.
                                         │
 targets/todo/.des/  the composition that points all of it at a real project — `targets/todo`, copied
-                    into a run directory — registered with one server, whose runs are rows.
+                    into a run directory — registered with one server, whose runs survive a restart.
 ```
 
 An agent never writes a workflow. It fills in leaves. The graphs below are
@@ -67,7 +67,7 @@ worker is re-driven.
 
 Files: `schema.ts` (the roadmap steps), `shape.ts` (the pure shape validator),
 `disjointness.ts` (the pure blast-radius pass), `steps.ts` (the two leaves and
-their requirement rows), `fixture.ts` (a known-good roadmap and three
+their requirements), `fixture.ts` (a known-good roadmap and three
 deliberately broken ones), `graph.ts`, `graph.test.ts`.
 
 The schema mirrors nwave-experimental's `HandoverValue`:
@@ -240,7 +240,7 @@ there, and the manifest validator refuses a support outside it.
 
 ## `deliver/` — the fixed step cycle, and the scheduler that runs it per step
 
-Files: `steps.ts` (the leaves, their enums and requirement rows, the
+Files: `steps.ts` (the leaves, their enums and requirements, the
 `StepUnderDelivery` input), `graph.ts`, `pipeline.ts` (the composition over the
 artifact store, the VCS, and the scheduler), `smoke.ts`, and tests for each.
 

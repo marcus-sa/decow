@@ -27,7 +27,7 @@
  *
  * The order of the checks is the order defects are reported in, and it is
  * stable: identity first, then the graph, then each step's own text.
- * `decompose`'s requirement rows consume the same predicates through
+ * `decompose`'s requirements consume the same predicates through
  * `firstDefectOfKind`, so the step's own mechanical guardrail and the graph's
  * gate cannot drift apart.
  *

@@ -128,7 +128,7 @@ export const statusOf = (artifacts: ArtifactStore, stepId: string): StepStatus =
  *
  * `criteria` is the observation plus every obligation rendered as the pair it
  * is, `stimulus -> expected`, because that is what "the acceptance criteria,
- * verbatim" means when the criteria are rows.
+ * verbatim" means when the criteria are typed pairs rather than prose.
  */
 export const stepUnderDelivery = (step: RoadmapStep, design: string): StepUnderDelivery => ({
   id: step.id,

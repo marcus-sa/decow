@@ -115,7 +115,7 @@ const decomposeAnswers = (answer: NonNullable<Script["decompose"]>): ScriptedAns
   return [{ decision: "proposed", payload: { roadmap: PROPOSALS[answer], rationale: "three slices" } }];
 };
 
-/** Per-step verdict rows that satisfy the leaf's own mechanical checks. */
+/** Per-step verdicts that satisfy the leaf's own mechanical checks. */
 const verdictsFor = (roadmap: Roadmap, verdict: SliceVerdict) =>
   roadmap.steps.map((step) => ({ stepId: step.id, verdict, anchor: step.observation }));
 
@@ -156,12 +156,12 @@ const stepAt = (roadmap: Roadmap, i: number): RoadmapStep => {
   return step;
 };
 
-/** The roadmap row of what a person reads. */
+/** The roadmap a person reads, off the trail. */
 const roadmapOf = (trail: readonly unknown[]) => (trail[0] as { roadmap: Roadmap }).roadmap;
-/** The added-edges row. */
+/** The added edges, off the same trail. */
 const edgesOf = (trail: readonly unknown[]) =>
   (trail[1] as { addedEdges: string[]; unresolvable?: { a: string; b: string } });
-/** The defects row. */
+/** The defects, off the same trail. */
 const defectsOf = (trail: readonly unknown[]) =>
   (trail[2] as { defects: { kind: string; stepId?: string }[] }).defects;
 
@@ -222,7 +222,7 @@ describe("roadmap graph", () => {
     expect(visited(outcome.trace, "validate-slices")).toBe(false);
 
     // The person reads the same named defects `decompose` was re-prompted
-    // with, which is the whole reason they are rows rather than a boolean.
+    // with, which is the whole reason they are named rather than a boolean.
     // The two the gate owns alone, and only those: the other three never get
     // this far, because the leaf's own checks refuse a proposal carrying one.
     expect([...new Set(defectsOf(outcome.trail).map((d) => d.kind))].sort()).toEqual([

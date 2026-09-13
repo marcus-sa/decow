@@ -16,7 +16,7 @@
  * leaf rather than a fanout, and that choice is documented in `./graph.ts`.
  *
  * This file is consumer-side: the closed decision space of each leaf, its
- * requirement rows, and its prompt. The model bindings are injected, so a test
+ * requirements, and its prompt. The model bindings are injected, so a test
  * constructs no agent and spends no token.
  *
  * No nondeterminism lives in this file. No Date.now, no Math.random, no
@@ -200,7 +200,7 @@ export const cannotDecomposeIsAnHonestAnswer = (
 export const SLICE_VERDICTS = ["is-slice", "not-slice", "cannot-tell"] as const;
 export type SliceVerdict = (typeof SLICE_VERDICTS)[number];
 
-/** One row of the per-step answer. `anchor` is verbatim from the observation. */
+/** One step's verdict. `anchor` is verbatim from the observation. */
 export const SliceVerdictRow = z.object({
   stepId: z.string(),
   verdict: z.enum(SLICE_VERDICTS),
@@ -217,11 +217,12 @@ export type SlicesInput = z.infer<typeof SlicesInput>;
 
 /**
  * The leaf's own decision is the AGGREGATE, because that is what the graph
- * routes: a set of per-step verdicts is not a closed enum. The per-step rows
- * ride in the payload, where they are the feedback `decompose` reads and the
- * evidence a person reads, and the aggregate is the worst verdict across them
- * — one step that is not a slice makes the roadmap not decomposable as
- * proposed, and one step nobody could decide makes it undecidable.
+ * routes: a set of per-step verdicts is not a closed enum. The verdicts
+ * themselves ride in the payload, where they are the feedback `decompose`
+ * reads and the evidence a person reads, and the aggregate is the worst
+ * verdict across them — one step that is not a slice makes the roadmap not
+ * decomposable as proposed, and one step nobody could decide makes it
+ * undecidable.
  */
 export const SlicesOutput = stepOutput(SLICE_VERDICTS, {
   verdicts: z.array(SliceVerdictRow),
@@ -233,7 +234,7 @@ export type SlicesCtx = { input: SlicesInput; output: SlicesOutput };
 
 /**
  * The verbatim check, per step. `verbatim` is the framework's own mechanical
- * check and it is reused here once per row rather than reimplemented over the
+ * check and it is reused here once per step rather than reimplemented over the
  * whole payload: the source each anchor is checked against is THAT step's
  * observation, so a quote lifted from a neighbouring step's observation is a
  * violation rather than a near miss.

@@ -203,7 +203,7 @@ describe("the obligations graph", () => {
     expect(visitCount(outcome.trace, "validate-manifest")).toBe(MAX_PROPOSALS);
     expect(visited(outcome.trace, "persist")).toBe(false);
     // The person reads the same NAMED defect the leaf was re-prompted with,
-    // which is the whole reason they are rows rather than a boolean.
+    // which is the whole reason they are named rather than a boolean.
     expect(outcome.trail[2]).toMatchObject({ defects: [{ kind: "support-ignored" }] });
   });
 

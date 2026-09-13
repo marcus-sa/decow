@@ -16,7 +16,7 @@ nothing depends back.
 | `@des/core/journal` | Keyed by `(step id, version, input hash)`. In memory, or on `bun:sqlite`. |
 | `@des/core/compile` | The compiler from the node map to a Mastra workflow, the durable runtime, and the run-event projection. |
 | `@des/core/scheduler` | The frontier, the concurrency limit, the resource leases. Generic in steps. |
-| `@des/core/requirement` | The rule as a row: verbatim text, a foreign key, a closed decision space, an optional mechanical check. |
+| `@des/core/requirement` | The rule itself: verbatim text, a foreign key to its source, a closed decision space, an optional mechanical check. |
 | `@des/core/artifacts` | Typed rows on `bun:sqlite`: one version column, one append-only event log, one time-travel read. |
 | `@des/core/vcs` | The agent-native VCS: symbol inventory, identity registry, leases, the write path and its verification gate. |
 | `@des/core/harness` | `inspectGraph`, `enumeratePaths`, `scriptedExecutor`, and the trace matchers. |

@@ -18,7 +18,7 @@ export const verbatim =
     return source(ctx).includes(q) ? null : { requirementId, evidence: q };
   };
 
-/** Convenience: a whole Requirement row whose only check is a verbatim anchor. */
+/** Convenience: a whole Requirement whose only check is a verbatim anchor. */
 export const verbatimRequirement = <Ctx>(row: {
   id: string;
   sourceId: string;

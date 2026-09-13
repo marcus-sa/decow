@@ -333,8 +333,8 @@ export const humanReason = (s: State): BlockReason => {
  * What a person reads. The design's sketch names four things a review payload
  * carries — the reason, the roadmap, the added edges, the defects — and the
  * framework's suspend payload is `{ reason, trail }`, so the other three are
- * the trail's rows, in that order, plus the slice verdicts and the persist
- * outcome that the block path needs.
+ * the trail's first three entries, in that order, plus the slice verdicts and
+ * the persist outcome that the block path needs.
  */
 export const reviewTrail = (s: State): unknown[] => [
   { roadmap: s.roadmap },

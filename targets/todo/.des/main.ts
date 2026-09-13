@@ -17,7 +17,7 @@
  * THESE registrations. One origin, one port, one process.
  *
  * NO KEY IS NEEDED TO START IT, and that is deliberate rather than convenient.
- * The graphs, the projections, the artifact rows and the event stream are all
+ * The graphs, the projections, the artifact store and the event stream are all
  * readable without one; what needs a key is a LEAF, and the binding refuses
  * there, by name, on the attempt. The refusal lands in the run's own trail
  * where a person reads it, and the server stays up — which is the difference

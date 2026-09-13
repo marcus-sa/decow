@@ -351,7 +351,7 @@ describe("loops are bounded, and the bound is part of the graph", () => {
     expect(parked.trace).toEqual(["spin", "ask"]);
 
     // Resuming picks up AFTER `ask` in iteration 1 — `apply` runs before the
-    // next `spin`. A restart of the iteration would show `spin` twice in a row.
+    // next `spin`. A restart of the iteration would show `spin` twice over.
     const second = await resume<L>(wf, parked.runId, { answer: "bump" }, noEffects);
     expect(second.kind).toBe("suspended");
     expect(second.trace).toEqual(["spin", "ask", "apply", "spin", "ask"]);

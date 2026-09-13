@@ -9,7 +9,7 @@
  * that skipped it.
  *
  * This file is consumer-side: the closed decision space of each leaf, its
- * requirement rows, and its prompt. The model bindings are injected (see
+ * requirements, and its prompt. The model bindings are injected (see
  * `deliverDefs`), so a test constructs no agent and spends no token.
  *
  * ONE leaf classifies and its enum is the interesting one. The rest are
@@ -33,8 +33,8 @@
  * The oracle graph authored the oracle and SOFTWARE executed it: the author
  * holds no tools and the consumer's declared `commands.oracle` is what ran it,
  * so "this oracle fails on its assertion and not on its scaffolding" is a
- * property the runner owns and measures. The verdict is a row this cycle
- * reads, never a judgement it makes.
+ * property the runner owns and measures. The verdict is an `oracle_runs` row
+ * this cycle reads, never a judgement it makes.
  *
  * Nothing else here runs a test, writes a symbol, or shells out. The leaves
  * are classifications over evidence the state carries, and `implement`'s
@@ -369,8 +369,8 @@ export const scopeIsTheStep = (decisions: readonly string[]): Requirement<LeafCt
 
 /**
  * Which rules bind to which leaf. `decisions` is the closed space of the leaf
- * the row is bound to, so one rule text can bind to steps with different
- * decision spaces without either of them hardcoding the other.
+ * the requirement is bound to, so one rule text can bind to steps with
+ * different decision spaces without either of them hardcoding the other.
  */
 const REQUIREMENTS: { [K in LeafId]: ((d: readonly string[]) => Requirement<LeafCtx>)[] } = {
   implement: [noInventedApi, minimalChange],

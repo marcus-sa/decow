@@ -41,8 +41,8 @@ export const LEASE_MODES = ["read", "write", "exclusive"] as const;
 export type LeaseMode = (typeof LEASE_MODES)[number];
 
 /**
- * § 5.2, as a table. Rows are the mode a live lease holds, columns the mode
- * being requested, `true` meaning the request is blocked.
+ * § 5.2, as a table. Down the side is the mode a live lease holds, across the
+ * top the mode being requested, `true` meaning the request is blocked.
  *
  * It is deliberately asymmetric, because the document is: a read lease blocks
  * a later write, and a live write lease does not block a later read, because

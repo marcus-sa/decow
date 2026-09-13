@@ -92,7 +92,7 @@ the ENGINE's — the one the snapshot is under, and the one that outlives the
 process — and the server's record carries it as `engineRunId`, so the two
 names for one run join in one hop.
 
-## Runs, attempts and events are ROWS
+## The run store
 
 `src/store.ts` is three tables on `bun:sqlite`, and the registry is a
 projection of them.
