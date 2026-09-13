@@ -15,6 +15,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { z } from "zod";
 import { openArtifacts } from "@des/core/artifacts";
 import { memoryEffects } from "@des/core/effects";
 import { memoryJournal } from "@des/core/journal";
@@ -48,7 +49,7 @@ import {
   type GateState,
 } from "./fixture.ts";
 import { openRegistry, type Registry } from "./registry.ts";
-import { registration, type PipelineRegistration, type PipelineStep } from "./registration.ts";
+import { pipeline, registration, type PipelineStep } from "./registration.ts";
 
 /* ------------------------------------------------------------- the registry */
 
@@ -283,7 +284,7 @@ describe("the artifact rows", () => {
 /* ---------------------------------------------------------- the pipelines */
 
 /** What a pipeline recorded, in the order it recorded it. */
-type Recorded = { stepId: string; kind: string; runId: string };
+type Recorded = { stepId: string; kind: string; runId: string; tag?: string };
 
 /**
  * Two steps, B after A, each one an ordinary run of the gate graph.
@@ -309,20 +310,25 @@ const twoSteps = (options: {
     { id: "b", dependencies: ["a"], description: "the step that waits", workflowId: "gate", input: { subject: "alpha bravo" } },
   ];
 
-  const pipeline: PipelineRegistration = {
+  // These two steps are FIXED, so the input names nothing they are derived
+  // from. It is a tag, so a test can tell one drive of this pipeline from
+  // another — which is what the hooks being handed the input is for.
+  const registered = pipeline({
     id: "two-steps",
     title: "A roadmap of two",
+    input: z.object({ tag: z.string().optional() }),
     steps: () => steps,
     ...(options.readiness === undefined ? {} : { readiness: options.readiness }),
-    record: (stepId, outcome: RunOutcome<unknown>) => {
+    record: (stepId, outcome: RunOutcome<unknown>, input) => {
       recorded.push({
         stepId,
         kind: outcome.kind === "suspended" ? "suspended" : outcome.terminal.kind,
         runId: outcome.runId,
+        ...(input.tag === undefined ? {} : { tag: input.tag }),
       });
     },
     concurrency: 1,
-  };
+  });
 
   const registry = openRegistry({
     mintId: () => `run-${(minted += 1)}`,
@@ -339,7 +345,7 @@ const twoSteps = (options: {
         executor: () => effects.execute,
       }),
     ],
-    pipelines: [pipeline],
+    pipelines: [registered],
   });
 
   return { registry, artifacts, recorded, steps };
@@ -350,24 +356,28 @@ describe("a registered pipeline", () => {
     const { registry } = twoSteps();
     expect(listPipelines(registry)).toEqual([{ id: "two-steps", title: "A roadmap of two" }]);
 
-    const before = await getPipeline(registry, "two-steps");
+    const before = await getPipeline(registry, "two-steps", {});
     expect(before.steps.map((r) => [r.id, r.status])).toEqual([
       ["a", "pending"],
       ["b", "pending"],
     ]);
     expect(before.steps[1]?.dependencies).toEqual(["a"]);
     expect(before.steps.every((r) => r.runId === undefined)).toBe(true);
-    expect(() => getPipeline(registry, "nope")).toThrow(/no pipeline nope/);
+    expect(() => getPipeline(registry, "nope", {})).toThrow(/no pipeline nope/);
+    // And an input the pipeline's own schema refuses never reaches its steps.
+    await expect(getPipeline(registry, "two-steps", "not an object")).rejects.toThrow(
+      /does not parse/,
+    );
   });
 
   test("every step runs through the runner, so every step has a run, a trace and events", async () => {
     const { registry, recorded } = twoSteps();
     const events = listen(registry);
 
-    expect(runPipeline(registry, "two-steps")).toEqual({ id: "two-steps", started: true });
+    expect(runPipeline(registry, "two-steps", {})).toEqual({ id: "two-steps", started: true });
     await registry.idle();
 
-    const after = await getPipeline(registry, "two-steps");
+    const after = await getPipeline(registry, "two-steps", {});
     expect(after.steps.map((r) => r.status)).toEqual(["accepted", "accepted"]);
     expect(after.error).toBeUndefined();
 
@@ -409,8 +419,8 @@ describe("a registered pipeline", () => {
 
   test("a second drive while one is going starts no second", async () => {
     const { registry } = twoSteps();
-    expect(runPipeline(registry, "two-steps").started).toBe(true);
-    expect(runPipeline(registry, "two-steps").started).toBe(false);
+    expect(runPipeline(registry, "two-steps", {}).started).toBe(true);
+    expect(runPipeline(registry, "two-steps", {}).started).toBe(false);
     await registry.idle();
     expect(listRuns(registry)).toHaveLength(2);
   });
@@ -419,10 +429,10 @@ describe("a registered pipeline", () => {
     // The whole point of the move: the step's suspension IS a run's suspension,
     // so the dialog that answers a standalone run answers a step.
     const { registry, recorded } = twoSteps({ decision: "needs-a-person" });
-    runPipeline(registry, "two-steps");
+    runPipeline(registry, "two-steps", {});
     await registry.idle();
 
-    const parked = await getPipeline(registry, "two-steps");
+    const parked = await getPipeline(registry, "two-steps", {});
     expect(parked.steps.map((r) => r.status)).toEqual(["suspended", "pending"]);
     const runId = parked.steps[0]?.runId as string;
     expect(getRun(registry, runId).suspension?.resume?.options).toEqual(["approve", "reject"]);
@@ -435,7 +445,7 @@ describe("a registered pipeline", () => {
     expect(resumeStep(registry, "two-steps", "a", { decision: "approve" })).toEqual({ runId });
     await registry.idle();
 
-    const after = await getPipeline(registry, "two-steps");
+    const after = await getPipeline(registry, "two-steps", {});
     expect(after.steps.map((r) => r.status)).toEqual(["accepted", "suspended"]);
     // A's run carries both halves, and B only started because A was accepted.
     expect(getRun(registry, runId).trace.map((t) => t.node)).toContain("ask");
@@ -443,6 +453,33 @@ describe("a registered pipeline", () => {
       "a:suspended",
       "a:accepted",
       "b:suspended",
+    ]);
+  });
+
+  test("a step parked under one drive continues under that drive's own input", async () => {
+    // The input rides on the event that ATTACHED the run, so answering a
+    // suspension re-evaluates the frontier THAT drive computed rather than
+    // whichever input the pipeline happened to be driven with most recently.
+    const { registry, recorded } = twoSteps({ decision: "needs-a-person" });
+    runPipeline(registry, "two-steps", { tag: "first" });
+    await registry.idle();
+    expect(recorded.map((r) => `${r.stepId}:${r.tag}`)).toEqual(["a:first"]);
+
+    // A second drive, with a different input. `a` is parked and `b` waits on
+    // it, so the frontier is empty and this starts nothing.
+    runPipeline(registry, "two-steps", { tag: "second" });
+    await registry.idle();
+    expect(recorded).toHaveLength(1);
+
+    resumeStep(registry, "two-steps", "a", { decision: "approve" });
+    await registry.idle();
+
+    // Both halves of `a`, and the `b` its acceptance let through, under the
+    // input `a` was started with.
+    expect(recorded.map((r) => `${r.stepId}:${r.tag}`)).toEqual([
+      "a:first",
+      "a:first",
+      "b:first",
     ]);
   });
 
@@ -458,10 +495,10 @@ describe("a registered pipeline", () => {
     // value's oracle has been measured red"; here it is a flag, and the shape
     // is the same: nothing downstream of a step that may not run becomes ready.
     const { registry } = twoSteps({ readiness: (stepId) => stepId !== "a" });
-    runPipeline(registry, "two-steps");
+    runPipeline(registry, "two-steps", {});
     await registry.idle();
 
-    const after = await getPipeline(registry, "two-steps");
+    const after = await getPipeline(registry, "two-steps", {});
     expect(after.steps.map((r) => r.status)).toEqual(["pending", "pending"]);
     // Nothing ran at all: the fixture's model bindings throw, so reaching a
     // leaf would have failed this.
@@ -491,13 +528,14 @@ describe("a declared resource serializes two steps", () => {
         }),
       ],
       pipelines: [
-        {
+        pipeline({
           id: "busy-steps",
           title: "Two steps that could overlap",
+          input: z.object({}),
           steps: () => steps,
           concurrency: 2,
           ...(resourcesFor === undefined ? {} : { resourcesFor }),
-        },
+        }),
       ],
     });
     return { registry, track };
@@ -505,10 +543,10 @@ describe("a declared resource serializes two steps", () => {
 
   test("two steps that name the same resource never overlap", async () => {
     const { registry, track } = twoBusySteps(() => ["shared-db"]);
-    runPipeline(registry, "busy-steps");
+    runPipeline(registry, "busy-steps", {});
     await registry.idle();
 
-    const after = await getPipeline(registry, "busy-steps");
+    const after = await getPipeline(registry, "busy-steps", {});
     expect(after.steps.map((r) => r.status)).toEqual(["accepted", "accepted"]);
     expect(track.peak()).toBe(1);
   });
@@ -517,10 +555,10 @@ describe("a declared resource serializes two steps", () => {
     // The control. Same steps, same concurrency, same lease manager; the only
     // difference is what the step says it needs.
     const { registry, track } = twoBusySteps();
-    runPipeline(registry, "busy-steps");
+    runPipeline(registry, "busy-steps", {});
     await registry.idle();
 
-    const after = await getPipeline(registry, "busy-steps");
+    const after = await getPipeline(registry, "busy-steps", {});
     expect(after.steps.map((r) => r.status)).toEqual(["accepted", "accepted"]);
     expect(track.peak()).toBe(2);
   });

@@ -46,7 +46,7 @@ import {
 import { leafStepId, type LeafId } from "../../../../examples/nwave/deliver/steps.ts";
 import { readRoadmap } from "../../../../examples/nwave/deliver/pipeline.ts";
 import type { Roadmap } from "../../../../examples/nwave/roadmap/schema.ts";
-import { REQUEST, todoRegistrations } from "../../../../targets/todo/.des/registrations.ts";
+import { todoRegistrations } from "../../../../targets/todo/.des/registrations.ts";
 import type { Models } from "../../../../targets/todo/.des/models.ts";
 import {
   designSource,
@@ -55,7 +55,7 @@ import {
   TARGET,
   type RunDir,
 } from "../../../../targets/todo/.des/run-dir.ts";
-import { BROWSER_REQUEST, BROWSER_ROADMAP } from "./roadmaps.ts";
+import { BROWSER_REQUEST, BROWSER_ROADMAP, DELIVERY_REQUEST } from "./roadmaps.ts";
 
 /* ---------------------------------------------------------- the two values */
 
@@ -148,7 +148,7 @@ const MANIFEST = [
 
 /** The delivery roadmap, as ROADMAP proposes it: no facts, no oracle. */
 const deliveryRoadmap = (symbolId: (path: string, name: string) => string): Roadmap => ({
-  request: REQUEST,
+  request: DELIVERY_REQUEST,
   steps: [
     {
       id: "01-01",
@@ -288,7 +288,7 @@ const scriptedModels = (symbolFor: (stepId: string) => string): Models => {
 };
 
 /** The delivery roadmap, resolved once the project's symbols are known. */
-let DELIVERY_ROADMAP: () => Roadmap = () => ({ request: REQUEST, steps: [] });
+let DELIVERY_ROADMAP: () => Roadmap = () => ({ request: DELIVERY_REQUEST, steps: [] });
 
 /* ------------------------------------------------------------- the pre-bake */
 
@@ -336,16 +336,18 @@ const main = async (): Promise<void> => {
 
   // ---- pre-bake, through the server's own registry ------------------------
 
-  const parked = await runToAccepted(registry, "roadmap", { request: REQUEST });
+  // The roadmap's id is the request it is authored for, so everything after
+  // this names it with the same string a person would pick off the list.
+  const parked = await runToAccepted(registry, "roadmap", { request: DELIVERY_REQUEST });
   resumeRun(registry, parked, { decision: "approve" });
   await registry.idle();
 
-  await runToAccepted(registry, "obligations", {});
+  await runToAccepted(registry, "obligations", { roadmapId: DELIVERY_REQUEST });
 
-  runPipeline(registry, "oracles");
+  runPipeline(registry, "oracles", { roadmapId: DELIVERY_REQUEST });
   await registry.idle();
 
-  const oracles = await getPipeline(registry, "oracles");
+  const oracles = await getPipeline(registry, "oracles", { roadmapId: DELIVERY_REQUEST });
   if (!oracles.steps.every((step) => step.status === "accepted")) {
     throw new Error(`boot: an oracle was not measured red: ${JSON.stringify(oracles.steps)}`);
   }

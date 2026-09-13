@@ -21,7 +21,7 @@
 import type { StepAttempt } from "@des/core/step";
 import type { StepStatus } from "@des/core/scheduler";
 import type { NodeId } from "@des/core/workflow";
-import { asJson } from "./json.ts";
+import { asJson, type Json } from "./json.ts";
 import type { RunDatabase } from "./store.ts";
 import type { Suspension } from "./runs.ts";
 
@@ -38,7 +38,22 @@ export type ServerEvent =
       /** `failed` is a graph bug rather than a declared ending; see `RunStatus`. */
       kind: "accepted" | "rejected" | "failed";
     }
-  | { type: "pipeline-step"; pipelineId: string; stepId: string; status: StepStatus; runId?: string };
+  | {
+      type: "pipeline-step";
+      pipelineId: string;
+      stepId: string;
+      status: StepStatus;
+      runId?: string;
+      /**
+       * True on the event that ATTACHED this run to this step, and on no
+       * other. Said rather than inferred, because the two emitters differ in
+       * what they carry and a reader that guessed from a payload's shape would
+       * guess wrong the day a payload is legitimately empty.
+       */
+      attached?: true;
+      /** The input the pipeline was driven with. On the attaching event. */
+      input?: Json;
+    };
 
 /** The eight kinds, as one closed list. The table stores every one of them. */
 export const EVENT_KINDS = [

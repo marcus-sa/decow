@@ -718,7 +718,7 @@ openScheduler<S>({
 - **Resource leases** serialize shared test infrastructure and nothing else. A step declares the names it needs, the scheduler takes the whole set atomically before the run and releases it after (`finally`, so a throwing run does not deadlock the next one), and two steps sharing one name serialize on that name while two steps sharing none run together. Taking the set at once is what makes it deadlock-free: a run never holds one name while waiting for another. `inMemoryLeases` grants waiters FIFO, so which of two blocked steps goes first is a function of the order they asked rather than of timing.
 - **A `runOne` that throws is a graph bug and is not absorbed.** Everything a graph decides is data, so a throw means the graph itself is malformed, and swallowing it into a status would hide that.
 
-**[`examples/nwave/deliver/pipeline.ts`](./examples/nwave/deliver/pipeline.ts) is the step half, and the SERVER is the scheduling half.** The consumer's file reads the `roadmaps` row for its `stepIds` and joins through to `roadmap_steps` (a scan would mix two roadmaps in one store), turns one step into the seed of one DELIVER run, and appends a `step_runs` row `{ stepId, runId, outcome, seq }` for each finished run. It calls `openScheduler` nowhere: a pipeline registration is steps plus `readiness` plus `record`, and `@des/server` drives the frontier — starting each ready step through the same `runner.start` a person's button starts a run with, so **a step's run is an ordinary run** with an id, a trace, events and a dialog. One DELIVER run per step, with:
+**[`examples/nwave/deliver/pipeline.ts`](./examples/nwave/deliver/pipeline.ts) is the step half, and the SERVER is the scheduling half.** The consumer's file reads the `roadmaps` row for its `stepIds` and joins through to `roadmap_steps` (a scan would mix two roadmaps in one store), turns one step into the seed of one DELIVER run, and appends a `step_runs` row `{ stepId, runId, outcome, seq }` for each finished run. It calls `openScheduler` nowhere: a pipeline registration is an input schema plus steps plus `readiness` plus `record`, and `@des/server` drives the frontier — starting each ready step through the same `runner.start` a person's button starts a run with, so **a step's run is an ordinary run** with an id, a trace, events and a dialog. One DELIVER run per step, with:
 
 - the step's obligations, `predictedTouches` and `authority` in the `StepUnderDelivery` the graph reads;
 - **the run's id as the VCS session**, so two runs hold two leases rather than colliding on the one lease a session may hold;
@@ -798,13 +798,23 @@ authored ids by the compiler that minted the compiled ones.
 **Runs, attempts and events are ROWS**, and the registry is a projection of
 them — see [Runs are rows](#runs-are-rows).
 
-**A pipeline is a registered composition that runs nothing.** It is steps —
-each naming a registered workflow and the input one run of it takes — plus
-`readiness` and `record`. The server drives the frontier through `@des/core`'s
-scheduler and starts each ready step through the same `runner.start` a person's
-button uses, so **a step's run is an ordinary run**: a server run id, a live
-trace, events, and a suspension answered in the same dialog. Its status is read
-off that run.
+**A pipeline is a registered composition that runs nothing.** It is an input
+schema, steps — each naming a registered workflow and the input one run of it
+takes — plus `readiness` and `record`. The server drives the frontier through
+`@des/core`'s scheduler and starts each ready step through the same
+`runner.start` a person's button uses, so **a step's run is an ordinary run**: a
+server run id, a live trace, events, and a suspension answered in the same
+dialog. Its status is read off that run.
+
+**A pipeline takes an input for the same reason a workflow does.** A
+composition over a roadmap is a composition over ONE roadmap, and which one is a
+thing a person supplies rather than a thing the registration was built holding.
+It is parsed by the registration's own schema before anything is scheduled, and
+every hook is handed the parsed value — so the steps are derived from it, and a
+value the steps could not come from never becomes a drive. The input rides on
+the event that ATTACHED a step's run, which is what lets a suspension answered
+minutes later, in another process, continue the frontier its own drive
+computed.
 
 **A suspension is answered in the UI.** A parked run raises a notification and
 a dialog whose buttons are the node's own closed enum. A person cannot answer
@@ -828,16 +838,23 @@ type WorkflowRegistration<S, I> = {
   observe?: StepObserver;                       // the target's own sink, called before the server's
 };
 
-type PipelineRegistration = {
+type PipelineRegistration<I> = {
   id: string;
   title: string;
-  steps: () => PipelineStep[] | Promise<PipelineStep[]>; // { id, dependencies, workflowId, input }
-  readiness?: (stepId: string) => boolean | Promise<boolean>;
-  record?: (stepId: string, outcome: RunOutcome<unknown>) => void | Promise<void>;
+  input: z.ZodType<I>;                                   // what a person supplies to drive one
+  steps: (input: I) => PipelineStep[] | Promise<PipelineStep[]>; // { id, dependencies, workflowId, input }
+  readiness?: (stepId: string, input: I) => boolean | Promise<boolean>;
+  record?: (stepId: string, outcome: RunOutcome<unknown>, input: I) => void | Promise<void>;
   concurrency?: number;
-  resourcesFor?: (step: PipelineStep) => string[];
+  resourcesFor?: (step: PipelineStep, input: I) => string[];
 };
 ```
+
+Both are written with their type parameters inferred from the object literal
+and erased at the door — `registration()` and `pipeline()` — because the server
+holds a heterogeneous set of each and drives every one through the same calls.
+A hook CONSUMES its input and a function's parameter does not widen, so the
+erasure has to be spelled out rather than written `<unknown>`.
 
 Three of those shapes are worth defending. **The graph is a factory** because a
 `Workflow<S>` has its journal and its observer already closed over, and "what
@@ -860,8 +877,8 @@ reach it.
 | `listRuns` · `getRun` | Status, the trace with iteration counters, the suspension and its answer space, the terminal, and every leaf attempt. |
 | `resumeRun` | Answer a suspension. Outside the enum is a refusal naming it. |
 | `readArtifacts` | A table's rows, now or at a past version. |
-| `listPipelines` · `getPipeline` | The compositions, and one's run tree with the run each step is on. |
-| `runPipeline` · `resumeStep` | Drive the frontier; answer a parked step. |
+| `listPipelines` · `getPipeline` | The compositions, and one's run tree — for the input naming what it is a composition of — with the run each step is on. |
+| `runPipeline` · `resumeStep` | Drive the frontier for one input; answer a parked step. |
 | `exportRun` | One run as JSON lines: the run, then its attempts, then its events. |
 | `GET /api/events` | The one route rather than a function: `run-started`, `node-entered`, `node-left`, `leaf-attempt`, `suspended`, `resumed`, `terminal`, `pipeline-step` — every one of them appended to `run_events` before it is published. |
 
@@ -1026,6 +1043,8 @@ bun run todo [run-name]             # http://localhost:3000, run directory `firs
 
 It registers **four graphs** — `roadmap`, `obligations`, `oracle`, `deliver` — and **two pipelines**: `oracles` (one oracle per value, in dependency order) and `delivery` (the step cycle, once per red-oracled step). A pipeline step names one of those four graphs and the input one run of it takes, so a graph and a pipeline are two front doors onto ONE registration rather than onto one graph twice — same seed, same executor, same journal. Neither escapes what the other enforces: the standalone `deliver` seed refuses a step whose oracle has not been measured red, by name, and the pipeline declares the same fact as its `readiness`.
 
+**A roadmap is an argument, not a constant.** `roadmap` takes the request a person types, bounded and non-empty; the other three take the ID of a roadmap that already exists, and the two pipelines take one too. That id IS the request text: the roadmap graph persists its `roadmaps` row under `roadmap.request`, as nWave keys a handover by the request it was authored for — so "which roadmap" and "for what" are one string, and there is nothing to keep in step. An id the artifact store does not hold is refused by name rather than answered with an empty step list. The design source and the symbol inventory still come from the run directory, because they are facts about the target rather than about what is being asked of it.
+
 A run directory holds the copied project plus five stores — `vcs.sqlite`, `artifacts.sqlite`, `journal.sqlite`, `mastra.sqlite`, `runs.sqlite` — all of them files, so a restarted server continues rather than beginning again: it shows every prior run, keeps a delivered step delivered, and answers a suspension its predecessor produced. `runs/` is gitignored. `test/` is tracked only once it exists, because the oracle is what creates it.
 
 **It starts without a key**, and that is a position rather than a convenience. The graphs, the projections, the artifact rows and the event stream are all readable without one, so refusing at the door would make every one of them unreadable to say one thing about a leaf. The refusal is where the need is: a leaf with no key throws by name, `runStep` records it as a trail entry the way it records any provider error, and the graph routes the exhausted leaf where it routes one. Measured rather than assumed — starting a roadmap run with no key parks it at `human` under `validator-exhausted`, with the credential message on both attempts and in the trail, and the server still up.
@@ -1099,7 +1118,7 @@ bun run ui:build
 ANTHROPIC_API_KEY=... bun run todo
 ```
 
-then, in the UI: run `roadmap`, read the roadmap it parks with and answer `approve`; run `obligations`; run the `oracles` pipeline; run the `delivery` pipeline. What every call decided and cost lands in `runs/first/runs.sqlite`, and the UI shows it per run.
+then, in the UI: run `roadmap` with the request you want decomposed, read the roadmap it parks with and answer `approve`; run `obligations` naming that roadmap; pick it on the `oracles` pipeline page and drive it; then pick it on `delivery` and drive that. A roadmap is named by the request it was authored for — that is the id its row is written under — so the pipeline pages offer the requests the artifact store holds and a person picks one. What every call decided and cost lands in `runs/first/runs.sqlite`, and the UI shows it per run.
 
 Or, for the smallest real thing — one oracle, one subagent, one measurement, no run directory:
 

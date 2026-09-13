@@ -920,14 +920,15 @@ type WorkflowRegistration<S, I> = {
   observe?: StepObserver;
 };
 
-type PipelineRegistration = {
+type PipelineRegistration<I> = {
   id: string;
   title: string;
-  steps: () => PipelineStep[] | Promise<PipelineStep[]>; // { id, dependencies, workflowId, input }
-  readiness?: (stepId: string) => boolean | Promise<boolean>;
-  record?: (stepId: string, outcome: RunOutcome<unknown>) => void | Promise<void>;
+  input: z.ZodType<I>;                                   // what a person supplies to drive one
+  steps: (input: I) => PipelineStep[] | Promise<PipelineStep[]>; // { id, dependencies, workflowId, input }
+  readiness?: (stepId: string, input: I) => boolean | Promise<boolean>;
+  record?: (stepId: string, outcome: RunOutcome<unknown>, input: I) => void | Promise<void>;
   concurrency?: number;
-  resourcesFor?: (step: PipelineStep) => string[];
+  resourcesFor?: (step: PipelineStep, input: I) => string[];
 };
 ```
 
@@ -937,7 +938,10 @@ watching wants. The executor sees the run's input because its two ownership
 options — which oracle this step's crafter is walled off from, which failing
 tests it did not cause — are facts about what the run is ABOUT. And a pipeline
 step names a workflow rather than carrying a way to run itself, because a
-composition that ran itself is a composition nobody can watch.
+composition that ran itself is a composition nobody can watch. A pipeline
+takes an input for the same reason a workflow does: a composition over a
+roadmap is a composition over ONE roadmap, and which one is a thing a person
+supplies rather than a thing the registration was built holding.
 
 One thing the server deliberately does not claim: a suspend node's REASON is
 `(s: S) => string`, a function of state, so the closed set it draws from is not

@@ -87,13 +87,20 @@ export const listPipelines = createServerFn({ method: "GET" }).handler(() =>
   readPipelines(getRegistry()),
 );
 
+/**
+ * One pipeline's steps, for the roadmap its input names.
+ *
+ * Like `startRun`, the validator here only says "an id and something arrived":
+ * the pipeline registration's own schema is what decides whether the value
+ * names a composition at all.
+ */
 export const getPipeline = createServerFn({ method: "GET" })
-  .validator(ById)
-  .handler(async ({ data }) => await readPipeline(getRegistry(), data.id));
+  .validator(z.object({ id: z.string(), input: z.unknown() }))
+  .handler(async ({ data }) => await readPipeline(getRegistry(), data.id, data.input));
 
 export const runPipeline = createServerFn({ method: "POST" })
-  .validator(ById)
-  .handler(({ data }) => drivePipeline(getRegistry(), data.id));
+  .validator(z.object({ id: z.string(), input: z.unknown() }))
+  .handler(({ data }) => drivePipeline(getRegistry(), data.id, data.input));
 
 /** Answer a parked step. It is the step's own run that continues. */
 export const resumeStep = createServerFn({ method: "POST" })

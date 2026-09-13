@@ -39,9 +39,9 @@ import { parseOracleLocator, spawningExecutor, testsStage } from "@des/core/vcs/
 import {
   getPipeline,
   openRegistry,
+  pipeline,
   registration,
   runPipeline,
-  type PipelineRegistration,
   type Registry,
 } from "@des/server";
 import { z } from "zod";
@@ -349,9 +349,12 @@ const openServerRegistry = (spec: {
     },
   });
 
-  const delivery: PipelineRegistration = {
+  // `z.object({})`: this fixture holds ONE roadmap, so the composition names
+  // no argument. A target serving several says which in its own input schema.
+  const delivery = pipeline({
     id: "delivery",
     title: "DELIVER, once per red-oracled step",
+    input: z.object({}),
     steps: () =>
       stepsOf().map((step) => ({
         id: step.id,
@@ -368,16 +371,16 @@ const openServerRegistry = (spec: {
     ...(spec.resources === true
       ? { resourcesFor: (step: { id: string }) => declaredResources(spec.vcs, commands, stepFor(step.id)) }
       : {}),
-  };
+  });
 
   return openRegistry({ workflows: [deliver], pipelines: [delivery], artifacts: spec.artifacts });
 };
 
 /** Drive the pipeline to quiescence and answer with its tree. */
 const deliverAll = async (registry: Registry) => {
-  runPipeline(registry, "delivery");
+  runPipeline(registry, "delivery", {});
   await registry.idle();
-  return await getPipeline(registry, "delivery");
+  return await getPipeline(registry, "delivery", {});
 };
 
 describe("the pipeline: roadmap steps in, two DELIVER runs out", () => {

@@ -16,10 +16,17 @@
  * in this repository already has: `graph(journal, defs, observe)`.
  *
  * A PIPELINE registration owns no execution at all, and that is the second
- * shape worth defending. It is steps plus two hooks; the server schedules them,
- * and each step's run is an ordinary run of a registered workflow — with a
- * server run id, a live trace, events, and a suspension a person answers in
- * the same dialog they answer a standalone run in.
+ * shape worth defending. It is an input schema, steps and two hooks; the
+ * server schedules them, and each step's run is an ordinary run of a
+ * registered workflow — with a server run id, a live trace, events, and a
+ * suspension a person answers in the same dialog they answer a standalone run
+ * in.
+ *
+ * A pipeline takes an INPUT for the same reason a workflow does: a composition
+ * over a roadmap is a composition over ONE roadmap, and which one is a thing a
+ * person supplies rather than a thing the composition was built holding. It is
+ * parsed by the registration's own schema before anything is scheduled, so a
+ * value the steps could not be derived from never becomes a drive.
  */
 
 import type { Journal } from "@des/core/journal";
@@ -93,18 +100,26 @@ export type PipelineStep = {
 };
 
 /**
- * A registered composition over the scheduler: data, plus two hooks.
+ * A registered composition over the scheduler: an input, data, plus two hooks.
  *
  * It owns NO execution. The server reads the steps, drives the frontier through
  * `@des/core`'s own scheduler, and starts each ready step as a run of the
  * workflow the step names. What a consumer keeps is the two halves only it can
  * answer: whether a step may run at all, and what to persist when one finishes.
+ *
+ * Every hook is handed the validated input, because what a composition is a
+ * composition OF is an argument rather than a constant. The todo pipelines
+ * name a roadmap with theirs and derive their steps from the roadmap that id
+ * names; a pipeline whose steps are fixed declares `z.object({})` and ignores
+ * it.
  */
-export type PipelineRegistration = {
+export type PipelineRegistration<I = unknown> = {
   id: string;
   title: string;
+  /** What a person supplies to drive one. The input is parsed by it. */
+  input: z.ZodType<I>;
   /** The steps, in declaration order. Re-read on every request and every run. */
-  steps: () => Promise<PipelineStep[]> | PipelineStep[];
+  steps: (input: I) => Promise<PipelineStep[]> | PipelineStep[];
   /**
    * May this step run at all, beyond its dependencies being accepted?
    *
@@ -113,17 +128,17 @@ export type PipelineRegistration = {
    * it may. An ineligible step blocks its dependents exactly as a rejected one
    * does. Absent: every step is eligible.
    */
-  readiness?: (stepId: string) => Promise<boolean> | boolean;
+  readiness?: (stepId: string, input: I) => Promise<boolean> | boolean;
   /**
    * Each finished run, as it finishes. The consumer's only write: this is
    * where a `step_runs` or an `oracle_runs` row is appended, and the outcome
    * carries the terminal STATE, which is where a measured verdict lives.
    */
-  record?: (stepId: string, outcome: RunOutcome<unknown>) => Promise<void> | void;
+  record?: (stepId: string, outcome: RunOutcome<unknown>, input: I) => Promise<void> | void;
   /** How many steps may be in flight at once. Every step by default. */
   concurrency?: number;
   /** Shared infrastructure a step's run needs exclusively, by name. */
-  resourcesFor?: (step: PipelineStep) => string[];
+  resourcesFor?: (step: PipelineStep, input: I) => string[];
 };
 
 /**
@@ -158,3 +173,34 @@ export type AnyWorkflowRegistration = {
  */
 export const registration = <S, I>(reg: WorkflowRegistration<S, I>): AnyWorkflowRegistration =>
   reg as unknown as AnyWorkflowRegistration;
+
+/**
+ * A pipeline registration with its type parameter erased, as the server holds
+ * it.
+ *
+ * Spelled out for the reason `AnyWorkflowRegistration` is: every hook CONSUMES
+ * the input, and a function's parameter does not widen, so a
+ * `PipelineRegistration<{ roadmapId: string }>` is not a
+ * `PipelineRegistration<unknown>` and the erasure has to say so itself.
+ */
+export type AnyPipelineRegistration = {
+  id: string;
+  title: string;
+  input: z.ZodType<unknown>;
+  steps: (input: unknown) => Promise<PipelineStep[]> | PipelineStep[];
+  readiness?: (stepId: string, input: unknown) => Promise<boolean> | boolean;
+  record?: (stepId: string, outcome: RunOutcome<unknown>, input: unknown) => Promise<void> | void;
+  concurrency?: number;
+  resourcesFor?: (step: PipelineStep, input: unknown) => string[];
+};
+
+/**
+ * Erase a pipeline registration's type parameter.
+ *
+ * `PipelineRegistration<I>` is what a target writes, with `I` inferred from
+ * the input schema — so the steps a hook derives still have to come from the
+ * value that schema produces. The server holds a heterogeneous set of them and
+ * drives every one through the same hooks, so the erasure happens once, here.
+ */
+export const pipeline = <I>(reg: PipelineRegistration<I>): AnyPipelineRegistration =>
+  reg as unknown as AnyPipelineRegistration;

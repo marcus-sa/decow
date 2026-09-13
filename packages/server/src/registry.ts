@@ -27,20 +27,28 @@ import type { ArtifactStore } from "@des/core/artifacts";
 import { openWorkflowRuntime, type WorkflowRuntime } from "@des/core/compile";
 import { inMemoryLeases, type ResourceLeases } from "@des/core/scheduler";
 import { openEvents, type EventBus } from "./events.ts";
+import type { Json } from "./json.ts";
 import { project, type GraphProjection } from "./projection.ts";
-import type { AnyWorkflowRegistration, PipelineRegistration } from "./registration.ts";
+import type { AnyPipelineRegistration, AnyWorkflowRegistration } from "./registration.ts";
 import { openRunner, type Runner } from "./runner.ts";
 import { openRuns, type RunStore } from "./runs.ts";
 import { openRunDatabase, type RunDatabase } from "./store.ts";
 
-/** Which pipeline step a run belongs to, for a run that is one. */
-export type StepOwner = { pipelineId: string; stepId: string };
+/**
+ * Which pipeline step a run belongs to, for a run that is one, and the input
+ * the drive that started it was driven with.
+ *
+ * The input travels with the owner because answering a suspension continues
+ * the PIPELINE: the frontier re-evaluated afterwards is the one this run's own
+ * drive was computed from.
+ */
+export type StepOwner = { pipelineId: string; stepId: string; input: Json };
 
 export type Registry = {
   workflows: AnyWorkflowRegistration[];
   workflowById: Map<string, AnyWorkflowRegistration>;
-  pipelines: PipelineRegistration[];
-  pipelineById: Map<string, PipelineRegistration>;
+  pipelines: AnyPipelineRegistration[];
+  pipelineById: Map<string, AnyPipelineRegistration>;
   /** The authored projection per workflow id, built once at registration. */
   projections: Map<string, GraphProjection>;
   runs: RunStore;
@@ -64,7 +72,7 @@ export type Registry = {
 
 export type RegistryOptions = {
   workflows: AnyWorkflowRegistration[];
-  pipelines?: PipelineRegistration[];
+  pipelines?: AnyPipelineRegistration[];
   /** Where a registration's snapshots land when it names no runtime of its own. */
   runtimeUrl?: string;
   /** Where `upsert-artifact` rows are read back from. */

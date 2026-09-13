@@ -8,8 +8,15 @@
  *
  * Its own module rather than `main.ts`, because `main.ts` ends in
  * `await serve(...)` and importing one to reach a registration would start a
- * server. `REQUEST` lives here for the same reason: three things read it and
- * one of them is a test.
+ * server.
+ *
+ * A ROADMAP IS AN ARGUMENT, not a constant. `roadmap` is started with the
+ * request a person typed; every other registration is started with the ID of a
+ * roadmap that already exists. That id IS the request text: the roadmap graph
+ * persists its `roadmaps` row under `roadmapId(roadmap) = roadmap.request`, as
+ * nWave keys a handover by the request it was authored for, so "which roadmap"
+ * and "for what" are one string and there is nothing to keep in step. A
+ * roadmap id the artifact store does not hold is refused by name.
  *
  * TWO WAYS TO START THE SAME GRAPH, and they are the same graph. A WORKFLOW
  * registration is one run over one step, started by a person. A PIPELINE is a
@@ -24,7 +31,12 @@
  */
 
 import { z } from "zod";
-import { registration, type AnyWorkflowRegistration, type PipelineRegistration } from "@des/server";
+import {
+  pipeline,
+  registration,
+  type AnyPipelineRegistration,
+  type AnyWorkflowRegistration,
+} from "@des/server";
 import { vcsExecutor } from "@des/core/vcs/executor";
 import { parseOracleLocator } from "@des/core/vcs/verify";
 import {
@@ -71,24 +83,40 @@ import {
 import { runSuite, type RunDir } from "./run-dir.ts";
 
 /**
- * The request the roadmap is authored for.
+ * The longest request this target will author a roadmap for.
  *
- * Fixed rather than an argument: a roadmap is authored FOR something, and what
- * the todo target needs is not a judgement call — two stubs, two values. It is
- * also the `roadmaps` row id, because nWave keys a handover by its request and
- * so does this.
+ * Bounded because the text is also the row id it is stored under, and because
+ * a request is a request: the DESIGN SOURCE is where the detail lives, and a
+ * thousand characters is more than any decomposable one needs.
  */
-export const REQUEST =
-  "Implement the stubbed behaviours `complete` and `remove` in src/todo.ts so the pending " +
-  "acceptance tests in test/todo.test.ts pass.";
+export const REQUEST_MAX_CHARACTERS = 1000;
 
-/** The roadmap is keyed by the request it was authored for, as nWave keys one. */
-export const ROADMAP_ID = REQUEST;
+/** What a person supplies to author a roadmap. */
+export const RoadmapRequest = z.object({
+  request: z
+    .string()
+    .min(1)
+    .max(REQUEST_MAX_CHARACTERS)
+    .describe("What the roadmap is authored for. Also the id it is stored under."),
+});
+export type RoadmapRequest = z.infer<typeof RoadmapRequest>;
+
+/** Which roadmap a graph or a pipeline is about. */
+export const NamesRoadmap = z.object({
+  roadmapId: z.string().min(1).max(REQUEST_MAX_CHARACTERS).describe("Which roadmap to work from"),
+});
+export type NamesRoadmap = z.infer<typeof NamesRoadmap>;
+
+/** Which roadmap, and which of its steps. */
+export const NamesStep = NamesRoadmap.extend({
+  stepId: z.string().min(1).describe("Which roadmap step"),
+});
+export type NamesStep = z.infer<typeof NamesStep>;
 
 /** Every registration this target makes. */
 export type TodoRegistrations = {
   workflows: AnyWorkflowRegistration[];
-  pipelines: PipelineRegistration[];
+  pipelines: AnyPipelineRegistration[];
 };
 
 export type RegistrationOptions = {
@@ -104,31 +132,31 @@ export type RegistrationOptions = {
   models: Models;
 };
 
+/**
+ * The steps of the roadmap this id names.
+ *
+ * `readRoadmap` refuses an id the artifact store does not hold, by name, and
+ * that refusal is kept rather than swallowed: an input naming a roadmap nobody
+ * authored is a thing a person can act on, and an empty step list is a thing
+ * they would read as "this roadmap has no work in it".
+ *
+ * Nothing is registered against a roadmap: every reader here takes the id from
+ * the input it is given, so the server boots in the state where none exists.
+ */
+const steps = (dir: RunDir, roadmapId: string): RoadmapStep[] =>
+  readRoadmap(dir.artifacts, roadmapId);
+
 /** The step this input names, or a refusal that says which id was not there. */
-const stepOf = (dir: RunDir, stepId: string): RoadmapStep => {
-  const step = steps(dir).find((r) => r.id === stepId);
+const stepOf = (dir: RunDir, roadmapId: string, stepId: string): RoadmapStep => {
+  const found = steps(dir, roadmapId);
+  const step = found.find((r) => r.id === stepId);
   if (step === undefined) {
     throw new Error(
-      `no step ${stepId} in the roadmap. Run the roadmap graph and approve it first; ` +
-        `the steps it wrote are ${steps(dir).map((r) => r.id).join(", ") || "(none)"}.`,
+      `no step ${stepId} in roadmap ${roadmapId}. Its steps are ` +
+        `${found.map((r) => r.id).join(", ") || "(none)"}.`,
     );
   }
   return step;
-};
-
-/**
- * The roadmap's steps, or none.
- *
- * Nothing is registered against a roadmap that does not exist yet: the first
- * thing this target does is author one, so every reader here has to survive
- * the state where it has not.
- */
-const steps = (dir: RunDir): RoadmapStep[] => {
-  try {
-    return readRoadmap(dir.artifacts, ROADMAP_ID);
-  } catch {
-    return [];
-  }
 };
 
 export const todoRegistrations = (
@@ -138,7 +166,7 @@ export const todoRegistrations = (
   const models = options.models;
 
   /** One executor per run, so the event log's task id is the run's own. */
-  const executorFor = (session: string, description: string) => () =>
+  const executorFor = (session: string, description: string) =>
     vcsExecutor({
       vcs: dir.vcs,
       session,
@@ -148,29 +176,26 @@ export const todoRegistrations = (
 
   /* ------------------------------------------------------------- ROADMAP */
 
-  const roadmap = registration<RoadmapState, { request: string }>({
+  const roadmap = registration<RoadmapState, RoadmapRequest>({
     id: "roadmap",
-    title: "ROADMAP — decompose the request into steps a person approves",
-    input: z.object({
-      request: z
-        .string()
-        .min(1)
-        .default(REQUEST)
-        .describe("What the roadmap is authored for. Also the step id it is stored under."),
-    }),
+    title: "ROADMAP — decompose a request into steps a person approves",
+    // The request a person supplies. The DESIGN SOURCE and the symbol
+    // inventory are the run directory's, because they are facts about the
+    // target rather than about what is being asked of it.
+    input: RoadmapRequest,
     journal: dir.journal,
     graph: (ctx) => roadmapGraph(ctx.journal, todoRoadmapDefs(models), ctx.observe),
     seed: (input) => seedRoadmap(input.request, dir.design),
-    executor: executorFor(`roadmap:${dir.name}`, "author the roadmap"),
+    executor: () => executorFor(`roadmap:${dir.name}`, "author the roadmap"),
     runtime: dir.runtime,
   });
 
   /* -------------------------------------------- DISTILL, the facts */
 
-  const obligations = registration<ObligationsState, Record<string, never>>({
+  const obligations = registration<ObligationsState, NamesRoadmap>({
     id: "obligations",
     title: "DISTILL — state what each value must be observed to do",
-    input: z.object({}),
+    input: NamesRoadmap,
     journal: dir.journal,
     graph: (ctx) =>
       obligationsGraph(
@@ -179,13 +204,16 @@ export const todoRegistrations = (
         (path) => gitIgnores(dir.vcs.root, path),
         ctx.observe,
       ),
-    seed: () => {
-      const roadmapSteps = steps(dir);
+    seed: (input) => {
+      const roadmapSteps = steps(dir, input.roadmapId);
       if (roadmapSteps.length === 0) {
-        throw new Error("there is no approved roadmap yet, so there is nothing to state facts about");
+        throw new Error(
+          `roadmap ${input.roadmapId} has no steps, so there is nothing to state facts about`,
+        );
       }
       const stored: Roadmap = {
-        request: ROADMAP_ID,
+        // The id IS the request: `persist` wrote the row under it.
+        request: input.roadmapId,
         steps: roadmapSteps.map((step) => ({
           id: step.id,
           observation: step.observation,
@@ -209,21 +237,22 @@ export const todoRegistrations = (
         ),
       });
     },
-    executor: executorFor(`distill:${ROADMAP_ID}`, "state the acceptance facts"),
+    executor: ({ input }) =>
+      executorFor(`distill:${input.roadmapId}`, "state the acceptance facts"),
     runtime: dir.runtime,
   });
 
   /* ------------------------------------------- DISTILL, the oracle */
 
-  const oracle = registration<OracleState, { stepId: string }>({
+  const oracle = registration<OracleState, NamesStep>({
     id: "oracle",
     title: "DISTILL — author one value's oracle, and let software measure it",
-    input: z.object({ stepId: z.string().min(1).describe("Which roadmap step to write the oracle for") }),
+    input: NamesStep,
     journal: dir.journal,
     graph: (ctx) => oracleGraph(ctx.journal, todoOracleDefs(models), ctx.observe),
     seed: (input) =>
       seedOracle({
-        value: valueUnderOracle(stepOf(dir, input.stepId)),
+        value: valueUnderOracle(stepOf(dir, input.roadmapId, input.stepId)),
         design: dir.design,
         testPaths: testPathScope(dir.design),
       }),
@@ -238,8 +267,8 @@ export const todoRegistrations = (
         vcs: dir.vcs,
         session: runId,
         intent: {
-          taskId: stepOf(dir, input.stepId).id,
-          parentTaskId: ROADMAP_ID,
+          taskId: stepOf(dir, input.roadmapId, input.stepId).id,
+          parentTaskId: input.roadmapId,
           description: "author the oracle",
         },
         artifacts: dir.artifacts,
@@ -249,14 +278,14 @@ export const todoRegistrations = (
 
   /* -------------------------------------------------------------- DELIVER */
 
-  const deliver = registration<DeliverState, { stepId: string }>({
+  const deliver = registration<DeliverState, NamesStep>({
     id: "deliver",
     title: "DELIVER — run the step cycle over one step whose oracle is red",
-    input: z.object({ stepId: z.string().min(1).describe("Which roadmap step to deliver") }),
+    input: NamesStep,
     journal: dir.journal,
     graph: (ctx) => deliverGraph(ctx.journal, todoDeliverDefs(models), dir.commands, ctx.observe),
     seed: (input) => {
-      const step = stepOf(dir, input.stepId);
+      const step = stepOf(dir, input.roadmapId, input.stepId);
       // "No edge bypasses RED" is a readiness precondition rather than an edge,
       // and it holds for a step started by hand exactly as it holds for one the
       // scheduler started: an unmeasured oracle proves nothing and a green one
@@ -291,13 +320,13 @@ export const todoRegistrations = (
      * them would make a module with two undelivered values undeliverable.
      */
     executor: ({ runId, input }) => {
-      const step = stepOf(dir, input.stepId);
+      const step = stepOf(dir, input.roadmapId, input.stepId);
       return vcsExecutor({
         vcs: dir.vcs,
         session: runId,
-        intent: { taskId: step.id, parentTaskId: ROADMAP_ID, description: step.observation },
+        intent: { taskId: step.id, parentTaskId: input.roadmapId, description: step.observation },
         artifacts: dir.artifacts,
-        knownRed: knownRedTests(dir.artifacts, dir.vcs, steps(dir), step.id),
+        knownRed: knownRedTests(dir.artifacts, dir.vcs, steps(dir, input.roadmapId), step.id),
         ...(step.oracle === undefined ? {} : { protected: [parseOracleLocator(step.oracle).path] }),
       });
     },
@@ -316,47 +345,55 @@ export const todoRegistrations = (
    * gives a step a run id, a live trace, events and a suspension a person
    * answers in the same dialog they answer a standalone run in.
    *
-   * The steps are re-read per request and per drive rather than captured at
-   * boot, because they are written by a graph this same server runs: a step set
-   * captured at boot would be a step set over a roadmap that did not exist yet.
+   * Both name a ROADMAP, and the steps are re-read per request and per drive
+   * rather than captured at boot, because they are written by a graph this same
+   * server runs: a step set captured at boot would be a step set over a roadmap
+   * that did not exist yet.
    */
 
   /** One step per roadmap step, pointed at the graph that delivers it. */
-  const stepsFor = (workflowId: string) => () =>
-    steps(dir).map((step) => ({
+  const stepsFor = (workflowId: string) => (input: NamesRoadmap) =>
+    steps(dir, input.roadmapId).map((step) => ({
       id: step.id,
       description: step.observation,
       dependencies: step.dependencies,
       workflowId,
-      input: { stepId: step.id },
+      // What one run of that graph takes: which roadmap, and which of its
+      // steps. The same input a person starting one by hand supplies.
+      input: { roadmapId: input.roadmapId, stepId: step.id },
     }));
 
   /** DISTILL's second half, over every value in dependency order. */
-  const oracles: PipelineRegistration = {
+  const oracles = pipeline<NamesRoadmap>({
     id: "oracles",
     title: "DISTILL — one oracle per value, authored and measured",
+    input: NamesRoadmap,
     steps: stepsFor("oracle"),
     record: (stepId, outcome) => {
       recordOracleRun(dir.artifacts, stepId, outcome);
     },
     concurrency: 1,
-  };
+  });
 
   /** DELIVER, once per step whose oracle came back red. */
-  const delivery: PipelineRegistration = {
+  const delivery = pipeline<NamesRoadmap>({
     id: "delivery",
     title: "DELIVER — the step cycle, once per red-oracled step",
+    input: NamesRoadmap,
     steps: stepsFor("deliver"),
     // "No edge bypasses RED", as the readiness precondition it is. A step with
     // no oracle measured red never becomes ready and blocks its dependents,
-    // exactly as the standalone `deliver` seed refuses one by name.
+    // exactly as the standalone `deliver` seed refuses one by name. It is a
+    // fact about the step rather than about the roadmap, because a step id is
+    // what an `oracle_runs` row carries.
     readiness: (stepId) => oracleIsRed(dir.artifacts, stepId),
     record: (stepId, outcome) => {
       recordStepRun(dir.artifacts, stepId, outcome);
     },
     concurrency: 1,
-    resourcesFor: (step) => declaredResources(dir.vcs, dir.commands, stepOf(dir, step.id)),
-  };
+    resourcesFor: (step, input) =>
+      declaredResources(dir.vcs, dir.commands, stepOf(dir, input.roadmapId, step.id)),
+  });
 
   return { workflows: [roadmap, obligations, oracle, deliver], pipelines: [oracles, delivery] };
 };

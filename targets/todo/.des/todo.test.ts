@@ -55,7 +55,7 @@ import {
 } from "@des/server";
 import { openWorkflowRuntime } from "@des/core/compile";
 import type { Journal } from "@des/core/journal";
-import { REQUEST, todoRegistrations } from "./registrations.ts";
+import { todoRegistrations } from "./registrations.ts";
 import {
   createRunDir,
   designSource,
@@ -110,6 +110,16 @@ const forbidden = (id: string) => ({
 });
 
 /* ------------------------------------------------------------ the roadmap */
+
+/**
+ * What this suite asks for, and therefore the id the roadmap is stored under:
+ * `persist` writes the `roadmaps` row under the request it was authored for,
+ * as nWave keys a handover by one. The composition holds no request of its
+ * own, so the test supplies this exactly as a person would type it.
+ */
+const REQUEST =
+  "Implement the stubbed behaviours `complete` and `remove` in src/todo.ts so the pending " +
+  "acceptance tests in test/todo.test.ts pass.";
 
 const OBSERVATIONS = {
   complete: "TodoStore.complete marks a todo done and rejects an id the store does not hold.",
@@ -393,11 +403,11 @@ const openStubbedServer = (
 /** Which method each step rewrites, so `implement` can name the symbol. */
 const METHODS: Record<string, string> = { "01-01": "complete", "01-02": "remove" };
 
-/** Drive one pipeline to quiescence and answer with its tree. */
+/** Drive one pipeline over one roadmap to quiescence, and answer with its tree. */
 const drivePipeline = async (registry: Registry, id: string) => {
-  runPipeline(registry, id);
+  runPipeline(registry, id, { roadmapId: REQUEST });
   await registry.idle();
-  return await getPipeline(registry, id);
+  return await getPipeline(registry, id, { roadmapId: REQUEST });
 };
 
 describe("the todo target, delivered", () => {
@@ -425,7 +435,7 @@ describe("the todo target, delivered", () => {
 
     /* ---- DISTILL, first half: the acceptance facts --------------------- */
 
-    const facts = startRun(registry, "obligations", {});
+    const facts = startRun(registry, "obligations", { roadmapId: REQUEST });
     await registry.idle();
     expect(getRun(registry, facts.runId).status).toBe("accepted");
 
@@ -538,7 +548,7 @@ describe("the todo target, delivered", () => {
     // standalone seed and the pipeline's readiness say the same thing. The
     // refusal lands ON THE RUN rather than on the call, because a seed runs
     // where the run does: a person reads it in the run they started.
-    const byHand = startRun(registry, "deliver", { stepId: "01-01" });
+    const byHand = startRun(registry, "deliver", { roadmapId: REQUEST, stepId: "01-01" });
     await registry.idle();
     const refused = getRun(registry, byHand.runId);
     expect(refused.status).toBe("failed");
@@ -602,12 +612,16 @@ describe("the todo target, delivered", () => {
         expect(projection.nodes.some((n) => n.kind === "terminal")).toBe(true);
       }
 
-      // With no roadmap yet, a pipeline has no steps and refuses nothing.
-      expect(await pipelines[0]?.steps()).toEqual([]);
-      // And a graph that needs a step refuses BY NAME rather than throwing
-      // something a reader cannot act on.
+      // With no roadmap yet, a pipeline named one refuses BY NAME rather than
+      // answering with an empty step list a reader would take for "no work".
+      expect(() => pipelines[0]?.steps({ roadmapId: REQUEST })).toThrow(
+        /no roadmap .* in the artifact store/,
+      );
+      // And so does a graph handed a step of a roadmap nobody authored.
       const deliver = workflows.find((w) => w.id === "deliver");
-      expect(() => deliver?.seed({ stepId: "01-01" })).toThrow(/no step 01-01 in the roadmap/);
+      expect(() => deliver?.seed({ roadmapId: REQUEST, stepId: "01-01" })).toThrow(
+        /no roadmap .* in the artifact store/,
+      );
 
       dir.close();
     } finally {

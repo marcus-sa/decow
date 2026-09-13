@@ -1,12 +1,14 @@
 /**
  * The delivery pipeline, driven from the browser.
  *
- * The claim under test is that a pipeline step is an ORDINARY RUN. The tree
- * shows two steps whose oracles DISTILL already measured
- * red; pressing one button drives the frontier through the server's own
- * scheduler; each step becomes a run with a server id, and the step links to it;
- * and opening that link is the same run page every other run is drawn on,
- * with a trace through the step cycle's authored nodes.
+ * The claim under test is that a pipeline step is an ORDINARY RUN. A person
+ * picks WHICH roadmap the pipeline is driven over — by now there are two, and
+ * the one the second test authored is not the one with the oracles — and the
+ * tree is then that roadmap's two steps, whose oracles DISTILL already
+ * measured red; pressing one button drives the frontier through the server's
+ * own scheduler; each step becomes a run with a server id, and the step links
+ * to it; and opening that link is the same run page every other run is drawn
+ * on, with a trace through the step cycle's authored nodes.
  *
  * Nothing here is stubbed below the graph: each step's run writes a real
  * production body through the real write path, with a real `tsc`, a real
@@ -15,6 +17,7 @@
  */
 
 import { expect, test } from "@playwright/test";
+import { DELIVERY_REQUEST } from "./fixture/roadmaps.ts";
 import { shot } from "./screenshot.ts";
 
 const STEPS = ["01-01", "01-02"];
@@ -22,8 +25,19 @@ const STEPS = ["01-01", "01-02"];
 test("both steps reach accepted, and each one's link opens its own run", async ({ page }) => {
   await page.goto("/pipelines/delivery");
 
-  // The tree is the steps the consumer declared, in declaration order, with the
-  // dependency it declared.
+  // Nothing is declared until a roadmap is named: a composition over a roadmap
+  // has no steps until it is told which one.
+  await expect(page.locator('[data-testid="steps"] li.row')).toHaveCount(0);
+  await expect(page.locator('[data-testid="run-pipeline"]')).toBeDisabled();
+
+  // The choices are the rows the artifact store holds, so this cannot name a
+  // roadmap nobody authored — and the pre-baked one is among them.
+  const choose = page.locator('[data-testid="roadmap"]');
+  await expect(choose.locator("option").filter({ hasText: DELIVERY_REQUEST })).toHaveCount(1);
+  await choose.selectOption(DELIVERY_REQUEST);
+
+  // The tree is the steps the consumer declared for THAT roadmap, in
+  // declaration order, with the dependency it declared.
   const steps = page.locator('[data-testid="steps"] li.row');
   await expect(steps).toHaveCount(2);
   for (const id of STEPS) {

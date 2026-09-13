@@ -23,6 +23,11 @@
  * where a person reads it, and the server stays up — which is the difference
  * between a tool that tells you what is missing and one that exits.
  *
+ * NOTHING IS AUTHORED FOR A REQUEST THIS FILE HOLDS. A roadmap is started from
+ * the form with the request a person types; a pipeline over one names the
+ * roadmap it drives. So this prints what the run directory IS and nothing about
+ * what is being asked of it.
+ *
  * THE RUN DIRECTORY is a copy: `targets/todo` is a template and is never
  * mutated. `runs/<name>/` holds the copied project and the five stores, so two
  * runs of this server against two names cannot see each other's writes.
@@ -38,7 +43,7 @@
 import { join } from "node:path";
 import { serve } from "@des/server";
 import { describeModels, todoModels } from "./models.ts";
-import { todoRegistrations, ROADMAP_ID } from "./registrations.ts";
+import { todoRegistrations } from "./registrations.ts";
 import { createRunDir, openRunDir, RUNS, shortPath } from "./run-dir.ts";
 import { existsSync } from "node:fs";
 
@@ -65,7 +70,6 @@ const main = async (): Promise<void> => {
   console.log(describeModels());
   console.log(`\nrun:     ${shortPath(dir.path)}`);
   console.log(`project: ${shortPath(dir.project)}`);
-  console.log(`roadmap: ${ROADMAP_ID}`);
   console.log(`design:  ${dir.design.length} chars, including the symbol inventory`);
   console.log(`runs:    ${shortPath(join(dir.path, "runs.sqlite"))}`);
   console.log(

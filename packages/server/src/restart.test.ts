@@ -21,12 +21,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { openArtifacts } from "@des/core/artifacts";
 import { memoryEffects } from "@des/core/effects";
 import { sqliteJournal } from "@des/core/journal";
 import { serve, type Server } from "./index.ts";
 import { getPipeline, getRun, listRuns, resumeRun, runPipeline, startRun } from "./api.ts";
-import { registration } from "./registration.ts";
+import { pipeline, registration } from "./registration.ts";
 import { openRunDatabase } from "./store.ts";
 import { ARTIFACT_TABLE, gateGraph, gateModels, GateInput, gateSeed } from "./fixture.ts";
 
@@ -71,13 +72,14 @@ const boot = async (dir: string): Promise<Server> => {
     port: 0,
     workflows: [gate],
     pipelines: [
-      {
+      pipeline({
         id: "gates",
         title: "one step, one gate",
+        input: z.object({}),
         steps: () => [
           { id: "step-1", dependencies: [], workflowId: "gate", input: { subject: "alphabet" } },
         ],
-      },
+      }),
     ],
     artifacts,
     store,
@@ -159,26 +161,26 @@ describe("a restarted server", () => {
     const dir = runDirectory();
 
     const first = await boot(dir);
-    runPipeline(first.registry, "gates");
+    runPipeline(first.registry, "gates", {});
     await first.registry.idle();
 
-    const before = await getPipeline(first.registry, "gates");
+    const before = await getPipeline(first.registry, "gates", {});
     expect(before.steps.map((step) => step.status)).toEqual(["suspended"]);
     const stepRun = before.steps[0]?.runId;
     expect(stepRun).toBeDefined();
     resumeRun(first.registry, stepRun as string, { decision: "approve" });
     await first.registry.idle();
-    expect((await getPipeline(first.registry, "gates")).steps[0]?.status).toBe("accepted");
+    expect((await getPipeline(first.registry, "gates", {})).steps[0]?.status).toBe("accepted");
     await first.stop();
 
     const second = await boot(dir);
-    const after = await getPipeline(second.registry, "gates");
+    const after = await getPipeline(second.registry, "gates", {});
     expect(after.steps.map((step) => step.status)).toEqual(["accepted"]);
     expect(after.steps[0]?.runId).toBe(stepRun as string);
 
     // Driving it again starts nothing: the step is accepted, so the frontier
     // is empty and no second run exists.
-    runPipeline(second.registry, "gates");
+    runPipeline(second.registry, "gates", {});
     await second.registry.idle();
     expect(listRuns(second.registry)).toHaveLength(1);
   }, 30_000);

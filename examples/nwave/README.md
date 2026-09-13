@@ -227,8 +227,8 @@ in dependency order — each value under its own VCS session and its own task id
 `verdict` on that row is the measured one widened by exactly one word:
 `blocked` is a run that produced no measurement at all, which keeps "measured
 green" and "never measured" two different facts. Neither of them schedules
-anything: a pipeline registration is steps plus `record`, and the server drives
-the frontier.
+anything: a pipeline registration is an input schema plus steps plus `record`,
+and the server drives the frontier.
 
 There is **no protected scope here**, and that asymmetry is the point: this is
 the one turn that owns the oracle. DELIVER's executor is the one that walls it.
@@ -311,10 +311,10 @@ matters again the day a mutation command is declared.
 
 ## `targets/todo/.des/` — the waves pointed at a real project
 
-Files: `run-dir.ts` (the run directory, the design source and the suite
-runner), `models.ts` (which binding runs which leaf), `registrations.ts` (the
-request, the four graphs and the two pipelines, as the server holds them),
-`main.ts` (the server), and `todo.test.ts`.
+Files: `commands.ts` (how the project is checked), `run-dir.ts` (the run
+directory, the design source and the suite runner), `models.ts` (which binding
+runs which leaf), `registrations.ts` (the four graphs and the two pipelines, as
+the server holds them), `main.ts` (the server), and `todo.test.ts`.
 
 **Nothing in it exists for a test.** `todoRegistrations(dir, { models })` takes
 one thing, and `models` is a `ModelBinding` per leaf ROLE — `decompose`,
@@ -399,23 +399,36 @@ answered where it is read — in the UI, from the closed enum the node declares.
 **Four graphs**, each startable on its own and each drawn as its author wrote
 it:
 
-- **`roadmap`** runs the authoring workflow to the `human-review` suspension.
-  Nothing is persisted until a person answers, because `persist` sits after the
-  review. `decompose` is Opus; `validate-slices` and its validator are Haiku;
-  `validate-shape` and `measure-disjointness` have no model in them at all.
-- **`obligations`** runs DISTILL's first half once over the roadmap. The leaf is
-  Haiku and `validate-manifest` is a total function.
+- **`roadmap`** takes the REQUEST a person types and runs the authoring
+  workflow to the `human-review` suspension. Nothing is persisted until a
+  person answers, because `persist` sits after the review. `decompose` is Opus;
+  `validate-slices` and its validator are Haiku; `validate-shape` and
+  `measure-disjointness` have no model in them at all.
+- **`obligations`** runs DISTILL's first half once over the roadmap its input
+  names. The leaf is Haiku and `validate-manifest` is a total function.
 - **`oracle`** writes one value's oracle and lets software measure it.
   `author-oracle` is Sonnet, for the same reason `implement` is.
 - **`deliver`** runs the step cycle over one step. `implement` is Sonnet; every
   other leaf is Haiku. It refuses a step with no red oracle **by name**.
 
+**A roadmap is named by the request it was authored for.** `persist` writes the
+`roadmaps` row under `roadmap.request`, exactly as nWave keys a handover by its
+request, so the id and the reason are one string. Everything downstream of
+`roadmap` — the other three graphs and both pipelines — takes that id in its
+input, and an id the artifact store does not hold is refused by name. The
+design source and the symbol inventory stay the run directory's: they are facts
+about the target, not about what is being asked of it.
+
 **Two pipelines**, which are those same registrations under the server's
 scheduler: `oracles` (one per value, in dependency order) and `delivery` (the
 step cycle, once per red-oracled step, with each step's own oracle protected and
-every sibling's excused as known-red). A pipeline step is `{ id, dependencies,
-workflowId, input }` and nothing else — it names one of the four graphs above
-and the input one run of it takes.
+every sibling's excused as known-red). Both declare `{ roadmapId }` as their
+input and derive their steps from the roadmap that id names, so the pipeline
+page offers the roadmaps the artifact store holds and a person picks one before
+driving. A pipeline step is `{ id, dependencies, workflowId, input }` and
+nothing else — it names one of the four graphs above and the input one run of
+it takes, which is the same `{ roadmapId, stepId }` a person starting one step
+by hand supplies.
 
 So a graph and a pipeline are two front doors onto ONE registration rather
 than onto one graph twice: same seed, same executor, same journal, and a step's

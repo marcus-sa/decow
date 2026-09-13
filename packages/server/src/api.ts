@@ -9,10 +9,11 @@
  *
  * Every one of them is a projection of something that already exists: the
  * authored graph, a run's record, the artifact store's rows, a pipeline's
- * declared steps. The three that are not — starting a run, answering a
- * suspension, and driving a pipeline — take a value the graph's own schema
- * validates, and a value that does not parse is refused HERE, with the closed
- * set it should have come from, rather than three frames into a compiled step.
+ * declared steps. The ones that are not — starting a run, answering a
+ * suspension, and reading or driving a pipeline — take a value the
+ * registration's own schema validates, and a value that does not parse is
+ * refused HERE, with the closed set it should have come from, rather than
+ * three frames into a compiled step.
  */
 
 import type { StepStatus } from "@des/core/scheduler";
@@ -20,7 +21,7 @@ import { z } from "zod";
 import { asJson, type Json } from "./json.ts";
 import { continueAfterResume, ownerOf, runIdOf, start, tree, type PipelineTree } from "./pipelines.ts";
 import type { GraphProjection, ResumeOptions } from "./projection.ts";
-import type { AnyWorkflowRegistration } from "./registration.ts";
+import type { AnyPipelineRegistration, AnyWorkflowRegistration } from "./registration.ts";
 import type { Registry } from "./registry.ts";
 import type { RunRecord, RunSummary } from "./runs.ts";
 
@@ -42,6 +43,27 @@ export type DescribedWorkflow = {
 
 /** One pipeline, as the index lists it. */
 export type ListedPipeline = { id: string; title: string };
+
+/**
+ * A registration's input, parsed by its own schema, or a refusal naming every
+ * issue.
+ *
+ * One function for both kinds, because "what a person supplies before this
+ * starts" is one question: a value the steps could not be derived from must
+ * not become a drive, exactly as a value the graph could not seed from must
+ * not become a run.
+ */
+const parsed = <T>(id: string, schema: z.ZodType<T>, input: unknown): T => {
+  const result = schema.safeParse(input);
+  if (!result.success) {
+    throw new Error(
+      `the input for ${id} does not parse: ${result.error.issues
+        .map((issue) => `${issue.path.join(".") || "(root)"} ${issue.message}`)
+        .join("; ")}`,
+    );
+  }
+  return result.data;
+};
 
 /**
  * An answer the parked node would refuse, refused before it reaches one.
@@ -75,7 +97,7 @@ const workflowOf = (registry: Registry, id: string): AnyWorkflowRegistration => 
   return registration;
 };
 
-const pipelineOf = (registry: Registry, id: string) => {
+const pipelineOf = (registry: Registry, id: string): AnyPipelineRegistration => {
   const pipeline = registry.pipelineById.get(id);
   if (pipeline === undefined) throw new Error(`no pipeline ${id} is registered`);
   return pipeline;
@@ -97,15 +119,7 @@ export const getWorkflow = (registry: Registry, id: string): DescribedWorkflow =
  */
 export const startRun = (registry: Registry, id: string, input: unknown): { runId: string } => {
   const registration = workflowOf(registry, id);
-  const parsed = registration.input.safeParse(input);
-  if (!parsed.success) {
-    throw new Error(
-      `the input for ${id} does not parse: ${parsed.error.issues
-        .map((issue) => `${issue.path.join(".") || "(root)"} ${issue.message}`)
-        .join("; ")}`,
-    );
-  }
-  return { runId: registry.runner.start(id, parsed.data).runId };
+  return { runId: registry.runner.start(id, parsed(id, registration.input, input)).runId };
 };
 
 export const listRuns = (registry: Registry): RunSummary[] => registry.runs.list();
@@ -223,17 +237,37 @@ export const readArtifacts = (
 export const listPipelines = (registry: Registry): ListedPipeline[] =>
   registry.pipelines.map((pipeline) => ({ id: pipeline.id, title: pipeline.title }));
 
-export const getPipeline = async (registry: Registry, id: string): Promise<PipelineTree> =>
-  await tree(registry, pipelineOf(registry, id));
+/**
+ * One pipeline's steps, for the input it names them under.
+ *
+ * The input is parsed here rather than inside the steps hook, so a tree read
+ * and a drive are refused by the same schema and a consumer's hook only ever
+ * sees a value that parsed.
+ */
+export const getPipeline = async (
+  registry: Registry,
+  id: string,
+  input: unknown,
+): Promise<PipelineTree> => {
+  const registration = pipelineOf(registry, id);
+  return await tree(registry, registration, parsed(id, registration.input, input));
+};
 
 /**
  * Drive the frontier. `started: false` means one was already going, which is
  * not an error: two people pressing the same button want one pipeline.
  */
-export const runPipeline = (registry: Registry, id: string): { id: string; started: boolean } => ({
-  id,
-  ...start(registry, pipelineOf(registry, id)),
-});
+export const runPipeline = (
+  registry: Registry,
+  id: string,
+  input: unknown,
+): { id: string; started: boolean } => {
+  const registration = pipelineOf(registry, id);
+  return {
+    id,
+    ...start(registry, registration, asJson(parsed(id, registration.input, input))),
+  };
+};
 
 /**
  * Answer a parked step. It is the step's own RUN that is resumed — the same run

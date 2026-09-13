@@ -17,7 +17,7 @@ import type { ArtifactStore } from "@des/core/artifacts";
 import type { EventBus } from "./events.ts";
 import type { RunDatabase } from "./store.ts";
 import type { GraphProjection } from "./projection.ts";
-import type { AnyWorkflowRegistration, PipelineRegistration } from "./registration.ts";
+import type { AnyPipelineRegistration, AnyWorkflowRegistration } from "./registration.ts";
 import { clearRegistry, getRegistry, openRegistry, setRegistry, type Registry } from "./registry.ts";
 import type { Runner } from "./runner.ts";
 import type { RunStore } from "./runs.ts";
@@ -28,8 +28,11 @@ export type ServeOptions = {
    * one list can hold graphs over different states and different inputs.
    */
   workflows: AnyWorkflowRegistration[];
-  /** Every registered composition over the scheduler. */
-  pipelines?: PipelineRegistration[];
+  /**
+   * Every registered composition over the scheduler, each erased through
+   * `pipeline()` so one list can hold compositions over different inputs.
+   */
+  pipelines?: AnyPipelineRegistration[];
   /** 0 asks the OS for a free one, which is what a test wants. */
   port?: number;
   /**
@@ -158,7 +161,9 @@ export {
   type ResumeOptions,
 } from "./projection.ts";
 export {
+  pipeline,
   registration,
+  type AnyPipelineRegistration,
   type AnyWorkflowRegistration,
   type GraphContext,
   type PipelineRegistration,

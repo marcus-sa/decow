@@ -20,11 +20,18 @@
  *
  * WHAT A CONSUMER STILL OWNS. `record`, which is where the durable row goes,
  * and `readiness`, which is where the precondition goes. Neither runs anything.
+ *
+ * THE INPUT IS CARRIED ON THE ATTACHING EVENT, not held in this module. A
+ * drive is asynchronous and a parked step is answered later — possibly by
+ * another process — so the value the steps were derived from has to be a
+ * durable fact about the run rather than a closure in the process that started
+ * it. `ownerOf` reads it back beside the step it belongs to.
  */
 
 import { openScheduler, type StepStatus, type SchedulerStep } from "@des/core/scheduler";
 import type { RunOutcome } from "@des/core/workflow";
-import type { PipelineRegistration, PipelineStep } from "./registration.ts";
+import type { Json } from "./json.ts";
+import type { AnyPipelineRegistration, PipelineStep } from "./registration.ts";
 import type { Registry, StepOwner } from "./registry.ts";
 
 /** One step, with what the server knows about the run it last started for it. */
@@ -62,13 +69,30 @@ export const runIdOf = (registry: Registry, pipelineId: string, stepId: string):
   return undefined;
 };
 
-/** The pipeline step a run belongs to, for a run that is one. */
+/**
+ * The pipeline step a run belongs to, and the input its drive was driven with.
+ *
+ * It finds the event that said `attached`, rather than the last thing said
+ * about the run, because that is the one carrying the input — which is what
+ * keeps a step parked under one roadmap from being continued under whichever
+ * roadmap the pipeline happened to be driven with most recently.
+ */
 export const ownerOf = (registry: Registry, runId: string): StepOwner | undefined => {
   for (const event of [...registry.runs.db.events.byKind("pipeline-step")].reverse()) {
-    const payload = event.payload as { pipelineId?: unknown; stepId?: unknown; runId?: unknown };
-    if (payload.runId !== runId) continue;
+    const payload = event.payload as {
+      pipelineId?: unknown;
+      stepId?: unknown;
+      runId?: unknown;
+      attached?: unknown;
+      input?: Json;
+    };
+    if (payload.runId !== runId || payload.attached !== true) continue;
     if (typeof payload.pipelineId === "string" && typeof payload.stepId === "string") {
-      return { pipelineId: payload.pipelineId, stepId: payload.stepId };
+      return {
+        pipelineId: payload.pipelineId,
+        stepId: payload.stepId,
+        input: payload.input as Json,
+      };
     }
   }
   return undefined;
@@ -102,13 +126,21 @@ export const statusOf = (registry: Registry, pipelineId: string, stepId: string)
  * appended before it is published, so the attachment is durable by the time
  * anybody hears about it.
  */
-const attach = (registry: Registry, pipelineId: string, step: PipelineStep, runId: string): void => {
+const attach = (
+  registry: Registry,
+  pipelineId: string,
+  step: PipelineStep,
+  runId: string,
+  input: Json,
+): void => {
   registry.events.emit({
     type: "pipeline-step",
     pipelineId,
     stepId: step.id,
     status: "pending",
     runId,
+    attached: true,
+    input,
   });
 };
 
@@ -128,9 +160,10 @@ const announce = (registry: Registry, pipelineId: string, stepId: string): void 
 /** The steps, each with the status the server projects for it. */
 export const tree = async (
   registry: Registry,
-  pipeline: PipelineRegistration,
+  pipeline: AnyPipelineRegistration,
+  input: unknown,
 ): Promise<PipelineTree> => {
-  const steps = await pipeline.steps();
+  const steps = await pipeline.steps(input);
   const error = registry.errors.get(pipeline.id);
   return {
     id: pipeline.id,
@@ -155,8 +188,12 @@ export const tree = async (
  * the last one, and a scheduler over a stale step set would schedule a roadmap
  * nobody has.
  */
-const driveOnce = async (registry: Registry, pipeline: PipelineRegistration): Promise<void> => {
-  const steps = await pipeline.steps();
+const driveOnce = async (
+  registry: Registry,
+  pipeline: AnyPipelineRegistration,
+  input: Json,
+): Promise<void> => {
+  const steps = await pipeline.steps(input);
   const byId = new Map(steps.map((step) => [step.id, step] as const));
   const stepFor = (id: string): PipelineStep => {
     const step = byId.get(id);
@@ -168,12 +205,12 @@ const driveOnce = async (registry: Registry, pipeline: PipelineRegistration): Pr
     steps: steps.map((step): SchedulerStep => ({ id: step.id, dependencies: step.dependencies })),
     concurrency: Math.max(1, pipeline.concurrency ?? steps.length),
     leases: registry.leases,
-    resourcesFor: (r: SchedulerStep) => pipeline.resourcesFor?.(stepFor(r.id)) ?? [],
+    resourcesFor: (r: SchedulerStep) => pipeline.resourcesFor?.(stepFor(r.id), input) ?? [],
 
     runOne: async (r) => {
       const step = stepFor(r.id);
       const started = registry.runner.start(step.workflowId, step.input);
-      attach(registry, pipeline.id, step, started.runId);
+      attach(registry, pipeline.id, step, started.runId, input);
       try {
         return await started.settled;
       } finally {
@@ -197,10 +234,10 @@ const driveOnce = async (registry: Registry, pipeline: PipelineRegistration): Pr
 
     ...(pipeline.readiness === undefined
       ? {}
-      : { eligible: async (id: string) => await pipeline.readiness?.(id) === true }),
+      : { eligible: async (id: string) => await pipeline.readiness?.(id, input) === true }),
 
     record: async (id, outcome) => {
-      await pipeline.record?.(id, outcome as RunOutcome<unknown>);
+      await pipeline.record?.(id, outcome as RunOutcome<unknown>, input);
     },
   });
 
@@ -215,11 +252,15 @@ const driveOnce = async (registry: Registry, pipeline: PipelineRegistration): Pr
  * that silently did nothing. It is held rather than thrown into the void
  * because the drive is asynchronous: whatever started it answered long ago.
  */
-export const drive = async (registry: Registry, pipeline: PipelineRegistration): Promise<void> => {
+export const drive = async (
+  registry: Registry,
+  pipeline: AnyPipelineRegistration,
+  input: Json,
+): Promise<void> => {
   registry.driving.add(pipeline.id);
   registry.errors.delete(pipeline.id);
   try {
-    await driveOnce(registry, pipeline);
+    await driveOnce(registry, pipeline, input);
   } catch (error) {
     registry.errors.set(pipeline.id, String(error));
   } finally {
@@ -228,9 +269,13 @@ export const drive = async (registry: Registry, pipeline: PipelineRegistration):
 };
 
 /** Start a drive, unless one is already going. */
-export const start = (registry: Registry, pipeline: PipelineRegistration): { started: boolean } => {
+export const start = (
+  registry: Registry,
+  pipeline: AnyPipelineRegistration,
+  input: Json,
+): { started: boolean } => {
   if (registry.driving.has(pipeline.id)) return { started: false };
-  registry.track(drive(registry, pipeline));
+  registry.track(drive(registry, pipeline, input));
   return { started: true };
 };
 
@@ -244,7 +289,7 @@ export const start = (registry: Registry, pipeline: PipelineRegistration): { sta
  */
 export const continueAfterResume = (
   registry: Registry,
-  owner: { pipelineId: string; stepId: string },
+  owner: StepOwner,
   settled: Promise<RunOutcome<unknown>>,
 ): void => {
   const pipeline = registry.pipelineById.get(owner.pipelineId);
@@ -254,12 +299,12 @@ export const continueAfterResume = (
       try {
         const outcome = await settled;
         announce(registry, pipeline.id, owner.stepId);
-        await pipeline.record?.(owner.stepId, outcome);
+        await pipeline.record?.(owner.stepId, outcome, owner.input);
       } catch (error) {
         registry.errors.set(pipeline.id, String(error));
         return;
       }
-      await drive(registry, pipeline);
+      await drive(registry, pipeline, owner.input);
     })(),
   );
 };
