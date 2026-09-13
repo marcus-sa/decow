@@ -31,6 +31,7 @@
 
 import { claudeCode } from "../../../bindings/claude-code.ts";
 import { mastraAgent } from "../../../bindings/mastra.ts";
+import type { Commands } from "../../../core/commands.ts";
 import type { EffectResult } from "../../../core/effects.ts";
 import { memoryJournal } from "../../../core/journal.ts";
 import type { ModelBinding } from "../../../core/step.ts";
@@ -47,6 +48,35 @@ const VALIDATOR_MODEL = process.env.OPENAI_API_KEY ? "openai/gpt-5-mini" : WORKE
 
 /** The workspace the subagents run in. */
 const WORKSPACE = process.env.DW_WORKSPACE ?? process.cwd();
+
+/**
+ * How the workspace is checked, as a consumer declares it.
+ *
+ * The quality gate is a real `run-command` and `acknowledge` below answers it
+ * `committed` like every other effect, because there is no VCS here and this
+ * script is about which leaf a graph reaches rather than about what a linter
+ * says. The declaration is still real: it is what the `gates` node composes.
+ */
+const COMMANDS: Commands = {
+  typecheck: () => ["bunx", "tsc", "--noEmit"],
+  lint: ({ paths }) => ["bunx", "biome", "check", ...paths],
+  tests: ({ file, selector, junit }) => [
+    "bun",
+    "test",
+    file,
+    ...(selector ? ["-t", selector] : []),
+    "--reporter=junit",
+    `--reporter-outfile=${junit}`,
+  ],
+  oracle: ({ file, selector, junit }) => [
+    "bun",
+    "test",
+    file,
+    ...(selector ? ["-t", selector] : []),
+    "--reporter=junit",
+    `--reporter-outfile=${junit}`,
+  ],
+};
 
 /** Which subagent owns which cause. Overridable, because agent names are local. */
 const AGENTS: Partial<Record<LeafId, string>> = {
@@ -139,7 +169,7 @@ const main = async () => {
   console.log(`\nstep ${STEP.id}: ${STEP.criteria}\n`);
 
   const outcome = await run<State>(
-    deliverGraph(memoryJournal(), defs),
+    deliverGraph(memoryJournal(), defs, COMMANDS),
     { ...seed(STEP, EVIDENCE, IMPACTED), acceptanceTests: ACCEPTANCE_TESTS },
     acknowledge,
   );

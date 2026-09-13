@@ -6,7 +6,7 @@
  * the same leaf again on the next iteration. `enumeratePaths` walks the
  * reachable decision tree instead, on two axes: every leaf decision, and every
  * outcome the effects it asked for may come back with, up to every loop's
- * bound. **443 paths**, and the count is finite only because every loop
+ * bound. **347 paths**, and the count is finite only because every loop
  * carries one.
  *
  * Zero model calls, no API key, no network. The stub journal throws on a miss
@@ -14,6 +14,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_COMMAND_TIMEOUT_MS, type Commands } from "../../../core/commands.ts";
 import { memoryEffects, type Effect, type EffectResult } from "../../../core/effects.ts";
 import { stepIdFromKey, type Journal } from "../../../core/journal.ts";
 import type { StepResult } from "../../../core/step.ts";
@@ -81,6 +82,25 @@ const STEP = {
 const EVIDENCE = "test result: FAILED. assertion failed: expected Running, got Pending";
 
 /**
+ * The files the row writes, as the registry resolved them. Carried like
+ * `impacted` is: no VCS is wired to this graph, and the quality gate lints
+ * what the row writes rather than deriving it.
+ */
+const PATHS = ["src/exec_driver.rs"];
+
+/**
+ * The consumer's declared commands. Only `lint` is reached from this graph —
+ * the other three belong to the write path — and what matters is that the
+ * `gates` node composes THIS declaration rather than a hardcoded one.
+ */
+const COMMANDS: Commands = {
+  typecheck: () => ["declared-typecheck"],
+  lint: ({ paths }) => ["declared-lint", ...paths],
+  tests: ({ file }) => ["declared-tests", file],
+  oracle: ({ file }) => ["declared-oracle", file],
+};
+
+/**
  * The impact floor, as a VCS query would have answered it. Stubbed: no VCS is
  * wired to this graph, so the state carries the floor rather than producing it
  * — the same boundary `evidence` already sits on.
@@ -100,7 +120,10 @@ const OTHER_TEST = "test-exit-observer-writes-row";
  * ready. Carried into the seed rather than resolved here: this graph reads the
  * fact, it does not establish it.
  */
-const seedState = (): State => ({ ...seed(STEP, EVIDENCE, IMPACTED), acceptanceTests: [OWN_AT] });
+const seedState = (): State => ({
+  ...seed(STEP, EVIDENCE, IMPACTED, PATHS),
+  acceptanceTests: [OWN_AT],
+});
 
 /** One payload shape covers every leaf output schema; the graph reads none of them. */
 const PAYLOAD = {
@@ -160,9 +183,13 @@ const journalFor = (script: Script) =>
     ) as Record<string, StepResult<unknown>>,
   );
 
-/** Every write lands. The executor axis is exercised separately and in the walk. */
+/** Every write lands and the gate is clean. The axis is exercised separately. */
 const landsCleanly: EffectExecutor = async (effects) =>
-  effects.map((effect) => ({ effect, outcome: "committed" as const, version: 1 }));
+  effects.map((effect) =>
+    effect.type === "run-command"
+      ? LINT_OUTCOMES.clean(effect)
+      : { effect, outcome: "committed" as const, version: 1 },
+  );
 
 /** A scripted executor: one write outcome per `replace-symbol`, in order. */
 const writesLike = (outcomes: readonly WriteOutcome[]): EffectExecutor => {
@@ -171,7 +198,9 @@ const writesLike = (outcomes: readonly WriteOutcome[]): EffectExecutor => {
     effects.map((effect) =>
       effect.type === "replace-symbol"
         ? writeResult(effect, outcomes[n++] ?? "committed")
-        : writeResult(effect, "committed"),
+        : effect.type === "run-command"
+          ? LINT_OUTCOMES.clean(effect)
+          : writeResult(effect, "committed"),
     );
 };
 
@@ -189,6 +218,45 @@ const writeResult = (effect: Effect, outcome: WriteOutcome): EffectResult => {
   }
 };
 
+/**
+ * What one run of the declared lint command did. Three, because three are what
+ * the gate branch routes differently, and every one of them is an exit status
+ * rather than a judgement.
+ */
+const LINT_OUTCOMES = {
+  clean: (effect: Effect): EffectResult => ({
+    effect,
+    outcome: "committed",
+    version: 1,
+    command: { exitCode: 0, stdout: "Checked 1 file. No fixes applied.", stderr: "", durationMs: 3, timedOut: false },
+  }),
+  found: (effect: Effect): EffectResult => ({
+    effect,
+    outcome: "rejected",
+    by: "command",
+    command: {
+      exitCode: 1,
+      stdout: "src/exec_driver.rs:12 lint/suspicious/noDoubleEquals",
+      stderr: "",
+      durationMs: 4,
+      timedOut: false,
+    },
+  }),
+  unrunnable: (effect: Effect): EffectResult => ({ effect, outcome: "infra-failed" }),
+} as const;
+type LintOutcomeName = keyof typeof LINT_OUTCOMES;
+
+/** A scripted executor: one named lint outcome per `run-command`, in order. */
+const lintsLike = (names: readonly LintOutcomeName[]): EffectExecutor => {
+  let n = 0;
+  return async (effects) =>
+    effects.map((effect) =>
+      effect.type === "run-command"
+        ? LINT_OUTCOMES[names[n++] ?? "clean"](effect)
+        : writeResult(effect, "committed"),
+    );
+};
+
 /** A scripted executor: one named suite outcome per `run-tests`, in order. */
 const testsLike = (names: readonly TestOutcomeName[]): EffectExecutor => {
   let n = 0;
@@ -196,7 +264,9 @@ const testsLike = (names: readonly TestOutcomeName[]): EffectExecutor => {
     effects.map((effect) =>
       effect.type === "run-tests"
         ? TEST_OUTCOMES[names[n++] ?? "committed"](effect)
-        : writeResult(effect, "committed"),
+        : effect.type === "run-command"
+          ? LINT_OUTCOMES.clean(effect)
+          : writeResult(effect, "committed"),
     );
 };
 
@@ -204,12 +274,11 @@ const HAPPY: Script = {
   implement: "written",
   "select-tests": "no-extra",
   refactor: "refactored",
-  gates: "clean",
   commit: "committed",
 };
 
 const start = (script: Script, execute: EffectExecutor = landsCleanly) =>
-  run<State>(deliverGraph(journalFor(script), defs), seedState(), execute);
+  run<State>(deliverGraph(journalFor(script), defs, COMMANDS), seedState(), execute);
 
 /** The loop-count row of what a person reads, for asserting on a parked run. */
 const iterationsOf = (trail: readonly unknown[]) =>
@@ -221,7 +290,7 @@ const designGapOf = (trail: readonly unknown[]) =>
 
 describe("deliver graph", () => {
   test("the graph is structurally well-formed", () => {
-    expect(graphDefects(deliverGraph(journalFor(HAPPY), defs))).toEqual([]);
+    expect(graphDefects(deliverGraph(journalFor(HAPPY), defs, COMMANDS))).toEqual([]);
   });
 
   test("the happy path implements, runs the suite, refactors, gates and COMMITs", async () => {
@@ -261,14 +330,14 @@ describe("deliver graph", () => {
     expect(outcome.trace.filter((id) => id.endsWith(".red"))).toEqual([]);
   });
 
-  // 443 runs through the real engine. No model, no key, no network.
+  // 347 runs through the real engine. No model, no key, no network.
   test("every leaf decision, effect outcome and loop count reaches a declared outcome", async () => {
     const seen = new Set<string>();
     const reasons = new Set<string>();
     const terminals = new Set<string>();
 
     const paths = await enumeratePaths(async (choose) => {
-      const wf = deliverGraph(chooseJournal(choose), defs);
+      const wf = deliverGraph(chooseJournal(choose), defs, COMMANDS);
       const outcome = await run<State>(wf, seedState(), scriptedExecutor(choose, DELIVER_SPACE));
 
       expect(isDeclaredOutcome(outcome)).toBe(true);
@@ -281,11 +350,11 @@ describe("deliver graph", () => {
     });
 
     // The bounds are what make this a number rather than an infinity.
-    expect(paths).toHaveLength(443);
+    expect(paths).toHaveLength(347);
 
     // Every node the graph declares was exercised, except the one that is only
     // reachable by answering a suspension. The resume tests below cover it.
-    const reachable = inspectGraph(deliverGraph(journalFor(HAPPY), defs)).reachable;
+    const reachable = inspectGraph(deliverGraph(journalFor(HAPPY), defs, COMMANDS)).reachable;
     expect(reachable.filter((id) => !seen.has(id))).toEqual(["human.route"]);
 
     // Every declared reason a person can be handed actually occurs, including
@@ -323,72 +392,80 @@ describe("deliver graph", () => {
   });
 
   test("the gates loop fixes lint inside its bound, then hands the bound to a person", async () => {
-    const outcome = await start({ ...HAPPY, gates: "clippy-in-scope", "fix-lint": "fixed" });
+    // The gate is a declared command now, so what makes it fail is the
+    // command's exit status rather than a leaf's word for it.
+    const outcome = await start({ ...HAPPY, "fix-lint": "fixed" }, lintsLike(["found", "found"]));
 
     expect(outcome.kind).toBe("suspended");
     if (outcome.kind !== "suspended") return;
     expect(outcome.reason).toBe("gates-loop-exhausted");
     expect(visitCount(outcome.trace, "gates-loop")).toBe(MAX_GATE_ATTEMPTS);
+    expect(visitCount(outcome.trace, "gates")).toBe(MAX_GATE_ATTEMPTS);
     expect(visitCount(outcome.trace, "fix-lint")).toBe(MAX_GATE_ATTEMPTS);
     expect(iterationsOf(outcome.trail)["gates-loop"]).toBe(MAX_GATE_ATTEMPTS);
     // The inner loop ran out, so the cycle around it stopped after one pass.
     expect(visitCount(outcome.trace, "cycle")).toBe(1);
   });
 
-  test("a surviving mutant re-enters the test loop on the next cycle", async () => {
-    // The one test that needs the cycle to run twice builds it twice. The
-    // graph's own `MAX_CYCLES` is 1 so the enumeration walk stays inside its
-    // budget (see the bounds comment in graph.ts); the behaviour under test
-    // here is what a SECOND cycle does with an invalidated green verdict, so
-    // this test rebuilds the `cycle` node at 2 rather than asserting against
-    // a bound that would make the claim vacuous.
-    const script = { ...HAPPY, gates: "mutation-below-gate", "add-test": "added" };
-    const base = deliverGraph(journalFor(script), defs);
-    const twoCycles: Workflow<State> = {
-      ...base,
-      nodes: {
-        ...base.nodes,
-        cycle: loop<State>({
-          body: "test-loop",
-          until: cycleDone,
-          max: 2,
-          absorb: (s, exit) => ({
-            ...s,
-            iterations: { ...s.iterations, cycle: exit.iterations },
-            loopExhausted: exit.exhausted ? (s.loopExhausted ?? "cycle") : s.loopExhausted,
-          }),
-          next: "cycle.verdict",
-        }),
-      },
+  test("a lint run that fixes itself inside the bound reaches COMMIT", async () => {
+    const outcome = await start({ ...HAPPY, "fix-lint": "fixed" }, lintsLike(["found", "clean"]));
+
+    expect(outcome.kind === "terminal" && outcome.terminal.kind).toBe("accepted");
+    expect(visitCount(outcome.trace, "gates")).toBe(2);
+    expect(visitCount(outcome.trace, "fix-lint")).toBe(1);
+  });
+
+  test("the gate runs the CONSUMER's declared lint command over the row's files", async () => {
+    // The whole point of the gate being a step: the framework knows the job,
+    // and the command is a declaration it reads. Nothing here is `bunx biome`
+    // because nothing in the framework knows what a linter is called.
+    const asked: Effect[] = [];
+    const record: EffectExecutor = async (effects) => {
+      asked.push(...effects);
+      return effects.map((effect) =>
+        effect.type === "run-command" ? LINT_OUTCOMES.clean(effect) : writeResult(effect, "committed"),
+      );
     };
-    const outcome = await run<State>(twoCycles, seedState(), landsCleanly);
+    await start(HAPPY, record);
 
-    expect(outcome.kind).toBe("suspended");
-    if (outcome.kind !== "suspended") return;
-    expect(outcome.reason).toBe("cycle-exhausted");
-    expect(visitCount(outcome.trace, "cycle")).toBe(2);
-    expect(visitCount(outcome.trace, "add-test")).toBe(2);
-    // add-test invalidated the green verdict, so the test loop ran again.
-    expect(visitCount(outcome.trace, "run-tests")).toBe(2);
-    expect(iterationsOf(outcome.trail)["cycle"]).toBe(2);
+    expect(asked.filter((e) => e.type === "run-command")).toEqual([
+      {
+        type: "run-command",
+        argv: ["declared-lint", ...PATHS],
+        timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS,
+      },
+    ]);
   });
 
-  test("the cycle bound is handed to a person with its own reason", async () => {
-    // What the graph's own MAX_CYCLES = 1 still proves: a cycle that ends with
-    // the gates unclean leaves anyway, and the person is told which budget was
-    // spent rather than being handed a run that stopped for no stated reason.
-    const outcome = await start({ ...HAPPY, gates: "mutation-below-gate", "add-test": "added" });
+  test("the gate's own output becomes the evidence the fixing leaf reads", async () => {
+    // A finding is quoted to whoever has to repair it, verbatim. Handing the
+    // leaf a paraphrase would be handing it a paraphrase of the thing it has
+    // to fix, which is the same rule the oracle measurement follows one wave
+    // over. The run is parked and then answered only so the state the gate
+    // left behind can be read off a terminal.
+    const wf = deliverGraph(journalFor({ ...HAPPY, "fix-lint": "fixed" }), defs, COMMANDS);
+    const parked = await run<State>(wf, seedState(), lintsLike(["found", "found"]));
+    if (parked.kind !== "suspended") throw new Error("expected the gates bound to park the run");
+    expect(parked.reason).toBe("gates-loop-exhausted");
 
-    expect(outcome.kind).toBe("suspended");
-    if (outcome.kind !== "suspended") return;
-    expect(outcome.reason).toBe("cycle-exhausted");
-    expect(visitCount(outcome.trace, "cycle")).toBe(MAX_CYCLES);
-    expect(iterationsOf(outcome.trail)["cycle"]).toBe(MAX_CYCLES);
+    const outcome = await resume<State>(wf, parked.runId, { decision: "commit" }, landsCleanly);
+    if (outcome.kind !== "terminal" || outcome.terminal.kind !== "accepted") {
+      throw new Error("expected the answered run to be accepted");
+    }
+    expect(outcome.terminal.state.evidence).toContain("noDoubleEquals");
+    // And the evidence the run STARTED with is gone, because it was about a
+    // different question.
+    expect(outcome.terminal.state.evidence).not.toBe(EVIDENCE);
   });
 
-  test("out-of-scope-structural at the gates goes to a person, not to fix-lint", async () => {
-    const outcome = await start({ ...HAPPY, gates: "out-of-scope-structural" });
-    expect(outcome.kind === "suspended" && outcome.reason).toBe("out-of-scope-structural");
+  test("a lint command that cannot be run is the harness, not a finding", async () => {
+    // `infra-failed` is distinct from a non-zero exit for the same reason it
+    // is on a write: a gate that could not be RUN says nothing about the
+    // change, so it must not spend the gates budget proving it.
+    const outcome = await start({ ...HAPPY, "fix-lint": "fixed" }, lintsLike(["unrunnable"]));
+
+    expect(outcome.kind === "suspended" && outcome.reason).toBe("harness-failed");
+    expect(visitCount(outcome.trace, "gates")).toBe(1);
     expect(visited(outcome.trace, "fix-lint")).toBe(false);
   });
 
@@ -468,12 +545,12 @@ describe("deliver graph", () => {
   });
 
   test("an exhausted leaf parks under validator-exhausted and the trail names it", async () => {
-    const outcome = await start({ ...HAPPY, gates: EXHAUSTED });
+    const outcome = await start({ ...HAPPY, refactor: EXHAUSTED });
 
     expect(outcome.kind).toBe("suspended");
     if (outcome.kind !== "suspended") return;
     expect(outcome.reason).toBe("validator-exhausted");
-    expect(outcome.trail[3]).toMatchObject({ exhausted: "gates" });
+    expect(outcome.trail[3]).toMatchObject({ exhausted: "refactor" });
   });
 });
 
@@ -622,7 +699,9 @@ describe("the suite's outcome decides, and the branch is a pure function of it",
       effects.map((effect) =>
         effect.type === "run-tests"
           ? { effect, outcome: "rejected" as const, by: "tests" as const }
-          : writeResult(effect, "committed"),
+          : effect.type === "run-command"
+            ? LINT_OUTCOMES.clean(effect)
+            : writeResult(effect, "committed"),
       );
     const outcome = await start({ ...HAPPY, diagnose: "impl-wrong" }, unnamed);
 
@@ -659,7 +738,9 @@ describe("the suite's outcome decides, and the branch is a pure function of it",
       effects.map((effect) =>
         effect.type === "run-tests"
           ? { effect, outcome: "conflict" as const, currentVersion: 9 }
-          : writeResult(effect, "committed"),
+          : effect.type === "run-command"
+            ? LINT_OUTCOMES.clean(effect)
+            : writeResult(effect, "committed"),
       );
     const outcome = await start(HAPPY, conflicting);
 
@@ -674,7 +755,9 @@ describe("the suite's outcome decides, and the branch is a pure function of it",
       return effects.map((effect) =>
         effect.type === "run-tests"
           ? TEST_OUTCOMES.committed(effect)
-          : writeResult(effect, "committed"),
+          : effect.type === "run-command"
+            ? LINT_OUTCOMES.clean(effect)
+            : writeResult(effect, "committed"),
       );
     };
     await start({ ...HAPPY, "select-tests": "extra" }, record);
@@ -690,7 +773,7 @@ describe("the suite's outcome decides, and the branch is a pure function of it",
 
 describe("deliver graph, resumed by a person", () => {
   const park = async () => {
-    const wf = deliverGraph(journalFor({ ...HAPPY, gates: EXHAUSTED }), defs);
+    const wf = deliverGraph(journalFor({ ...HAPPY, refactor: EXHAUSTED }), defs, COMMANDS);
     const parked = await run<State>(wf, seedState(), landsCleanly);
     if (parked.kind !== "suspended") throw new Error("expected the run to park");
     return { wf, parked };
@@ -718,7 +801,7 @@ describe("deliver graph, resumed by a person", () => {
   });
 
   test("a commit whose validator refuses rejects rather than parking a second time", async () => {
-    const wf = deliverGraph(journalFor({ ...HAPPY, gates: EXHAUSTED, commit: EXHAUSTED }), defs);
+    const wf = deliverGraph(journalFor({ ...HAPPY, refactor: EXHAUSTED, commit: EXHAUSTED }), defs, COMMANDS);
     const parked = await run<State>(wf, seedState(), landsCleanly);
     if (parked.kind !== "suspended") throw new Error("expected the run to park");
 
@@ -729,7 +812,7 @@ describe("deliver graph, resumed by a person", () => {
 });
 
 describe("deliver graph defects", () => {
-  const wf = deliverGraph(journalFor(HAPPY), defs);
+  const wf = deliverGraph(journalFor(HAPPY), defs, COMMANDS);
   const withNode = (id: string, node: Node<State>): Workflow<State> => ({
     ...wf,
     nodes: { ...wf.nodes, [id]: node },
@@ -815,6 +898,10 @@ const DELIVER_SPACE: EffectOutcomeSpace = {
   "run-tests": (Object.keys(TEST_OUTCOMES) as TestOutcomeName[]).map((name) => ({
     name,
     result: TEST_OUTCOMES[name],
+  })),
+  "run-command": (Object.keys(LINT_OUTCOMES) as LintOutcomeName[]).map((name) => ({
+    name,
+    result: LINT_OUTCOMES[name],
   })),
   "append-trail": [
     { name: "committed", result: (effect: Effect) => ({ effect, outcome: "committed", version: 1 }) },

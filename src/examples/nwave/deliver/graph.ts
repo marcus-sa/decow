@@ -8,7 +8,7 @@
  *     test-loop  repeat [ implement, select-tests, run-tests, diagnose ] until
  *                the test outcome is neither still-red nor broke-other
  *     gates-loop repeat [ gates, fix-lint ] until the gate outcome is not
- *                clippy-in-scope
+ *                lint-failed
  *
  * `select-tests` sits between the write and the suite and decides one thing:
  * whether any test should run in ADDITION to the impact floor the VCS already
@@ -24,6 +24,16 @@
  * recorded red oracle never becomes ready, so "no edge bypasses RED" is a
  * readiness precondition here rather than a node — see `../distill/README` in
  * the nwave example's own README.
+ *
+ * `gates` is NOT a leaf either, and for the same reason `run-tests` is not:
+ * whether the quality gate found anything is what RUNNING it answers. The node
+ * emits a `run-command` effect built from the consumer's declared
+ * `commands.lint` over the files this step writes, and `gate.route` is a pure
+ * function of the result. Three answers, because three are what the graph
+ * routes differently: exit zero is `clean`, any other exit is `lint-failed`,
+ * and a command that could not be run at all is `infra-failed`, which is the
+ * harness failing rather than the change being bad. `fix-lint` stays a leaf,
+ * because writing the fix is judgement.
  *
  * `run-tests` is NOT a leaf. It emits a `run-tests` effect and `test.route`
  * routes the typed result, because whether the suite passed is what running it
@@ -57,7 +67,8 @@
  */
 
 import { z } from "zod";
-import type { Effect, EffectResult } from "../../../core/effects.ts";
+import { normalizeCommand, type Commands } from "../../../core/commands.ts";
+import { commandEffect, commandOf, commandOutput, type Effect, type EffectResult } from "../../../core/effects.ts";
 import type { Journal } from "../../../core/journal.ts";
 import type { StepObserver } from "../../../core/step.ts";
 import {
@@ -76,7 +87,6 @@ import {
   SELECT_TESTS_OUTCOMES,
   type DeliverDefs,
   type DiagnoseOutcome,
-  type GateOutcome,
   type LeafId,
   type LeafInput,
   type LeafOutputFor,
@@ -91,22 +101,23 @@ import {
  * one iteration to reach a retry, a second to reach the bound. Raising them
  * multiplies the enumerated path space without adding an edge.
  *
- * `MAX_CYCLES` is 1, and that is a budget decision with a measurement behind
- * it. `select-tests` sits inside `test-loop`, which sits inside `cycle`, so its
- * multiplier compounds once per (cycle x test) iteration. Measured on the walk,
- * with the other two bounds at 2: cutting `MAX_CYCLES` to 1 gives 450 paths in
- * ~4.5 s; cutting `MAX_GATE_ATTEMPTS` to 1 instead gave 5615 paths in ~254 s,
- * because it is not one of the two loops the new leaf is inside; cutting
- * `MAX_TEST_ATTEMPTS` to 1 would also work on time (285 paths, ~2 s) and is the
- * most expensive in signal — five tests depend on the test loop running twice,
- * including the whole `at-wrong` re-run-without-re-implementing claim and both
- * write-retry claims. So the cycle is the one that gives way.
+ * `MAX_CYCLES` is 1, and with no mutation command declared it is the only
+ * value that could matter: nothing inside the cycle can invalidate a green
+ * verdict, so the body runs once whatever the bound says (see
+ * `ExhaustibleLoopId`).
  *
- * What that costs is one observation, and it is bought back rather than
- * dropped: the cycle repeating is asserted in
- * `a surviving mutant re-enters the test loop on the next cycle`, which
- * rebuilds the `cycle` node at `max: 2` for itself. The walk pays for one
- * cycle; the one test that needs two builds two.
+ * It was a budget decision with a measurement behind it while the mutation
+ * gate existed, and the measurement is kept because the day a consumer
+ * declares a mutation command the decision comes back with it. `select-tests`
+ * sits inside `test-loop`, which sits inside `cycle`, so its multiplier
+ * compounds once per (cycle x test) iteration. Measured on the walk, with the
+ * other two bounds at 2: cutting `MAX_CYCLES` to 1 gave 450 paths in ~4.5 s;
+ * cutting `MAX_GATE_ATTEMPTS` to 1 instead gave 5615 paths in ~254 s, because
+ * it is not one of the two loops the new leaf is inside; cutting
+ * `MAX_TEST_ATTEMPTS` to 1 would also work on time (285 paths, ~2 s) and is
+ * the most expensive in signal — five tests depend on the test loop running
+ * twice, including the whole `at-wrong` re-run-without-re-implementing claim
+ * and both write-retry claims. So the cycle is the one that gave way.
  */
 export const MAX_TEST_ATTEMPTS = 2;
 export const MAX_GATE_ATTEMPTS = 2;
@@ -114,6 +125,26 @@ export const MAX_CYCLES = 1;
 
 export const LOOP_IDS = ["test-loop", "gates-loop", "cycle"] as const;
 export type LoopId = (typeof LOOP_IDS)[number];
+
+/**
+ * The loops whose bound is a reason a person is handed.
+ *
+ * The CYCLE is not one, and that is a fact about what can ask for a second
+ * pass rather than a decision. `cycleDone` is "blocked, or the gates came back
+ * clean", and every way the body can end is one or the other: a clean gate
+ * leaves, and everything else — a test loop that ran out, a refactor whose
+ * validator refused, a gate still failing at its own bound, a gate that could
+ * not be run — sets a block. So `until` is true after every body, the bound is
+ * never what stops the cycle, and a `cycle-exhausted` reason would be a word
+ * nothing produces.
+ *
+ * It was produced once. `mutation-below-gate` routed to an `add-test` leaf
+ * that invalidated the green verdict and sent the run round again, and both
+ * are gone with the model that classified a gate run. The loop NODE stays,
+ * because the day a consumer declares a mutation command the second pass comes
+ * back with it.
+ */
+export type ExhaustibleLoopId = Exclude<LoopId, "cycle">;
 
 /* -------------------------------------------------------------------- state */
 
@@ -128,9 +159,7 @@ export type Leaves = {
   "fix-acceptance-test"?: LeafOutputFor<"fix-acceptance-test">["decision"];
   "surface-design-gap"?: LeafOutputFor<"surface-design-gap">["decision"];
   refactor?: LeafOutputFor<"refactor">["decision"];
-  gates?: GateOutcome;
   "fix-lint"?: LeafOutputFor<"fix-lint">["decision"];
-  "add-test"?: LeafOutputFor<"add-test">["decision"];
   commit?: LeafOutputFor<"commit">["decision"];
 };
 
@@ -147,17 +176,14 @@ export const HUMAN_REASONS = [
   "validator-exhausted",
   "write-infra-failed",
   "test-selection-refused",
-  "out-of-scope-structural",
   "test-loop-exhausted",
   "gates-loop-exhausted",
-  "cycle-exhausted",
 ] as const;
 export type HumanReason = (typeof HUMAN_REASONS)[number];
 
-const LOOP_EXHAUSTED: Record<LoopId, HumanReason> = {
+const LOOP_EXHAUSTED: Record<ExhaustibleLoopId, HumanReason> = {
   "test-loop": "test-loop-exhausted",
   "gates-loop": "gates-loop-exhausted",
-  cycle: "cycle-exhausted",
 };
 
 export type State = {
@@ -173,6 +199,17 @@ export type State = {
   impacted: string[];
   /** The optimistic version the next `replace-symbol` claims. */
   symbolVersion: number;
+  /**
+   * The repository-relative files this row writes, as the registry resolved
+   * the row's predicted touches. Carried, not produced: the same boundary
+   * `impacted` sits on, and for the same reason — a symbol id is opaque and
+   * only the VCS can say which file holds it.
+   *
+   * This is what `gates` lints. An empty set is handed to the declared lint
+   * command as an empty set; what a linter does with no paths is the
+   * consumer's declaration to make, not this graph's.
+   */
+  paths: string[];
 
   leaf: Leaves;
   /**
@@ -193,6 +230,13 @@ export type State = {
    * refused, and the ids that failed. Cleared when a new run is asked for.
    */
   testRun?: EffectResult;
+  /**
+   * What came back from the quality gate: the declared lint command, run. The
+   * whole `EffectResult` again, because the outcome is what the branch routes
+   * and the output is what `fix-lint` reads. Cleared when a new gate run is
+   * asked for.
+   */
+  gateRun?: EffectResult;
   /** The symbol `implement` last rewrote. Payload; never branched on. */
   wrote?: string;
   /**
@@ -203,8 +247,8 @@ export type State = {
   extra: string[];
   /** The leaf whose validator was never satisfied, most recent wins. */
   exhausted?: LeafId;
-  /** The first loop to run out of iterations. */
-  loopExhausted?: LoopId;
+  /** The first loop to run out of iterations. Never the cycle; see above. */
+  loopExhausted?: ExhaustibleLoopId;
   /** Iterations each loop last ran, folded in by that loop's `absorb`. */
   iterations: Partial<Record<LoopId, number>>;
   /** What `surface-design-gap` wrote for a person. Payload; never branched on. */
@@ -219,11 +263,14 @@ export const seed = (
   evidence: string,
   /** The impact floor a VCS query produced. Empty when nothing supplied one. */
   impacted: readonly string[] = [],
+  /** The files this row writes, as the registry resolved them. */
+  paths: readonly string[] = [],
 ): State => ({
   step,
   evidence,
   impacted: [...impacted],
   symbolVersion: 0,
+  paths: [...paths],
   leaf: {},
   acceptanceTests: [],
   extra: [],
@@ -241,7 +288,13 @@ export const seed = (
  * the enclosing loops' `until` true, and the run unwound immediately.
  */
 export const blockedReason = (s: State): HumanReason | undefined => {
-  if (testVerdict(s) === "harness-failed" || s.leaf.diagnose === "harness-failed") {
+  if (
+    testVerdict(s) === "harness-failed" ||
+    s.leaf.diagnose === "harness-failed" ||
+    // A declared lint command that could not be run at all. Not the change
+    // being bad, so it must not burn the gates budget either.
+    gateOutcome(s) === "infra-failed"
+  ) {
     return "harness-failed";
   }
   // A selection that reached below the impact floor is the selecting leaf's
@@ -254,7 +307,6 @@ export const blockedReason = (s: State): HumanReason | undefined => {
   if (s.leaf.diagnose === "design-missing") return "design-gap";
   if (s.exhausted !== undefined) return "validator-exhausted";
   if (s.write === "infra-failed") return "write-infra-failed";
-  if (s.leaf.gates === "out-of-scope-structural") return "out-of-scope-structural";
   if (s.loopExhausted !== undefined) return LOOP_EXHAUSTED[s.loopExhausted];
   return undefined;
 };
@@ -289,8 +341,19 @@ export type TestVerdict = (typeof TEST_VERDICTS)[number];
 
 export type DiagnoseVerdict = DiagnoseOutcome | "exhausted";
 export type RefactorVerdict = (typeof REFACTOR_OUTCOMES)[number] | "exhausted";
-export type GateVerdict = GateOutcome | "exhausted";
 export type CommitVerdict = (typeof COMMIT_OUTCOMES)[number] | "exhausted";
+
+/**
+ * What one run of the quality gate said. Three members, because three are what
+ * the graph routes differently, and no leaf answers any of them: whether the
+ * declared lint command found something is its exit status.
+ *
+ * `infra-failed` is a command that could not be RUN — it was never spawned, or
+ * it was killed at its timeout — which is the harness failing rather than the
+ * change being bad, and the same distinction `run-tests` draws one loop over.
+ */
+export const GATE_VERDICTS = ["clean", "lint-failed", "infra-failed"] as const;
+export type GateVerdict = (typeof GATE_VERDICTS)[number];
 export type CycleVerdict = "clean" | "design-gap" | "blocked";
 
 /**
@@ -352,8 +415,45 @@ export const diagnoseVerdict = (s: State): DiagnoseVerdict => s.leaf.diagnose ??
 export const testPhase = (s: State): TestPhase =>
   s.leaf["fix-acceptance-test"] === undefined ? "implement" : "run-tests";
 export const refactorVerdict = (s: State): RefactorVerdict => s.leaf.refactor ?? "exhausted";
-export const gateVerdict = (s: State): GateVerdict => s.leaf.gates ?? "exhausted";
 export const commitVerdict = (s: State): CommitVerdict => s.leaf.commit ?? "exhausted";
+
+/**
+ * What the gate said, or `undefined` when it has not run.
+ *
+ * The absence is a real state and it is not a fourth verdict: `blockedReason`
+ * is read from inside the test loop, long before any gate runs, and a function
+ * that answered `infra-failed` there would block every run on a gate that was
+ * never asked for. So the partial function is what the predicates read, and
+ * the branch below is the total one.
+ */
+export const gateOutcome = (s: State): GateVerdict | undefined => {
+  const result = s.gateRun;
+  if (result === undefined) return undefined;
+  switch (result.outcome) {
+    case "committed":
+      return "clean";
+    case "rejected":
+      return "lint-failed";
+    // A command claims no version, so there is no optimistic check for it to
+    // lose. One arriving means the executor is wrong, which is the harness.
+    case "conflict":
+    case "infra-failed":
+      return "infra-failed";
+  }
+};
+
+/**
+ * The gate's verdict, for the two branches that read it. Both sit after the
+ * gates loop body has run at least once, so an absent verdict there is a graph
+ * bug rather than a decision.
+ */
+export const gateVerdict = (s: State): GateVerdict => {
+  const verdict = gateOutcome(s);
+  if (verdict === undefined) {
+    throw new Error("graph bug: a gate branch was reached before the gate ran");
+  }
+  return verdict;
+};
 
 /**
  * The test loop leaves when the suite is green, or when something is
@@ -364,14 +464,16 @@ export const commitVerdict = (s: State): CommitVerdict => s.leaf.commit ?? "exha
 export const testDone = (s: State): boolean =>
   blockedReason(s) !== undefined || testVerdict(s) === "green";
 
-/** The gates loop repeats while clippy has findings inside the step's scope. */
-export const gatesDone = (s: State): boolean =>
-  blockedReason(s) !== undefined ||
-  (s.leaf.gates !== undefined && s.leaf.gates !== "clippy-in-scope");
+/** The gates loop repeats while the declared lint command is still failing. */
+export const gatesDone = (s: State): boolean => {
+  if (blockedReason(s) !== undefined) return true;
+  const verdict = gateOutcome(s);
+  return verdict !== undefined && verdict !== "lint-failed";
+};
 
 /** The cycle repeats until the gates come back clean. */
 export const cycleDone = (s: State): boolean =>
-  blockedReason(s) !== undefined || s.leaf.gates === "clean";
+  blockedReason(s) !== undefined || gateOutcome(s) === "clean";
 
 /**
  * The one branch after the outermost loop. `clean` is the only route to
@@ -381,7 +483,7 @@ export const cycleDone = (s: State): boolean =>
 export const cycleVerdict = (s: State): CycleVerdict => {
   const blocked = blockedReason(s);
   if (blocked === "design-gap") return "design-gap";
-  return blocked === undefined && s.leaf.gates === "clean" ? "clean" : "blocked";
+  return blocked === undefined && gateOutcome(s) === "clean" ? "clean" : "blocked";
 };
 
 /**
@@ -401,7 +503,7 @@ export const humanTrail = (s: State): unknown[] => [
   { write: s.write, symbolVersion: s.symbolVersion, wrote: s.wrote },
   { exhausted: s.exhausted, loopExhausted: s.loopExhausted, iterations: s.iterations },
   { designGap: s.designGap },
-  { impacted: s.impacted, extra: s.extra },
+  { impacted: s.impacted, extra: s.extra, paths: s.paths, gate: gateOutcome(s) },
   { tests: testVerdict(s), acceptanceTests: s.acceptanceTests, testRun: s.testRun },
 ];
 
@@ -477,12 +579,21 @@ const absorbLoop =
   (s: State, exit: LoopExit): State => ({
     ...s,
     iterations: { ...s.iterations, [id]: exit.iterations },
-    loopExhausted: exit.exhausted ? (s.loopExhausted ?? id) : s.loopExhausted,
+    // The cycle's iteration count is reported and its exhaustion is not,
+    // because the cycle cannot run out: see `ExhaustibleLoopId`.
+    loopExhausted:
+      exit.exhausted && id !== "cycle" ? (s.loopExhausted ?? id) : s.loopExhausted,
   });
 
 export const deliverGraph = (
   journal: Journal,
   defs: DeliverDefs,
+  /**
+   * How this consumer's project is linted. The `gates` node builds
+   * `commands.lint` into the `run-command` effect it emits, so the framework
+   * owns the JOB and the consumer owns the COMMAND.
+   */
+  commands: Commands,
   /**
    * Where each leaf's attempts are reported. Optional and inert: a leaf is
    * still one `runStep` call whose `decision` is the only thing the graph
@@ -691,43 +802,56 @@ export const deliverGraph = (
       next: "gate.verdict",
     }),
 
-    gates: leafNode("gates", defs, journal, { next: "gate.route" }, observe),
+    /**
+     * The quality gate. NOT a leaf: whether the declared lint command found
+     * anything is what running it answers, and a model asked the same question
+     * would be a second source of truth for a fact the command already
+     * produced.
+     *
+     * The command is the consumer's `commands.lint` over the files this row
+     * writes; what comes back is an `EffectResult` and `gate.route` is a pure
+     * function of it. The gate's own output becomes `evidence`, so the leaf
+     * that fixes a finding reads the linter's words rather than a paraphrase
+     * of them.
+     */
+    gates: {
+      type: "step",
+      run: async (s) => ({
+        state: { ...s, gateRun: undefined },
+        effects: [commandEffect(normalizeCommand(commands.lint({ paths: s.paths })))],
+      }),
+      absorb: (s, results) => {
+        const ran = results.find((r) => r.effect.type === "run-command");
+        if (ran === undefined) return s;
+        // A FINDING becomes the evidence, because `fix-lint` is the one leaf
+        // that reads it and a finding is exactly what it has to repair. A
+        // clean run does not: it has nothing to say, no leaf downstream reads
+        // it, and overwriting the suite's output with "no fixes applied" would
+        // re-key every later leaf's journal entry against a string nobody
+        // asked about.
+        const output = commandOutput(commandOf(ran));
+        const found = ran.outcome === "rejected" && output.length > 0;
+        return { ...s, gateRun: ran, ...(found ? { evidence: output } : {}) };
+      },
+      next: "gate.route",
+    },
 
-    // Inside the gates loop, only a clippy finding has more work to do; every
+    // Inside the gates loop, only a lint finding has more work to do; every
     // other verdict goes to the loop boundary and `gatesDone` stops there.
     "gate.route": branch<State, GateVerdict>(gateVerdict, {
       clean: "gates-loop",
-      "clippy-in-scope": "fix-lint",
-      "mutation-below-gate": "gates-loop",
-      "out-of-scope-structural": "gates-loop",
-      exhausted: "gates-loop",
+      "lint-failed": "fix-lint",
+      "infra-failed": "gates-loop",
     }),
 
     "fix-lint": leafNode("fix-lint", defs, journal, { next: "gates-loop" }, observe),
 
-    // clippy-in-scope is reachable here only at the gates bound.
+    // lint-failed is reachable here only at the gates bound.
     "gate.verdict": branch<State, GateVerdict>(gateVerdict, {
       clean: "cycle",
-      "clippy-in-scope": "cycle",
-      "mutation-below-gate": "add-test",
-      "out-of-scope-structural": "cycle",
-      exhausted: "cycle",
+      "lint-failed": "cycle",
+      "infra-failed": "cycle",
     }),
-
-    // A surviving mutant means the suite did not defend the change. The new
-    // test invalidates the green verdict, so the next cycle re-enters the test
-    // loop rather than proceeding.
-    "add-test": leafNode("add-test", defs, journal, {
-      next: "cycle",
-      reset: (s) => ({
-        ...s,
-        leaf: { ...s.leaf, diagnose: undefined, "fix-acceptance-test": undefined },
-        // The suite's last result is about a suite that did not hold this
-        // test, so it says nothing about the one that does.
-        testRun: undefined,
-        write: undefined,
-      }),
-    }, observe),
 
     /* ---- out of the cycle: commit, or a person ---------------------------- */
 

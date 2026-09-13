@@ -22,6 +22,7 @@
  */
 
 import { openArtifacts, type ArtifactStore } from "../../../artifacts/store.ts";
+import { normalizeCommand, type Commands } from "../../../core/commands.ts";
 import type { Journal } from "../../../core/journal.ts";
 import { openScheduler, type ResourceLeases, type RowStatus, type SchedulerRow } from "../../../core/scheduler.ts";
 import type { StepObserver } from "../../../core/step.ts";
@@ -135,6 +136,13 @@ export type PipelineOptions = {
   artifacts: ArtifactStore;
   /** The repository the runs write code into. */
   vcs: Vcs;
+  /**
+   * How the target is typechecked, linted, tested, and how one oracle is run
+   * (`src/core/commands.ts`). The step cycle's `gates` node builds
+   * `commands.lint` into the effect it emits, and `resourcesFor` defaults to
+   * whatever those commands declare they need exclusively.
+   */
+  commands: Commands;
   /** One journal for every run, so a repeated decision is replayed, not re-inferred. */
   journal: Journal;
   defs: DeliverDefs;
@@ -150,7 +158,12 @@ export type PipelineOptions = {
   evidence?: string;
   /** How many rows may run at once. */
   concurrency?: number;
-  /** Shared test infrastructure a row needs, by name. */
+  /**
+   * Shared test infrastructure a row needs, by name. Defaults to the union of
+   * every `resources` the row's own declared commands name, so a consumer that
+   * has already said "these tests need the shared database" in its `Commands`
+   * does not have to say it again here.
+   */
   resourcesFor?: (row: RoadmapRow) => string[];
   leases?: ResourceLeases;
   /**
@@ -211,6 +224,29 @@ const predicted = (vcs: Vcs, row: RoadmapRow): { symbolVersion: number; impacted
     };
   }
   return { symbolVersion: 0, impacted: [] };
+};
+
+/**
+ * The files this row writes, resolved through the registry.
+ *
+ * A predicted touch is a SYMBOL id, which is opaque, and the quality gate
+ * needs paths. The registry is the only thing that can map one to the other,
+ * so the mapping happens here, once, where the row becomes a run — the same
+ * boundary the acceptance-test ids and the impact floor already sit on.
+ *
+ * A touch that names no live symbol contributes nothing, which is honest: the
+ * row predicted something the repository does not hold, and inventing a path
+ * for it would lint a file nobody named.
+ */
+export const writtenPaths = (vcs: Vcs, row: RoadmapRow): string[] => {
+  const paths = new Set<string>();
+  for (const touch of row.predictedTouches) {
+    const symbol = vcs.registry.symbol(touch);
+    if (symbol === undefined || symbol.tombstoned) continue;
+    const file = vcs.registry.fileById(symbol.fileId);
+    if (file !== undefined) paths.add(file.path);
+  }
+  return [...paths].sort();
 };
 
 /**
@@ -280,24 +316,50 @@ export const openPipeline = (options: PipelineOptions) => {
   const stateFor = (row: RoadmapRow): State => {
     const { symbolVersion, impacted } = predicted(vcs, row);
     return {
-      ...seed(stepUnderDelivery(row, design), options.evidence ?? "", impacted),
+      ...seed(stepUnderDelivery(row, design), options.evidence ?? "", impacted, writtenPaths(vcs, row)),
       symbolVersion,
       acceptanceTests: oracleTests(vcs, row.oracle),
     };
   };
 
+  /**
+   * Every resource this row's own declared commands name.
+   *
+   * `run-command.resources` is where a consumer says "this needs the shared
+   * database", and the scheduler is where two rows that both need it are made
+   * to take turns. The join is here: the row's arguments go into the
+   * declarations, and the union of what they declare comes back out as the
+   * lease names the scheduler takes before the run.
+   *
+   * The JUnit path is a placeholder, deliberately. A declaration whose
+   * `resources` depended on where a report was written would be declaring
+   * something other than shared infrastructure.
+   */
+  const declaredResources = (row: RoadmapRow): string[] => {
+    const { path, selector } = parseOracleLocator(row.oracle ?? "");
+    const args = { file: path, ...(selector === undefined ? {} : { selector }), junit: "" };
+    const declared = [
+      options.commands.typecheck({}),
+      options.commands.lint({ paths: writtenPaths(vcs, row) }),
+      options.commands.tests(args),
+      options.commands.oracle(args),
+    ];
+    return [...new Set(declared.flatMap((c) => normalizeCommand(c).resources ?? []))].sort();
+  };
+
   const scheduler = openScheduler<State>({
     rows: rows.map((row): SchedulerRow => ({ id: row.id, dependencies: row.dependencies })),
     concurrency: options.concurrency ?? rows.length,
-    ...(options.resourcesFor === undefined
-      ? {}
-      : { resourcesFor: (r: SchedulerRow) => (options.resourcesFor as (row: RoadmapRow) => string[])(rowFor(r.id)) }),
+    resourcesFor: (r: SchedulerRow) =>
+      options.resourcesFor === undefined
+        ? declaredResources(rowFor(r.id))
+        : options.resourcesFor(rowFor(r.id)),
     ...(options.leases === undefined ? {} : { leases: options.leases }),
 
     runOne: async (r) => {
       const row = rowFor(r.id);
       return await run<State>(
-        deliverGraph(journal, defs, options.observe?.(row.id)),
+        deliverGraph(journal, defs, options.commands, options.observe?.(row.id)),
         stateFor(row),
         executorFor(row),
         options.runtime,
@@ -307,7 +369,7 @@ export const openPipeline = (options: PipelineOptions) => {
     resumeOne: async (r, runId, answer) => {
       const row = rowFor(r.id);
       return await resume<State>(
-        deliverGraph(journal, defs, options.observe?.(row.id)),
+        deliverGraph(journal, defs, options.commands, options.observe?.(row.id)),
         runId,
         answer,
         executorFor(row),
@@ -372,7 +434,7 @@ export const openPipeline = (options: PipelineOptions) => {
       throw new Error(`pipeline: row ${rowId} is not parked, so there is no run to resume`);
     }
     const outcome = await resume<State>(
-      deliverGraph(journal, defs, options.observe?.(rowId)),
+      deliverGraph(journal, defs, options.commands, options.observe?.(rowId)),
       last.runId,
       answer,
       executorFor(row),

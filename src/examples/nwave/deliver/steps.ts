@@ -2,7 +2,7 @@
  * The DELIVER step cycle, leaf side.
  *
  * nWave's DELIVER wave runs each roadmap step through a RED -> GREEN -> COMMIT
- * cycle with a crafter, a reviewer, a mutation gate, and a phase log. Today
+ * cycle with a crafter, a reviewer, a quality gate, and a phase log. Today
  * that order is enforced after the fact, by hooks checking the log. Here RED is
  * enforced one layer up, as a readiness precondition: a row whose oracle has no
  * recorded `red` verdict never becomes ready, so no run of this cycle exists
@@ -12,7 +12,7 @@
  * requirement rows, and its prompt. The model bindings are injected (see
  * `deliverDefs`), so a test constructs no agent and spends no token.
  *
- * Two leaves classify and their enums are the interesting ones. The rest are
+ * ONE leaf classifies and its enum is the interesting one. The rest are
  * generative — "make this AT pass with the minimal change" is code generation,
  * not a closed-enum decision — so their decision space is a singleton and the
  * routable outcome downstream is the effect's result or the validator's.
@@ -23,6 +23,13 @@
  * effect and routes the typed result. A model is not needed to read an exit
  * code, and one that could disagree with it is a second source of truth for a
  * fact the runner already answered.
+ *
+ * There is no leaf for THE QUALITY GATE either, and it is the same argument
+ * one node over. A gate run is a declared lint command, and whether it found
+ * anything is its exit status. So `gates` is a step that emits a `run-command`
+ * effect and a pure branch reads the result; the model that used to classify
+ * that output now only ever sees it in order to FIX it, which is judgement and
+ * stays a leaf.
  *
  * There is no leaf for RED either, for the same reason one layer further out.
  * `des oracle` authored the oracle and SOFTWARE executed it: the two roles that
@@ -100,9 +107,7 @@ export const LEAF_IDS = [
   "fix-acceptance-test",
   "surface-design-gap",
   "refactor",
-  "gates",
   "fix-lint",
-  "add-test",
   "commit",
 ] as const;
 export type LeafId = (typeof LEAF_IDS)[number];
@@ -140,20 +145,10 @@ export const DIAGNOSE_OUTCOMES = [
 ] as const;
 export type DiagnoseOutcome = (typeof DIAGNOSE_OUTCOMES)[number];
 
-/** The quality gate: clippy, the mutation kill rate, and scope. */
-export const GATE_OUTCOMES = [
-  "clean",
-  "clippy-in-scope",
-  "mutation-below-gate",
-  "out-of-scope-structural",
-] as const;
-export type GateOutcome = (typeof GATE_OUTCOMES)[number];
-
 /** The generative leaves. One decision each: they did the work, or they did not. */
 export const IMPLEMENT_OUTCOMES = ["written"] as const;
 export const REFACTOR_OUTCOMES = ["refactored"] as const;
 export const FIX_LINT_OUTCOMES = ["fixed"] as const;
-export const ADD_TEST_OUTCOMES = ["added"] as const;
 export const COMMIT_OUTCOMES = ["committed"] as const;
 export const FIX_AT_OUTCOMES = ["fixed"] as const;
 export const DESIGN_GAP_OUTCOMES = ["surfaced"] as const;
@@ -161,7 +156,6 @@ export const DESIGN_GAP_OUTCOMES = ["surfaced"] as const;
 export type ImplementOutcome = (typeof IMPLEMENT_OUTCOMES)[number];
 export type RefactorOutcome = (typeof REFACTOR_OUTCOMES)[number];
 export type FixLintOutcome = (typeof FIX_LINT_OUTCOMES)[number];
-export type AddTestOutcome = (typeof ADD_TEST_OUTCOMES)[number];
 export type CommitOutcome = (typeof COMMIT_OUTCOMES)[number];
 export type FixAtOutcome = (typeof FIX_AT_OUTCOMES)[number];
 export type DesignGapOutcome = (typeof DESIGN_GAP_OUTCOMES)[number];
@@ -174,9 +168,7 @@ export const LEAF_DECISIONS = {
   "fix-acceptance-test": FIX_AT_OUTCOMES,
   "surface-design-gap": DESIGN_GAP_OUTCOMES,
   refactor: REFACTOR_OUTCOMES,
-  gates: GATE_OUTCOMES,
   "fix-lint": FIX_LINT_OUTCOMES,
-  "add-test": ADD_TEST_OUTCOMES,
   commit: COMMIT_OUTCOMES,
 } as const satisfies Record<LeafId, readonly [string, ...string[]]>;
 
@@ -371,8 +363,8 @@ export const scopeIsTheStep = (decisions: readonly string[]): Requirement<LeafCt
   id: "deliver.gate-findings-are-in-scope-fixes",
   sourceId: "claude.deferrals-require-issues",
   text:
-    "Clippy findings inside the step's own scope are in-scope fixes, not deferrals. A structural " +
-    "problem outside the step's scope is out-of-scope-structural and goes to a person.",
+    "Lint findings inside the step's own scope are in-scope fixes, not deferrals. Fix what the " +
+    "declared lint command reported about this step's own files, and nothing else.",
   decisions,
 });
 
@@ -388,9 +380,7 @@ const REQUIREMENTS: { [K in LeafId]: ((d: readonly string[]) => Requirement<Leaf
   "fix-acceptance-test": [atFixPreservesTheCriterion, noInventedApi],
   "surface-design-gap": [designGapIsNotInventedApi, noInventedApi],
   refactor: [noInventedApi],
-  gates: [anchorMustBeVerbatim, scopeIsTheStep],
   "fix-lint": [noInventedApi, scopeIsTheStep],
-  "add-test": [noInventedApi],
   commit: [noInventedApi],
 };
 
@@ -418,11 +408,7 @@ const SYSTEM: Record<LeafId, string> = {
     "description in `gap`.",
   refactor:
     "You refactor the change you just made without altering behaviour or public surface. Report `refactored`.",
-  gates:
-    "You classify one quality-gate run: clippy, the mutation kill rate, and scope. Answer with one word. " +
-    "Quote the gate output verbatim in `anchor`.",
-  "fix-lint": "You fix the clippy findings inside this step's scope and nothing else. Report `fixed`.",
-  "add-test": "You add one test that kills the surviving mutant named in the gate output. Report `added`.",
+  "fix-lint": "You fix the lint findings inside this step's scope and nothing else. Report `fixed`.",
   commit: "You write the step's commit with its phase trailers. Report `committed`.",
 };
 
@@ -444,9 +430,7 @@ const PROMPT: Record<LeafId, (i: LeafInput) => string> = {
     `Step ${i.step.id}\n\nAcceptance criteria:\n${i.step.criteria}\n\n` +
     `The design declares exactly this surface:\n${i.step.design}\n\nRunner output:\n${i.evidence}`,
   refactor: (i) => `Step ${i.step.id}\n\nThe design declares exactly this surface:\n${i.step.design}`,
-  gates: (i) => `Step ${i.step.id}\n\nGate output:\n${i.evidence}`,
-  "fix-lint": (i) => `Step ${i.step.id}\n\nGate output:\n${i.evidence}`,
-  "add-test": (i) => `Step ${i.step.id}\n\nGate output:\n${i.evidence}`,
+  "fix-lint": (i) => `Step ${i.step.id}\n\nLint output:\n${i.evidence}`,
   commit: (i) => `Step ${i.step.id}\n\nAcceptance criteria:\n${i.step.criteria}`,
 };
 

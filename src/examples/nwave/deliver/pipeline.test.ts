@@ -25,12 +25,13 @@ import { readFileSync, symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { openArtifacts } from "../../../artifacts/store.ts";
 import { memoryEffects } from "../../../core/effects.ts";
+import { inMemoryLeases } from "../../../core/scheduler.ts";
 import { memoryJournal } from "../../../core/journal.ts";
 import { journalKey, type StepResult } from "../../../core/step.ts";
 import { resume, run } from "../../../core/workflow.ts";
 import { openVcs } from "../../../vcs/index.ts";
-import { counterIds, manualClock, passingVerifier, tempProject } from "../../../vcs/testing.ts";
-import { bunTests } from "../../../vcs/verify.ts";
+import { bunCommands, counterIds, manualClock, passingVerifier, tempProject } from "../../../vcs/testing.ts";
+import { spawningExecutor, testsStage } from "../../../vcs/verify.ts";
 import { roadmapGraph, seed as seedRoadmap, type State as RoadmapState } from "../roadmap/graph.ts";
 import type { Roadmap } from "../roadmap/schema.ts";
 import { roadmapDefs } from "../roadmap/steps.ts";
@@ -66,7 +67,15 @@ const oracleFor = (name: string, value: number) =>
   `import { expect, test } from "bun:test";\nimport { ${name} } from "./${name}.ts";\n\n` +
   `test("${name} returns ${value}", () => {\n  expect(${name}()).toBe(${value});\n});\n`;
 
+/** Biome's own defaults, with the formatter off. Real, and small. */
+const BIOME = `${JSON.stringify(
+  { linter: { enabled: true }, formatter: { enabled: false }, assist: { enabled: false } },
+  null,
+  2,
+)}\n`;
+
 const PROJECT = {
+  "biome.json": BIOME,
   "src/alpha.ts": source("alpha", 1),
   "src/bravo.ts": source("bravo", 1),
   "src/alpha.test.ts": oracleFor("alpha", 42),
@@ -83,7 +92,12 @@ const openProject = () => {
   symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"));
   const vcs = openVcs({
     root,
-    verifier: passingVerifier({ tests: bunTests }),
+    commands: bunCommands,
+    // The tests stage is the REAL one, built from the declared test command
+    // over the executor that spawns. Typecheck and lint are not: `bunx tsc`
+    // over a temp project is seconds per write and the claim here is about
+    // test execution.
+    verifier: passingVerifier({ tests: testsStage(bunCommands, spawningExecutor(root)) }),
     clock: manualClock(1_000),
     ids: counterIds(),
   });
@@ -217,7 +231,6 @@ const HAPPY: Partial<Record<LeafId, string>> = {
   implement: "written",
   "select-tests": "no-extra",
   refactor: "refactored",
-  gates: "clean",
   commit: "committed",
 };
 
@@ -303,6 +316,7 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     const { scheduler } = openPipeline({
       artifacts,
       vcs: project.vcs,
+      commands: bunCommands,
       journal: memoryJournal(seeded),
       defs,
       roadmapId: REQUEST,
@@ -378,6 +392,7 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     const { scheduler } = openPipeline({
       artifacts,
       vcs: project.vcs,
+      commands: bunCommands,
       journal: memoryJournal(seeded),
       defs,
       roadmapId: REQUEST,
@@ -469,6 +484,7 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     const { scheduler, unoracled } = openPipeline({
       artifacts,
       vcs: project.vcs,
+      commands: bunCommands,
       journal: memoryJournal({}),
       defs,
       roadmapId: REQUEST,
@@ -541,6 +557,7 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     const { scheduler } = openPipeline({
       artifacts,
       vcs: project.vcs,
+      commands: bunCommands,
       journal: memoryJournal(seeded),
       defs,
       roadmapId: REQUEST,
@@ -566,4 +583,116 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     expect(() => readRoadmap(artifacts, "no such roadmap")).toThrow(/no roadmap/);
     artifacts.close();
   });
+});
+
+/**
+ * A declared `resources` is what makes two rows take turns.
+ *
+ * `run-command.resources` is where a consumer says "these tests need the
+ * shared database". The scheduler is where two rows that both need it are made
+ * to take turns. The join is the pipeline's default `resourcesFor`, which asks
+ * the row's own declared commands what they need, and this is the pair of runs
+ * that proves the join is live: the SAME two independent rows, with and
+ * without the declaration, overlapping or not.
+ */
+describe("a declared resource serializes two rows", () => {
+  /** Two rows that do not depend on each other, so nothing else orders them. */
+  const independent = (symbolId: (path: string, name: string) => string): Roadmap => {
+    const base = roadmapFor(symbolId);
+    return {
+      ...base,
+      steps: base.steps.map((step) => ({ ...step, dependencies: [] })),
+    };
+  };
+
+  /** `inMemoryLeases`, with the most rows that ever held one at the same time. */
+  const trackingLeases = () => {
+    const inner = inMemoryLeases();
+    const asked: string[][] = [];
+    let held = 0;
+    let peak = 0;
+    return {
+      asked,
+      peak: () => peak,
+      leases: {
+        acquire: async (names: readonly string[]) => {
+          asked.push([...names]);
+          const release = await inner.acquire(names);
+          held += 1;
+          peak = Math.max(peak, held);
+          return () => {
+            held -= 1;
+            release();
+          };
+        },
+      },
+    };
+  };
+
+  const deliverBoth = async (commands: typeof bunCommands) => {
+    const project = openProject();
+    const artifacts = openArtifacts();
+    const roadmap = independent(project.symbolId);
+    await persistRoadmap(roadmap, memoryEffects({ store: artifacts }));
+
+    const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
+    const seeded: Record<string, StepResult<unknown>> = {};
+    const bodies: Record<string, string> = { "01-01": IMPLEMENTED.alpha, "01-02": IMPLEMENTED.bravo };
+    for (const row of readRoadmap(artifacts, REQUEST)) {
+      const target = row.predictedTouches[0] as string;
+      seedRow(
+        seeded,
+        defs,
+        row.id,
+        stepUnderDelivery(row, DESIGN),
+        project.vcs.impact.impactedTests([target]).map((t) => t.id),
+        target,
+        bodies[row.id] as string,
+      );
+      recordRedOracle(artifacts, row.id);
+    }
+
+    const tracked = trackingLeases();
+    const { scheduler } = openPipeline({
+      artifacts,
+      vcs: project.vcs,
+      commands,
+      journal: memoryJournal(seeded),
+      defs,
+      roadmapId: REQUEST,
+      design: DESIGN,
+      concurrency: 2,
+      leases: tracked.leases,
+    });
+    const statuses = await scheduler.run();
+    artifacts.close();
+    project.vcs.close();
+    return { statuses, tracked };
+  };
+
+  test("two rows whose declared tests command names a resource never overlap", async () => {
+    const shared = {
+      ...bunCommands,
+      tests: (args: Parameters<typeof bunCommands.tests>[0]) => ({
+        argv: [...(bunCommands.tests(args) as readonly string[])],
+        resources: ["shared-db"],
+      }),
+    };
+    const { statuses, tracked } = await deliverBoth(shared);
+
+    expect([...statuses.values()]).toEqual(["accepted", "accepted"]);
+    // The name came off the declaration, not off the pipeline's options.
+    expect(tracked.asked).toEqual([["shared-db"], ["shared-db"]]);
+    expect(tracked.peak()).toBe(1);
+  }, 60_000);
+
+  test("two rows whose commands name nothing run together", async () => {
+    // The control. Same rows, same concurrency, same lease manager; the only
+    // difference is what the declaration says it needs.
+    const { statuses, tracked } = await deliverBoth(bunCommands);
+
+    expect([...statuses.values()]).toEqual(["accepted", "accepted"]);
+    expect(tracked.asked).toEqual([[], []]);
+    expect(tracked.peak()).toBe(2);
+  }, 60_000);
 });
