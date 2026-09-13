@@ -10,15 +10,16 @@
  * `await serve(...)` and importing one to reach a registration would start a
  * server. The same trap `request.ts` documents, one layer up.
  *
- * TWO WAYS TO START THE SAME GRAPH, and the difference is what each is for. A
- * WORKFLOW registration runs one graph over one row, through the server, so a
- * person watches it: the trace lands on the run, the attempts land on the run,
- * and a suspension is answered in the UI. A PIPELINE runs the frontier — every
- * row whose dependencies are accepted — under the scheduler, with the resource
- * leases and the readiness precondition the scheduler owns. Starting one row
- * by hand does not escape that precondition: the seed refuses a row whose
- * oracle has not been measured red, by name, exactly as the scheduler's
- * `eligible` does.
+ * TWO WAYS TO START THE SAME GRAPH, and they are the same graph. A WORKFLOW
+ * registration is one run over one row, started by a person. A PIPELINE is a
+ * declaration of WHICH rows and in what order, and the server starts each one
+ * as a run of the very same registration — same seed, same executor, same
+ * journal. So a row's run is watchable, its trace lands on it, and its
+ * suspension is answered in the dialog that answers any other run.
+ *
+ * Nothing escapes the precondition by picking a door: the standalone `deliver`
+ * seed refuses a row whose oracle has not been measured red, by name, and the
+ * pipeline declares the same fact as its `readiness`.
  */
 
 import { z } from "zod";
@@ -26,12 +27,12 @@ import { registration, type AnyWorkflowRegistration, type PipelineRegistration }
 import { vcsExecutor } from "@des/core/vcs/executor";
 import { parseOracleLocator } from "@des/core/vcs/verify";
 import {
+  declaredResources,
   deliverSeed,
-  openPipeline,
-  oracleTests,
+  knownRedTests,
   readRoadmap,
+  recordStepRun,
   ROADMAP_STEPS_TABLE,
-  statusOf,
   type RoadmapRow,
 } from "../../../examples/nwave/deliver/pipeline.ts";
 import type { State as DeliverState } from "../../../examples/nwave/deliver/graph.ts";
@@ -48,11 +49,11 @@ import {
 } from "../../../examples/nwave/distill/oracle/graph.ts";
 import {
   gitIgnores,
-  openOracles,
+  recordOracleRun,
   testPathScope,
   valueUnderOracle,
 } from "../../../examples/nwave/distill/pipeline.ts";
-import { oracleIsRed, oracleStatusOf } from "../../../examples/nwave/distill/runs.ts";
+import { oracleIsRed } from "../../../examples/nwave/distill/runs.ts";
 import {
   roadmapGraph,
   seed as seedRoadmap,
@@ -76,6 +77,20 @@ export const ROADMAP_ID = REQUEST;
 export type TodoRegistrations = {
   workflows: AnyWorkflowRegistration[];
   pipelines: PipelineRegistration[];
+};
+
+export type RegistrationOptions = {
+  /**
+   * The verbatim runner output a DELIVER run's classifying leaves quote.
+   *
+   * A function rather than a string, and called per run rather than once,
+   * because the red a crafter is looking at is the red the suite prints NOW —
+   * the row before it may have turned a sibling green. The default runs the
+   * project's own suite; the stubbed end-to-end supplies a fixed one, because
+   * a journal keyed by content cannot be seeded against output that carries
+   * its own timings.
+   */
+  evidence?: () => string;
 };
 
 /** The row this input names, or a refusal that says which id was not there. */
@@ -105,8 +120,13 @@ const rows = (dir: RunDir): RoadmapRow[] => {
   }
 };
 
-export const todoRegistrations = (dir: RunDir, report: Reporter): TodoRegistrations => {
+export const todoRegistrations = (
+  dir: RunDir,
+  report: Reporter,
+  options: RegistrationOptions = {},
+): TodoRegistrations => {
   const models = { onUsage: report.onUsage };
+  const evidence = options.evidence ?? (() => runSuite(dir.project).output);
 
   /**
    * The run report's own sink, per graph.
@@ -214,11 +234,19 @@ export const todoRegistrations = (dir: RunDir, report: Reporter): TodoRegistrati
       }),
     // No protected scope here, and that is the asymmetry the arrangement rests
     // on: this is the one turn that owns the oracle.
-    executor: ({ runId }) =>
+    // The SESSION is the run's, so two runs hold two leases rather than
+    // colliding on the one a session may hold; the TASK is the row's, so the
+    // event log's answer to "who wrote this oracle" joins the journal's answer
+    // to "what did this turn decide" on the row id both of them carry.
+    executor: ({ runId, input }) =>
       vcsExecutor({
         vcs: dir.vcs,
         session: runId,
-        intent: { taskId: runId, parentTaskId: ROADMAP_ID, description: "author the oracle" },
+        intent: {
+          taskId: rowOf(dir, input.rowId).id,
+          parentTaskId: ROADMAP_ID,
+          description: "author the oracle",
+        },
         artifacts: dir.artifacts,
       }),
     observe: observeAs("oracle"),
@@ -249,7 +277,7 @@ export const todoRegistrations = (dir: RunDir, report: Reporter): TodoRegistrati
         vcs: dir.vcs,
         row,
         design: dir.design,
-        evidence: runSuite(dir.project).output,
+        evidence: evidence(),
       });
     },
     /**
@@ -270,11 +298,9 @@ export const todoRegistrations = (dir: RunDir, report: Reporter): TodoRegistrati
       return vcsExecutor({
         vcs: dir.vcs,
         session: runId,
-        intent: { taskId: runId, parentTaskId: ROADMAP_ID, description: row.observation },
+        intent: { taskId: row.id, parentTaskId: ROADMAP_ID, description: row.observation },
         artifacts: dir.artifacts,
-        knownRed: rows(dir)
-          .filter((other) => other.id !== row.id && statusOf(dir.artifacts, other.id) !== "accepted")
-          .flatMap((other) => oracleTests(dir.vcs, other.oracle)),
+        knownRed: knownRedTests(dir.artifacts, dir.vcs, rows(dir), row.id),
         ...(row.oracle === undefined ? {} : { protected: [parseOracleLocator(row.oracle).path] }),
       });
     },
@@ -285,85 +311,55 @@ export const todoRegistrations = (dir: RunDir, report: Reporter): TodoRegistrati
   /* ------------------------------------------------------------ pipelines */
 
   /**
-   * DISTILL's second half, over every value in dependency order.
+   * The two compositions, as DATA.
    *
-   * Built per call rather than once, because the rows it schedules are written
-   * by a graph this same server runs: a composition captured at boot would be
-   * a composition over a roadmap that did not exist yet.
+   * Neither runs anything. A pipeline declares its rows — each one naming a
+   * registered graph and the input one run of it takes — plus whether a row
+   * may run at all and what to persist when one finishes. The SERVER drives
+   * the frontier and starts each ready row as an ordinary run, which is what
+   * gives a row a run id, a live trace, events and a suspension a person
+   * answers in the same dialog they answer a standalone run in.
+   *
+   * The rows are re-read per request and per drive rather than captured at
+   * boot, because they are written by a graph this same server runs: a row set
+   * captured at boot would be a row set over a roadmap that did not exist yet.
    */
-  const oraclesPipeline = () =>
-    openOracles({
-      artifacts: dir.artifacts,
-      vcs: dir.vcs,
-      journal: dir.journal,
-      defs: todoOracleDefs(models),
-      roadmapId: ROADMAP_ID,
-      design: dir.design,
-      concurrency: 1,
-      observe: report.observerFor,
-      runtime: dir.runtime,
-    });
 
+  /** One row per roadmap row, pointed at the graph that delivers it. */
+  const rowsFor = (workflowId: string) => () =>
+    rows(dir).map((row) => ({
+      id: row.id,
+      description: row.observation,
+      dependencies: row.dependencies,
+      workflowId,
+      input: { rowId: row.id },
+    }));
+
+  /** DISTILL's second half, over every value in dependency order. */
   const oracles: PipelineRegistration = {
     id: "oracles",
     title: "DISTILL — one oracle per value, authored and measured",
-    rows: () =>
-      rows(dir).map((row) => ({
-        id: row.id,
-        description: row.observation,
-        dependencies: row.dependencies,
-        workflowId: "oracle",
-      })),
-    status: (rowId) => oracleStatusOf(dir.artifacts, rowId),
-    run: async () => {
-      await oraclesPipeline().scheduler.run();
+    rows: rowsFor("oracle"),
+    record: (rowId, outcome) => {
+      recordOracleRun(dir.artifacts, rowId, outcome);
     },
-    resume: async (rowId, answer) => {
-      await oraclesPipeline().scheduler.resume(rowId, answer);
-    },
+    concurrency: 1,
   };
-
-  const deliveryPipeline = () =>
-    openPipeline({
-      artifacts: dir.artifacts,
-      vcs: dir.vcs,
-      commands: dir.commands,
-      journal: dir.journal,
-      defs: todoDeliverDefs(models),
-      roadmapId: ROADMAP_ID,
-      design: dir.design,
-      evidence: runSuite(dir.project).output,
-      concurrency: 1,
-      observe: report.observerFor,
-      runtime: dir.runtime,
-    });
 
   /** DELIVER, once per row whose oracle came back red. */
   const delivery: PipelineRegistration = {
     id: "delivery",
     title: "DELIVER — the step cycle, once per red-oracled row",
-    rows: () =>
-      rows(dir).map((row) => ({
-        id: row.id,
-        description: row.observation,
-        dependencies: row.dependencies,
-        workflowId: "deliver",
-      })),
-    status: (rowId) => statusOf(dir.artifacts, rowId),
-    run: async () => {
-      const { scheduler, unoracled } = deliveryPipeline();
-      const missing = unoracled();
-      if (missing.length > 0) {
-        throw new Error(
-          `${missing.join(", ")} ${missing.length === 1 ? "has" : "have"} no oracle measured red, ` +
-            "so nothing may deliver them. Run the oracles pipeline first.",
-        );
-      }
-      await scheduler.run();
+    rows: rowsFor("deliver"),
+    // "No edge bypasses RED", as the readiness precondition it is. A row with
+    // no oracle measured red never becomes ready and blocks its dependents,
+    // exactly as the standalone `deliver` seed refuses one by name.
+    readiness: (rowId) => oracleIsRed(dir.artifacts, rowId),
+    record: (rowId, outcome) => {
+      recordStepRun(dir.artifacts, rowId, outcome);
     },
-    resume: async (rowId, answer) => {
-      await deliveryPipeline().resumeParked(rowId, answer);
-    },
+    concurrency: 1,
+    resourcesFor: (row) => declaredResources(dir.vcs, dir.commands, rowOf(dir, row.id)),
   };
 
   return { workflows: [roadmap, obligations, oracle, deliver], pipelines: [oracles, delivery] };

@@ -1,5 +1,5 @@
 /**
- * `serve` — one process, every registered graph, one HTTP surface.
+ * `serve` — one process, every registered graph, one origin.
  *
  * A target's `.des/main.ts` is a list of registrations and a call to this. What
  * it gets back is the authored graph as data, a way to start a run, a live
@@ -13,14 +13,14 @@
  * which rows of a pipeline are still waiting on which.
  */
 
-import { openWorkflowRuntime, type WorkflowRuntime } from "@des/core/compile";
 import type { ArtifactStore } from "@des/core/artifacts";
-import { openEvents, type EventBus, type ServerEvent } from "./events.ts";
-import { project, type GraphProjection } from "./projection.ts";
+import type { EventBus } from "./events.ts";
+import type { GraphProjection } from "./projection.ts";
 import type { AnyWorkflowRegistration, PipelineRegistration } from "./registration.ts";
-import { openRunner, type Runner } from "./runner.ts";
+import { openRegistry, setRegistry, type Registry } from "./registry.ts";
 import { openRouter } from "./router.ts";
-import { openRuns, type RunStore } from "./runs.ts";
+import type { Runner } from "./runner.ts";
+import type { RunStore } from "./runs.ts";
 
 export type ServeOptions = {
   /**
@@ -47,15 +47,15 @@ export type ServeOptions = {
   fallback?: (request: Request) => Response | undefined | Promise<Response | undefined>;
   /** The id a new run is given. Injected so a test can name its runs. */
   mintId?: () => string;
-  /** How often a running pipeline's rows are re-read. */
-  pipelinePollMs?: number;
 };
 
 export type Server = {
   url: string;
   port: number;
   stop(): Promise<void>;
-  /** The bus every route publishes on, for a caller in the same process. */
+  /** Everything this server knows, for a caller in the same process. */
+  registry: Registry;
+  /** The bus every route publishes on. */
   events: EventBus;
   runs: RunStore;
   runner: Runner;
@@ -63,35 +63,18 @@ export type Server = {
   projections: Map<string, GraphProjection>;
 };
 
-/** A default that is unique per run and needs no clock. */
-const uuid = (): string => crypto.randomUUID();
-
 export const serve = async (options: ServeOptions): Promise<Server> => {
-  const workflows = options.workflows;
-  const pipelines = options.pipelines ?? [];
-  const runtime: WorkflowRuntime = openWorkflowRuntime(options.runtimeUrl);
-  const events = openEvents();
-  const runs = openRuns();
-  const runner = openRunner({ runs, events, runtime, mintId: options.mintId ?? uuid });
-
-  // Built once, with an observer that reports nowhere: a projection is a
-  // reading of the node map and must not be a run of anything.
-  const projections = new Map<string, GraphProjection>(
-    workflows.map((registration) => [
-      registration.id,
-      project(registration.graph({ journal: registration.journal, observe: () => {} })),
-    ]),
-  );
+  const registry = openRegistry({
+    workflows: options.workflows,
+    ...(options.pipelines === undefined ? {} : { pipelines: options.pipelines }),
+    ...(options.runtimeUrl === undefined ? {} : { runtimeUrl: options.runtimeUrl }),
+    ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
+    ...(options.mintId === undefined ? {} : { mintId: options.mintId }),
+  });
+  setRegistry(registry);
 
   const router = openRouter({
-    workflows,
-    pipelines,
-    runs,
-    runner,
-    events,
-    projections,
-    pipelinePollMs: options.pipelinePollMs ?? 250,
-    ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
+    registry,
     ...(options.fallback === undefined ? {} : { fallback: options.fallback }),
   });
 
@@ -107,13 +90,31 @@ export const serve = async (options: ServeOptions): Promise<Server> => {
     stop: async () => {
       await server.stop(true);
     },
-    events,
-    runs,
-    runner,
-    projections,
+    registry,
+    events: registry.events,
+    runs: registry.runs,
+    runner: registry.runner,
+    projections: registry.projections,
   };
 };
 
+export {
+  getPipeline,
+  getRun,
+  getWorkflow,
+  listPipelines,
+  listRuns,
+  listWorkflows,
+  readArtifacts,
+  resumeRow,
+  resumeRun,
+  runPipeline,
+  startRun,
+  RefusedAnswer,
+  type ArtifactRead,
+  type DescribedWorkflow,
+  type ListedPipeline,
+} from "./api.ts";
 export {
   openEvents,
   encodeEvent,
@@ -121,6 +122,15 @@ export {
   type EventBus,
   type ServerEvent,
 } from "./events.ts";
+export {
+  drive,
+  runIdOf,
+  start as startPipeline,
+  statusOf as rowStatusOf,
+  tree as pipelineTree,
+  type PipelineRowView,
+  type PipelineTree,
+} from "./pipelines.ts";
 export {
   NODE_KINDS,
   parkedAt,
@@ -140,7 +150,16 @@ export {
   type PipelineRow,
   type WorkflowRegistration,
 } from "./registration.ts";
-export { openRunner, type Runner } from "./runner.ts";
+export {
+  clearRegistry,
+  getRegistry,
+  openRegistry,
+  setRegistry,
+  type Registry,
+  type RegistryOptions,
+  type RowOwner,
+} from "./registry.ts";
+export { openRunner, type Runner, type StartedRun } from "./runner.ts";
 export {
   openRuns,
   traceEntries,

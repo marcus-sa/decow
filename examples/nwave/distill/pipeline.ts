@@ -1,50 +1,35 @@
 /**
- * The composition: roadmap rows in, oracles on disk and measured red out.
+ * DISTILL's consumer-shaped halves: what a value's oracle graph is seeded
+ * with, where the test-path scope is declared, and what a finished oracle run
+ * is persisted as.
  *
- * DISTILL is two disjoint steps and this file is where they join. The first
- * runs ONCE per roadmap and fills in the acceptance facts. The second runs
- * once per VALUE, authors that value's oracle, and lets software measure it —
- * in dependency order, through the same scheduler DELIVER uses, because a
- * value whose oracle depends on a sibling's support needs the sibling first.
+ * DISTILL is two disjoint steps. The first runs ONCE per roadmap and fills in
+ * the acceptance facts; the second runs once per VALUE, authors that value's
+ * oracle, and lets software measure it. Both are registered GRAPHS now, and
+ * the second is registered as a pipeline over them — so the ordering, the
+ * concurrency and the leases are the server's, and what is left here is the
+ * projection each of them reads and writes.
  *
- * STATE IS A PROJECTION, the same stance `deliver/pipeline.ts` takes. The
- * scheduler persists nothing of its own: each finished oracle run appends an
- * `oracle_runs` row, and a value's status is read back as the latest of those.
- * A run in flight has no row yet, so it reads `pending` and is simply run
- * again.
- *
- * That projection is also DELIVER's readiness precondition. A row with no
- * recorded `red` oracle never becomes ready there, which is where "no edge
- * bypasses RED" lives now that the step cycle has no RED node.
+ * STATE IS A PROJECTION, the same stance `deliver/pipeline.ts` takes. Each
+ * finished oracle run appends an `oracle_runs` row, and a value's status is
+ * read back as the latest of those. That projection is also DELIVER's
+ * readiness precondition: a row with no recorded `red` oracle never becomes
+ * ready, which is where "no edge bypasses RED" lives now that the step cycle
+ * has no RED node.
  */
 
 import type { ArtifactStore } from "@des/core/artifacts";
-import type { WorkflowRuntime } from "@des/core/compile";
 import { measurementOf } from "@des/core/effects";
-import type { Journal } from "@des/core/journal";
-import { openScheduler, type SchedulerRow } from "@des/core/scheduler";
-import type { StepObserver } from "@des/core/step";
-import { resume, run, type RunOutcome } from "@des/core/workflow";
-import { vcsExecutor } from "@des/core/vcs/executor";
-import type { Vcs } from "@des/core/vcs";
-import { readRoadmap, ROADMAP_STEPS_TABLE, type RoadmapRow } from "../deliver/pipeline.ts";
+import type { RunOutcome } from "@des/core/workflow";
+import type { RoadmapRow } from "../deliver/pipeline.ts";
 import {
   oracleRunsOf,
-  oracleStatusOf,
   ORACLE_RUNS_TABLE,
   recordedVerdict,
   type OracleRun,
-  type RecordedVerdict,
 } from "./runs.ts";
-import type { Roadmap } from "../roadmap/schema.ts";
-import {
-  obligationsGraph,
-  seed as seedObligations,
-  type State as ObligationsState,
-} from "./obligations/graph.ts";
-import type { ObligationsDefs } from "./obligations/steps.ts";
-import { oracleGraph, seed as seedOracle, type State as OracleState } from "./oracle/graph.ts";
-import type { OracleDefs, ValueUnderOracle } from "./oracle/steps.ts";
+import type { State as OracleState } from "./oracle/graph.ts";
+import type { ValueUnderOracle } from "./oracle/steps.ts";
 
 /* ------------------------------------------------------- the test-path scope */
 
@@ -81,67 +66,6 @@ export const testPathScope = (design: string): string[] => {
     .filter((path) => path.length > 0);
 };
 
-/* ------------------------------------------------ DISTILL, first half */
-
-export type ObligationsOptions = {
-  artifacts: ArtifactStore;
-  vcs: Vcs;
-  journal: Journal;
-  defs: ObligationsDefs;
-  /** The roadmap whose rows are being filled in, by its own row id. */
-  roadmapId: string;
-  /** `design.md` plus whatever else the design source carries. */
-  design: string;
-  observe?: StepObserver;
-  runtime?: WorkflowRuntime;
-};
-
-/**
- * Run the obligations graph once over one roadmap.
- *
- * The versions come from the artifact store rather than from the graph: the
- * rows already exist — ROADMAP wrote them — and DISTILL fills in three empty
- * fields on each, so the upsert is optimistic against what is there.
- */
-export const runObligations = async (
-  options: ObligationsOptions,
-): Promise<RunOutcome<ObligationsState>> => {
-  const rows = readRoadmap(options.artifacts, options.roadmapId);
-  const roadmap: Roadmap = {
-    request: options.roadmapId,
-    steps: rows.map((row) => ({
-      id: row.id,
-      observation: row.observation,
-      dependencies: row.dependencies,
-      authority: row.authority,
-      predictedTouches: row.predictedTouches,
-      acceptance: row.acceptance,
-      ...(row.oracle === undefined ? {} : { oracle: row.oracle }),
-      supports: row.supports,
-    })),
-  };
-  const versions = Object.fromEntries(
-    rows.map((row) => [row.id, options.artifacts.read(ROADMAP_STEPS_TABLE, row.id)?.version ?? 0]),
-  );
-
-  return await run<ObligationsState>(
-    obligationsGraph(
-      options.journal,
-      options.defs,
-      (path) => gitIgnores(options.vcs.root, path),
-      options.observe,
-    ),
-    seedObligations({ roadmap, design: options.design, testPaths: testPathScope(options.design), versions }),
-    vcsExecutor({
-      vcs: options.vcs,
-      session: `distill:${options.roadmapId}`,
-      intent: { taskId: options.roadmapId, description: "state the acceptance facts" },
-      artifacts: options.artifacts,
-    }),
-    options.runtime,
-  );
-};
-
 /**
  * Does this repository ignore that path?
  *
@@ -157,20 +81,6 @@ export const gitIgnores = (root: string, path: string): boolean => {
 };
 
 /* ----------------------------------------------- DISTILL, second half */
-
-export type OraclesOptions = {
-  artifacts: ArtifactStore;
-  vcs: Vcs;
-  journal: Journal;
-  defs: OracleDefs;
-  roadmapId: string;
-  design: string;
-  /** How many values may be in flight. One by default: see the deliver command. */
-  concurrency?: number;
-  observe?: (rowId: string) => StepObserver;
-  onRun?: (rowId: string, outcome: RunOutcome<OracleState>, verdict: RecordedVerdict) => void;
-  runtime?: WorkflowRuntime;
-};
 
 /** One roadmap row as the oracle graph's input. */
 export const valueUnderOracle = (row: RoadmapRow): ValueUnderOracle => {
@@ -190,87 +100,45 @@ export const valueUnderOracle = (row: RoadmapRow): ValueUnderOracle => {
 };
 
 /**
- * The scheduler, composed over one roadmap's oracles.
+ * Append one `oracle_runs` row for a finished oracle run.
  *
- * Every value runs as its own VCS SESSION and under its own TASK id, both the
- * row id, exactly as DELIVER's rows do — so two values in flight hold two
- * leases, and the event log's answer to "who wrote this oracle" joins the
- * journal's answer to "what did this turn decide" on one key.
+ * The verdict comes off the run's own terminal STATE, which is where the graph
+ * put it — a measurement is a fact software produced, not a leaf's decision. A
+ * parked run reached no terminal, so it has no state to read and no verdict to
+ * record: that is `blocked`, and it is an absence rather than a fifth verdict,
+ * which is what keeps "measured green" and "never measured" two different
+ * facts.
  *
- * There is no protected scope here, and that is the asymmetry the whole
- * arrangement rests on: this is the ONE turn that owns the oracle. DELIVER's
- * executor is the one that walls it.
+ * A duplicate is refused BY NAME, for the reason `recordStepRun`'s is.
  */
-export const openOracles = (options: OraclesOptions) => {
-  const { artifacts, vcs, journal, defs, design } = options;
-  const rows = readRoadmap(artifacts, options.roadmapId);
-  const byId = new Map(rows.map((row) => [row.id, row] as const));
-  const testPaths = testPathScope(design);
-
-  const rowFor = (id: string): RoadmapRow => {
-    const row = byId.get(id);
-    if (row === undefined) throw new Error(`distill: no row ${id}`);
-    return row;
+export const recordOracleRun = (
+  artifacts: ArtifactStore,
+  stepId: string,
+  outcome: RunOutcome<unknown>,
+): OracleRun => {
+  const measured =
+    outcome.kind === "terminal"
+      ? measurementOf((outcome.terminal.state as OracleState).measured)?.verdict
+      : undefined;
+  const seq = oracleRunsOf(artifacts, stepId).length;
+  const row: OracleRun = {
+    stepId,
+    runId: outcome.runId,
+    verdict: recordedVerdict(outcome, measured ?? "blocked"),
+    seq,
   };
-
-  const executorFor = (row: RoadmapRow) =>
-    vcsExecutor({
-      vcs,
-      session: row.id,
-      intent: { taskId: row.id, parentTaskId: options.roadmapId, description: row.observation },
-      artifacts,
-    });
-
-  const graphFor = (rowId: string) => oracleGraph(journal, defs, options.observe?.(rowId));
-
-  const scheduler = openScheduler<OracleState>({
-    rows: rows.map((row): SchedulerRow => ({ id: row.id, dependencies: row.dependencies })),
-    concurrency: options.concurrency ?? 1,
-
-    runOne: async (r) => {
-      const row = rowFor(r.id);
-      return await run<OracleState>(
-        graphFor(row.id),
-        seedOracle({ value: valueUnderOracle(row), design, testPaths }),
-        executorFor(row),
-        options.runtime,
-      );
-    },
-
-    resumeOne: async (r, runId, answer) => {
-      const row = rowFor(r.id);
-      return await resume<OracleState>(graphFor(row.id), runId, answer, executorFor(row), options.runtime);
-    },
-
-    statusOf: async (id) => oracleStatusOf(artifacts, id),
-
-    record: async (id, outcome) => {
-      // The verdict comes off the run's own state, which is where the graph
-      // put it. A parked run reached no terminal, so it has no state to read
-      // and no verdict to record — that is `blocked`, and it is an absence
-      // rather than a fifth verdict.
-      const measured =
-        outcome.kind === "terminal"
-          ? measurementOf(outcome.terminal.state.measured)?.verdict
-          : undefined;
-      const verdict = recordedVerdict(outcome, measured ?? "blocked");
-      options.onRun?.(id, outcome, verdict);
-      const seq = oracleRunsOf(artifacts, id).length;
-      const written = artifacts.upsert({
-        table: ORACLE_RUNS_TABLE,
-        id: `${id}#${seq}`,
-        expectedVersion: 0,
-        row: { stepId: id, runId: outcome.runId, verdict, seq } satisfies OracleRun,
-      });
-      if (written.outcome !== "committed") {
-        throw new Error(
-          `distill: oracle run ${seq} of ${id} is already recorded — two schedulers are driving one roadmap`,
-        );
-      }
-    },
+  const written = artifacts.upsert({
+    table: ORACLE_RUNS_TABLE,
+    id: `${stepId}#${seq}`,
+    expectedVersion: 0,
+    row,
   });
-
-  return { scheduler, rows };
+  if (written.outcome !== "committed") {
+    throw new Error(
+      `distill: oracle run ${seq} of ${stepId} is already recorded — two things are driving one roadmap`,
+    );
+  }
+  return row;
 };
 
 /** Re-exported so a consumer composing this reads one module. */

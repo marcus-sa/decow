@@ -1,0 +1,229 @@
+/**
+ * Everything the UI can ask for, as plain functions over the registry.
+ *
+ * These ARE the server functions. `@des/ui` wraps each one in
+ * `createServerFn`, which gives it a validator, an RPC boundary and a typed
+ * client stub — and nothing else: the body is what is written here, so the
+ * behaviour a person sees in a browser is the behaviour a unit test in this
+ * package drives directly, with no HTTP in between.
+ *
+ * Every one of them is a projection of something that already exists: the
+ * authored graph, a run's record, the artifact store's rows, a pipeline's
+ * declared rows. The three that are not — starting a run, answering a
+ * suspension, and driving a pipeline — take a value the graph's own schema
+ * validates, and a value that does not parse is refused HERE, with the closed
+ * set it should have come from, rather than three frames into a compiled step.
+ */
+
+import type { RowStatus } from "@des/core/scheduler";
+import { z } from "zod";
+import { continueAfterResume, start, tree, type PipelineTree } from "./pipelines.ts";
+import type { GraphProjection, ResumeOptions } from "./projection.ts";
+import type { AnyWorkflowRegistration } from "./registration.ts";
+import type { Registry } from "./registry.ts";
+import type { RunRecord, RunSummary } from "./runs.ts";
+
+/** One registration, as a client reads it. */
+export type DescribedWorkflow = {
+  id: string;
+  title: string;
+  /** The authored graph: the ids in the source, never the compiler's. */
+  graph: GraphProjection;
+  /**
+   * The JSON Schema of the input a person supplies.
+   *
+   * The REGISTRATION's rather than the graph's — a graph says nothing about
+   * what precedes it — so it travels beside the projection rather than inside
+   * it, and it travels as JSON Schema because a browser cannot hold a zod type.
+   */
+  input: unknown;
+};
+
+/** One pipeline, as the index lists it. */
+export type ListedPipeline = { id: string; title: string };
+
+/**
+ * An answer the parked node would refuse, refused before it reaches one.
+ *
+ * The message names the closed enum, because that is the whole of what a
+ * person needs: the thing they typed is not one of these three words. The
+ * fields are beside it for a caller that wants to re-render the buttons.
+ */
+export class RefusedAnswer extends Error {
+  readonly field?: string;
+  readonly options?: string[];
+
+  constructor(message: string, resume?: ResumeOptions) {
+    super(message);
+    this.name = "RefusedAnswer";
+    if (resume?.field !== undefined) this.field = resume.field;
+    if (resume?.options !== undefined) this.options = [...resume.options];
+  }
+}
+
+const described = (registry: Registry, registration: AnyWorkflowRegistration): DescribedWorkflow => ({
+  id: registration.id,
+  title: registration.title,
+  graph: registry.projections.get(registration.id) as GraphProjection,
+  input: z.toJSONSchema(registration.input, { target: "draft-07", unrepresentable: "any" }),
+});
+
+const workflowOf = (registry: Registry, id: string): AnyWorkflowRegistration => {
+  const registration = registry.workflowById.get(id);
+  if (registration === undefined) throw new Error(`no workflow ${id} is registered`);
+  return registration;
+};
+
+const pipelineOf = (registry: Registry, id: string) => {
+  const pipeline = registry.pipelineById.get(id);
+  if (pipeline === undefined) throw new Error(`no pipeline ${id} is registered`);
+  return pipeline;
+};
+
+/* ------------------------------------------------------------- the graphs */
+
+export const listWorkflows = (registry: Registry): DescribedWorkflow[] =>
+  registry.workflows.map((registration) => described(registry, registration));
+
+export const getWorkflow = (registry: Registry, id: string): DescribedWorkflow =>
+  described(registry, workflowOf(registry, id));
+
+/* ---------------------------------------------------------------- the runs */
+
+/**
+ * Start a run. The input is parsed by the registration's own schema, so a
+ * value the graph could not seed from never becomes a run.
+ */
+export const startRun = (registry: Registry, id: string, input: unknown): { runId: string } => {
+  const registration = workflowOf(registry, id);
+  const parsed = registration.input.safeParse(input);
+  if (!parsed.success) {
+    throw new Error(
+      `the input for ${id} does not parse: ${parsed.error.issues
+        .map((issue) => `${issue.path.join(".") || "(root)"} ${issue.message}`)
+        .join("; ")}`,
+    );
+  }
+  return { runId: registry.runner.start(id, parsed.data).runId };
+};
+
+export const listRuns = (registry: Registry): RunSummary[] => registry.runs.list();
+
+export const getRun = (registry: Registry, runId: string): RunRecord => {
+  const record = registry.runs.get(runId);
+  if (record === undefined) throw new Error(`no run ${runId}`);
+  return record;
+};
+
+/**
+ * Answer a suspension, and continue the SAME run.
+ *
+ * The answer is parsed by the parked node's own `resumeSchema`, which is the
+ * same value the UI read its buttons off — so what a person is offered is by
+ * construction what the node accepts, and anything else is refused with the
+ * enum named.
+ */
+export const resumeRun = (
+  registry: Registry,
+  runId: string,
+  answer: unknown,
+): { runId: string; status: RowStatus | "running" } => {
+  const record = registry.runs.get(runId);
+  if (record === undefined) throw new Error(`no run ${runId}`);
+  if (record.status !== "suspended") {
+    throw new Error(`run ${runId} is ${record.status}, so there is nothing to answer`);
+  }
+
+  const graph = registry.runner.graphOf(runId);
+  const node = record.suspension?.node;
+  const parked = graph === undefined || node === undefined ? undefined : graph.nodes[node];
+  if (parked?.type !== "suspend") {
+    throw new Error(`run ${runId} is parked on a node this server cannot name`);
+  }
+
+  const parsed = parked.resumeSchema.safeParse(answer);
+  if (!parsed.success) {
+    const resume = record.suspension?.resume;
+    throw new RefusedAnswer(
+      resume?.options === undefined
+        ? `the answer for ${runId} does not parse`
+        : `the answer for ${runId} must be one of ${resume.options.join(", ")}`,
+      resume,
+    );
+  }
+
+  const settled = registry.runner.resume(runId, parsed.data);
+  if (settled === undefined) throw new Error(`run ${runId} has no engine run to continue`);
+
+  const owner = registry.rowOwners.get(runId);
+  if (owner !== undefined) continueAfterResume(registry, owner, settled);
+
+  return { runId, status: "running" };
+};
+
+/* ----------------------------------------------------------- the artifacts */
+
+export type ArtifactRead =
+  | { table: string; rows: { id: string; version: number; row: unknown }[] }
+  | { table: string; id: string; version: number; row: unknown };
+
+/**
+ * The rows one table holds, one of them, or the body one held at a past
+ * version. A server with no artifact store registered says so.
+ */
+export const readArtifacts = (
+  registry: Registry,
+  args: { table: string; id?: string; version?: number },
+): ArtifactRead => {
+  const store = registry.artifacts;
+  if (store === undefined) {
+    throw new Error("this server registered no artifact store, so there are no rows to read");
+  }
+  const { table, id, version } = args;
+  if (id === undefined) return { table, rows: store.list(table) };
+  if (version !== undefined) {
+    const at = store.at(table, id, version);
+    if (at === undefined) throw new Error(`no ${table}/${id} at version ${version}`);
+    return { table, id, version, row: at };
+  }
+  const row = store.read(table, id);
+  if (row === undefined) throw new Error(`no ${table}/${id}`);
+  return { table, id, version: row.version, row: row.row };
+};
+
+/* ----------------------------------------------------------- the pipelines */
+
+export const listPipelines = (registry: Registry): ListedPipeline[] =>
+  registry.pipelines.map((pipeline) => ({ id: pipeline.id, title: pipeline.title }));
+
+export const getPipeline = async (registry: Registry, id: string): Promise<PipelineTree> =>
+  await tree(registry, pipelineOf(registry, id));
+
+/**
+ * Drive the frontier. `started: false` means one was already going, which is
+ * not an error: two people pressing the same button want one pipeline.
+ */
+export const runPipeline = (registry: Registry, id: string): { id: string; started: boolean } => ({
+  id,
+  ...start(registry, pipelineOf(registry, id)),
+});
+
+/**
+ * Answer a parked row. It is the row's own RUN that is resumed — the same run
+ * the tree links to and the run page draws — and the frontier is re-evaluated
+ * when it settles.
+ */
+export const resumeRow = (
+  registry: Registry,
+  id: string,
+  rowId: string,
+  answer: unknown,
+): { runId: string } => {
+  const pipeline = pipelineOf(registry, id);
+  const runId = registry.pipelineRuns.get(pipeline.id)?.get(rowId);
+  if (runId === undefined) {
+    throw new Error(`row ${rowId} of pipeline ${id} has no run, so there is nothing to answer`);
+  }
+  resumeRun(registry, runId, answer);
+  return { runId };
+};

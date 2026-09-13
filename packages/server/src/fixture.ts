@@ -186,3 +186,54 @@ export const spinGraph = (): Workflow<SpinState> => ({
     reject: { type: "terminal", done: (s) => ({ kind: "rejected", state: s, trail: [] }) },
   },
 });
+
+/* ------------------------------------------------------------- the overlap */
+
+/**
+ * How many runs were inside the step at once, at the most.
+ *
+ * What a resource lease is FOR is making two rows take turns, and the only
+ * honest way to see that from outside is to watch whether they were ever both
+ * in the work at the same moment. So the fixture counts.
+ */
+export type Overlap = {
+  enter(): void;
+  leave(): void;
+  peak(): number;
+};
+
+export const overlapTracker = (): Overlap => {
+  let held = 0;
+  let peak = 0;
+  return {
+    enter: () => {
+      held += 1;
+      peak = Math.max(peak, held);
+    },
+    leave: () => {
+      held -= 1;
+    },
+    peak: () => peak,
+  };
+};
+
+export type BusyState = { row: string };
+
+/** One step that takes long enough for a second run to be inside it too. */
+export const busyGraph = (track: Overlap): Workflow<BusyState> => ({
+  start: "work",
+  nodes: {
+    work: {
+      type: "step",
+      run: async (s) => {
+        track.enter();
+        await Bun.sleep(25);
+        track.leave();
+        return { state: s, effects: [] };
+      },
+      absorb: (s) => s,
+      next: "accept",
+    },
+    accept: { type: "terminal", done: (s) => ({ kind: "accepted", state: s }) },
+  },
+});

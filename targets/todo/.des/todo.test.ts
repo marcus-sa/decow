@@ -34,16 +34,25 @@ import { memoryJournal } from "@des/core/journal";
 import { journalKey, type StepResult } from "@des/core/step";
 import { resume, run } from "@des/core/workflow";
 import { openVcs, type Vcs } from "@des/core/vcs";
-import { openPipeline, readRoadmap, statusOf, stepUnderDelivery } from "../../../examples/nwave/deliver/pipeline.ts";
+import { readRoadmap, statusOf, stepUnderDelivery } from "../../../examples/nwave/deliver/pipeline.ts";
 import { deliverDefs, LeafInput, type DeliverDefs, type LeafId } from "../../../examples/nwave/deliver/steps.ts";
 import { obligationsDefs, ProposeInput } from "../../../examples/nwave/distill/obligations/steps.ts";
 import { AuthorInput, oracleDefs } from "../../../examples/nwave/distill/oracle/steps.ts";
-import { openOracles, runObligations } from "../../../examples/nwave/distill/pipeline.ts";
 import { oracleIsRed, oracleRunsOf } from "../../../examples/nwave/distill/runs.ts";
 import { roadmapGraph, seed as seedRoadmap, type State as RoadmapState } from "../../../examples/nwave/roadmap/graph.ts";
 import type { Roadmap } from "../../../examples/nwave/roadmap/schema.ts";
 import { roadmapDefs } from "../../../examples/nwave/roadmap/steps.ts";
-import { project } from "@des/server";
+import {
+  getPipeline,
+  getRun,
+  openRegistry,
+  project,
+  runPipeline,
+  startRun,
+  type Registry,
+} from "@des/server";
+import { openWorkflowRuntime } from "@des/core/compile";
+import type { Journal } from "@des/core/journal";
 import { REQUEST } from "./request.ts";
 import { openReport } from "./report.ts";
 import { todoRegistrations } from "./registrations.ts";
@@ -56,6 +65,7 @@ import {
   RUNS,
   runSuite,
   TARGET,
+  type RunDir,
 } from "./run-dir.ts";
 
 /* --------------------------------------------------------------- the copy */
@@ -378,16 +388,77 @@ const persistRoadmap = async (roadmap: Roadmap, design: string, effects: ReturnT
   }
 };
 
+/* ------------------------------------------------------------- the server */
+
+/**
+ * The four registrations and the two pipelines, over the temp copy.
+ *
+ * This is `todoRegistrations` — the same function `main.ts` calls — handed a
+ * run directory whose stores are this test's. Everything below is driven
+ * through it: a graph is started with `startRun`, a pipeline with
+ * `runPipeline`, and the server's scheduler is what decides which row runs
+ * when. Nothing here calls `run()`.
+ */
+const openStubbedServer = (
+  project: Awaited<ReturnType<typeof openProject>>,
+  design: string,
+  evidence: () => string,
+) => {
+  const artifacts = openArtifacts();
+  const seeded = memoryJournal();
+  const journal: Journal & { close: () => void } = { ...seeded, close: () => {} };
+  const dir: RunDir = {
+    name: "stubbed",
+    path: project.root,
+    project: project.root,
+    commands: project.commands,
+    vcs: project.vcs,
+    artifacts,
+    journal,
+    runtime: openWorkflowRuntime(),
+    design,
+    close: () => {},
+  };
+  const report = openReport({
+    path: join(project.root, "report.jsonl"),
+    run: "stubbed",
+    concurrent: true,
+  });
+  const { workflows, pipelines } = todoRegistrations(dir, report, { evidence });
+  const registry = openRegistry({ workflows, pipelines, artifacts });
+  return { registry, artifacts, journal, dir };
+};
+
+/** Seed a set of journal rows at the keys `runStep` will compute. */
+const seedJournal = async (
+  journal: Journal,
+  rows: Record<string, StepResult<unknown>>,
+): Promise<void> => {
+  for (const [key, value] of Object.entries(rows)) await journal.put(key, value);
+};
+
+/** Drive one pipeline to quiescence and answer with its tree. */
+const drivePipeline = async (registry: Registry, id: string) => {
+  runPipeline(registry, id);
+  await registry.idle();
+  return await getPipeline(registry, id);
+};
+
 describe("the todo target, delivered", () => {
   test("DISTILL states the facts and measures each oracle red, then DELIVER turns them green", async () => {
     const project = await openProject();
-    const artifacts = openArtifacts();
     const design = designSource(project.root, project.vcs);
 
     // The target as it ships: two stubs, and NO test file at all. The oracle
     // is authored here rather than pre-written, which is the point.
     expect(project.read("src/todo.ts")).toContain('throw new Error("not implemented")');
     expect(existsSync(join(project.root, "test"))).toBe(false);
+
+    // The evidence a DELIVER leaf quotes. Fixed rather than measured, because
+    // a journal keyed by CONTENT cannot be seeded against runner output that
+    // carries its own timings — see `RegistrationOptions.evidence`.
+    const EVIDENCE = "2 fail\n0 pass";
+    const { registry, artifacts, journal } = openStubbedServer(project, design, () => EVIDENCE);
 
     /* ---- ROADMAP ------------------------------------------------------ */
 
@@ -399,15 +470,11 @@ describe("the todo target, delivered", () => {
     /* ---- DISTILL, first half: the acceptance facts --------------------- */
 
     const obligations = obligationsDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
-    const facts = await runObligations({
-      artifacts,
-      vcs: project.vcs,
-      journal: memoryJournal(seedObligations(obligations, readRoadmap(artifacts, REQUEST), design)),
-      defs: obligations,
-      roadmapId: REQUEST,
-      design,
-    });
-    expect(facts.kind === "terminal" && facts.terminal.kind).toBe("accepted");
+    await seedJournal(journal, seedObligations(obligations, readRoadmap(artifacts, REQUEST), design));
+
+    const facts = startRun(registry, "obligations", {});
+    await registry.idle();
+    expect(getRun(registry, facts.runId).status).toBe("accepted");
 
     const enriched = readRoadmap(artifacts, REQUEST);
     expect(enriched.map((r) => r.oracle)).toEqual([ORACLES["01-01"], ORACLES["01-02"]]);
@@ -416,19 +483,21 @@ describe("the todo target, delivered", () => {
     /* ---- DISTILL, second half: the oracle, authored and measured ------- */
 
     const oracles = oracleDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
-    const { scheduler: oracleScheduler } = openOracles({
-      artifacts,
-      vcs: project.vcs,
-      journal: memoryJournal(seedAuthors(oracles, enriched, design)),
-      defs: oracles,
-      roadmapId: REQUEST,
-      design,
-      concurrency: 1,
-    });
-    const oracleStatuses = await oracleScheduler.run();
+    await seedJournal(journal, seedAuthors(oracles, enriched, design));
 
-    expect(oracleStatuses.get("01-01")).toBe("accepted");
-    expect(oracleStatuses.get("01-02")).toBe("accepted");
+    const oracleTree = await drivePipeline(registry, "oracles");
+
+    expect(oracleTree.rows.map((r) => `${r.id}:${r.status}`)).toEqual([
+      "01-01:accepted",
+      "01-02:accepted",
+    ]);
+    // Every row is an ordinary RUN: the tree links to it, and the run's own
+    // trace is of the oracle graph the author wrote.
+    for (const row of oracleTree.rows) {
+      const record = getRun(registry, row.runId as string);
+      expect(record.workflowId).toBe("oracle");
+      expect(record.trace.map((t) => t.node)).toContain("measure");
+    }
     // The verdict is the RUNNER's, not this file's: both oracles were executed
     // against the stub bodies and both failed on their assertions.
     expect(oracleRunsOf(artifacts, "01-01").at(-1)?.verdict).toBe("red");
@@ -450,35 +519,27 @@ describe("the todo target, delivered", () => {
 
     // The oracles are on disk now, so the impact graph can see them.
     project.vcs.trackTree("test");
-
-    const evidence = runSuite(project.root);
-    expect(evidence.exitCode).not.toBe(0);
+    expect(runSuite(project.root).exitCode).not.toBe(0);
 
     const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
-    const seeded: Record<string, StepResult<unknown>> = {};
+    const rows: Record<string, StepResult<unknown>> = {};
     for (const row of readRoadmap(artifacts, REQUEST)) {
-      seedRow(seeded, defs, project.vcs, row, design, evidence.output);
+      seedRow(rows, defs, project.vcs, row, design, EVIDENCE);
     }
+    await seedJournal(journal, rows);
 
-    const { scheduler, unoracled } = openPipeline({
-      artifacts,
-      vcs: project.vcs,
-      commands: project.commands,
-      journal: memoryJournal(seeded),
-      defs,
-      roadmapId: REQUEST,
-      design,
-      evidence: evidence.output,
-      concurrency: 1,
-    });
+    const deliveryTree = await drivePipeline(registry, "delivery");
 
-    // Every row is oracled, so every row is deliverable.
-    expect(unoracled()).toEqual([]);
-    const statuses = await scheduler.run();
-
-    expect(statuses.get("01-01")).toBe("accepted");
-    expect(statuses.get("01-02")).toBe("accepted");
+    expect(deliveryTree.rows.map((r) => `${r.id}:${r.status}`)).toEqual([
+      "01-01:accepted",
+      "01-02:accepted",
+    ]);
     expect(statusOf(artifacts, "01-01")).toBe("accepted");
+    for (const row of deliveryTree.rows) {
+      const record = getRun(registry, row.runId as string);
+      expect(record.workflowId).toBe("deliver");
+      expect(record.status).toBe("accepted");
+    }
 
     // Both stub bodies were written, for real, through the gate.
     const source = project.read("src/todo.ts");
@@ -512,35 +573,39 @@ describe("the todo target, delivered", () => {
 
     artifacts.close();
     project.vcs.close();
-  }, 120_000);
+  }, 180_000);
 
   test("a value whose oracle is not red is refused by name, and blocks its dependents", async () => {
     const project = await openProject();
-    const artifacts = openArtifacts();
     const design = designSource(project.root, project.vcs);
+    const { registry, artifacts } = openStubbedServer(project, design, () => "");
     await persistRoadmap(roadmapFor(project.symbolId), design, memoryEffects({ store: artifacts }));
 
-    const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
-    const { scheduler, unoracled } = openPipeline({
-      artifacts,
-      vcs: project.vcs,
-      commands: project.commands,
-      journal: memoryJournal({}),
-      defs,
-      roadmapId: REQUEST,
-      design,
-      concurrency: 1,
-    });
-
-    expect(unoracled()).toEqual(["01-01", "01-02"]);
     expect(oracleIsRed(artifacts, "01-01")).toBe(false);
-    // Nothing runs: the model bindings throw, so reaching one would fail here.
-    expect([...(await scheduler.run()).values()]).toEqual(["pending", "pending"]);
+
+    // The pipeline's readiness refuses both rows, so nothing runs at all: the
+    // model bindings throw, so reaching a leaf would fail here.
+    const tree = await drivePipeline(registry, "delivery");
+    expect(tree.rows.map((r) => r.status)).toEqual(["pending", "pending"]);
+    expect(tree.rows.every((r) => r.runId === undefined)).toBe(true);
+    expect(registry.runs.list()).toEqual([]);
+    expect(project.read("src/todo.ts")).toContain('throw new Error("not implemented")');
+
+    // And the same precondition refuses a row started BY HAND, by name — the
+    // standalone seed and the pipeline's readiness say the same thing. The
+    // refusal lands ON THE RUN rather than on the call, because a seed runs
+    // where the run does: a person reads it in the run they started.
+    const byHand = startRun(registry, "deliver", { rowId: "01-01" });
+    await registry.idle();
+    const refused = getRun(registry, byHand.runId);
+    expect(refused.status).toBe("failed");
+    expect(refused.error).toMatch(/has no oracle measured red/);
     expect(project.read("src/todo.ts")).toContain('throw new Error("not implemented")');
 
     artifacts.close();
     project.vcs.close();
-  }, 30_000);
+  }, 60_000);
+
 
   test("a run directory is a fresh checkout, and a second open sees what the first left", async () => {
     const name = `_test-${process.pid}`;

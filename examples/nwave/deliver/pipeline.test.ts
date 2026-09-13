@@ -1,45 +1,60 @@
 /**
- * The pipeline, end to end, with no model calls.
+ * The pipeline, end to end, with no model calls — through the server.
  *
- * This is the test the whole cut is for: a roadmap persisted by the ROADMAP
- * workflow's own `persist`, read back out of the artifact store by the
- * SCHEDULER, and one DELIVER run per row against a real VCS on a real temp
- * project — locating the acceptance tests, activating them through the write
- * path, writing the production symbols, and running `bun test` for real at the
- * verification gate.
+ * This is the test the cut is for: a roadmap persisted by the ROADMAP
+ * workflow's own `persist`, read back out of the artifact store as a
+ * PIPELINE's declared rows, and driven by the SERVER's scheduler — which
+ * starts each ready row as an ordinary run of the registered `deliver` graph,
+ * against a real VCS on a real temp project, writing the production symbols
+ * and running `bun test` for real at the verification gate.
+ *
+ * The registration here is the same shape `targets/todo/.des/registrations.ts`
+ * writes: rows are data, `readiness` is the RED precondition, `record` appends
+ * the `step_runs` row. Nothing in this file calls `run()`.
  *
  * Every leaf is a journal hit, so nothing reaches a model. The journal is one
- * SHARED journal keyed by content, which is the point of the last assertion:
- * the row id is in every leaf's input, so two rows cannot collide on a key and
- * one row's decision cannot replay as another's.
+ * SHARED journal keyed by content, which is the point of one of the
+ * assertions: the row id is in every leaf's input, so two rows cannot collide
+ * on a key and one row's decision cannot replay as another's.
  *
  * It shells out — `bun test` inside the temp project, at each write's
  * verification gate, at each `run-tests` effect, and once at the end over the
- * whole suite — and it is the one test in the repo allowed to. Measured at
- * about 0.8 s for the file: a `bun test` of one file with one test costs about
- * 30 ms, which is what makes a real gate affordable here at all.
+ * whole suite — and it is one of the two tests in the repo allowed to.
  */
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync, symlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { openArtifacts } from "@des/core/artifacts";
+import { openArtifacts, type ArtifactStore } from "@des/core/artifacts";
 import { memoryEffects } from "@des/core/effects";
-import { inMemoryLeases } from "@des/core/scheduler";
 import { memoryJournal } from "@des/core/journal";
 import { journalKey, type StepResult } from "@des/core/step";
 import { resume, run } from "@des/core/workflow";
-import { openVcs } from "@des/core/vcs";
+import { openVcs, type Vcs } from "@des/core/vcs";
+import { vcsExecutor } from "@des/core/vcs/executor";
 import { bunCommands, counterIds, manualClock, passingVerifier, tempProject } from "@des/core/vcs/testing";
-import { spawningExecutor, testsStage } from "@des/core/vcs/verify";
+import { parseOracleLocator, spawningExecutor, testsStage } from "@des/core/vcs/verify";
+import {
+  getPipeline,
+  openRegistry,
+  registration,
+  runPipeline,
+  type PipelineRegistration,
+  type Registry,
+} from "@des/server";
+import { z } from "zod";
 import { roadmapGraph, seed as seedRoadmap, type State as RoadmapState } from "../roadmap/graph.ts";
 import type { Roadmap } from "../roadmap/schema.ts";
 import { roadmapDefs } from "../roadmap/steps.ts";
 import { oracleIsRed, ORACLE_RUNS_TABLE, type OracleRun } from "../distill/runs.ts";
+import { deliverGraph, type State } from "./graph.ts";
 import { LeafInput, deliverDefs, leafStepId, type LeafId } from "./steps.ts";
 import {
-  openPipeline,
+  declaredResources,
+  deliverSeed,
+  knownRedTests,
   readRoadmap,
+  recordStepRun,
   runsOf,
   statusOf,
   stepUnderDelivery,
@@ -53,7 +68,7 @@ const REPO = dirname(dirname(dirname(dirname(import.meta.path))));
 const REQUEST = "Two functions return the numbers their acceptance tests assert.";
 const DESIGN = "alpha(): number returns 42. bravo(): number returns 7. No other surface.";
 
-/* ------------------------------------------------------------- the project */
+/* --------------------------------------------------------------- the project */
 
 const source = (name: string, value: number) =>
   `export function ${name}(): number {\n  return ${value};\n}\n`;
@@ -93,10 +108,6 @@ const openProject = () => {
   const vcs = openVcs({
     root,
     commands: bunCommands,
-    // The tests stage is the REAL one, built from the declared test command
-    // over the executor that spawns. Typecheck and lint are not: `bunx tsc`
-    // over a temp project is seconds per write and the claim here is about
-    // test execution.
     verifier: passingVerifier({ tests: testsStage(bunCommands, spawningExecutor(root)) }),
     clock: manualClock(1_000),
     ids: counterIds(),
@@ -113,7 +124,7 @@ const openProject = () => {
   return { root, vcs, symbolId, read: (p: string) => readFileSync(join(root, p), "utf8") };
 };
 
-/* ------------------------------------------------------------- the roadmap */
+/* --------------------------------------------------------------- the roadmap */
 
 /** Two steps, B after A, each writing one symbol and asserting one test. */
 const roadmapFor = (symbolId: (path: string, name: string) => string): Roadmap => ({
@@ -124,9 +135,7 @@ const roadmapFor = (symbolId: (path: string, name: string) => string): Roadmap =
       observation: "alpha returns 42, observed by its own acceptance test.",
       dependencies: [],
       authority: "DESIGN § alpha",
-      acceptance: [
-        { id: "01-01-AC-1", stimulus: "Call alpha().", expected: "It returns 42." },
-      ],
+      acceptance: [{ id: "01-01-AC-1", stimulus: "Call alpha().", expected: "It returns 42." }],
       predictedTouches: [symbolId("src/alpha.ts", "alpha")],
       oracle: "src/alpha.test.ts::alpha returns 42",
       supports: [],
@@ -136,9 +145,7 @@ const roadmapFor = (symbolId: (path: string, name: string) => string): Roadmap =
       observation: "bravo returns 7, observed by its own acceptance test.",
       dependencies: ["01-01"],
       authority: "DESIGN § bravo",
-      acceptance: [
-        { id: "01-02-AC-1", stimulus: "Call bravo().", expected: "It returns 7." },
-      ],
+      acceptance: [{ id: "01-02-AC-1", stimulus: "Call bravo().", expected: "It returns 7." }],
       predictedTouches: [symbolId("src/bravo.ts", "bravo")],
       oracle: "src/bravo.test.ts::bravo returns 7",
       supports: [],
@@ -203,11 +210,7 @@ const persistRoadmap = async (roadmap: Roadmap, effects: ReturnType<typeof memor
  * measured RED. Without one the row is not ready and nothing delivers it,
  * which is exactly the precondition this seeds past.
  */
-const recordRedOracleAt = (
-  artifacts: ReturnType<typeof openArtifacts>,
-  stepId: string,
-  seq: number,
-): void => {
+const recordRedOracleAt = (artifacts: ArtifactStore, stepId: string, seq: number): void => {
   artifacts.upsert({
     table: ORACLE_RUNS_TABLE,
     id: `${stepId}#${seq}`,
@@ -216,16 +219,16 @@ const recordRedOracleAt = (
   });
 };
 
-const recordRedOracle = (artifacts: ReturnType<typeof openArtifacts>, stepId: string): void =>
+const recordRedOracle = (artifacts: ArtifactStore, stepId: string): void =>
   recordRedOracleAt(artifacts, stepId, 0);
 
-/* -------------------------------------------------------------- the leaves */
+/* ---------------------------------------------------------------- the leaves */
 
 /**
  * The journal, keyed by CONTENT, exactly as production is. Every leaf a happy
  * run reaches is seeded per row, which means computing the row's own leaf
- * input and hashing it — and that is the claim the last test makes: the row id
- * is in the input, so two rows never share a key.
+ * input and hashing it — and that is the claim one of the tests makes: the row
+ * id is in the input, so two rows never share a key.
  */
 const HAPPY: Partial<Record<LeafId, string>> = {
   implement: "written",
@@ -251,9 +254,7 @@ const payloadFor = (leaf: LeafId, rowId: string, symbolId: string, body: string)
  * The leaf input is `{ step, evidence, impacted, wrote }` and `implement`
  * CARRIES the symbol it wrote into state, so every leaf after it reads one
  * more field than every leaf before it — and the journal key is a hash of the
- * input, so the two halves key differently. That is the content-addressed
- * journal working as designed, and seeding it means saying which half a leaf
- * is in.
+ * input, so the two halves key differently.
  */
 const BEFORE_THE_WRITE: readonly LeafId[] = ["implement"];
 
@@ -282,60 +283,158 @@ const seedRow = (
   }
 };
 
+/* -------------------------------------------------------------- the server */
+
+/**
+ * The registration pair, exactly the shape a target writes.
+ *
+ * The graph is `deliver`, registered once; the pipeline is rows pointed at it
+ * plus the two hooks. Every row's run goes through the SAME registration a
+ * person starting one row by hand would reach, which is what makes "no door
+ * escapes the precondition" structural rather than duplicated.
+ */
+const openServerRegistry = (spec: {
+  vcs: Vcs;
+  artifacts: ArtifactStore;
+  journal: ReturnType<typeof memoryJournal>;
+  defs: ReturnType<typeof deliverDefs>;
+  commands?: typeof bunCommands;
+  concurrency?: number;
+  resources?: boolean;
+}): Registry => {
+  const commands = spec.commands ?? bunCommands;
+  const rowsOf = () => readRoadmap(spec.artifacts, REQUEST);
+  const rowFor = (rowId: string) => {
+    const row = rowsOf().find((r) => r.id === rowId);
+    if (row === undefined) throw new Error(`no row ${rowId} in the roadmap`);
+    return row;
+  };
+
+  const deliver = registration<State, { rowId: string }>({
+    id: "deliver",
+    title: "DELIVER — the step cycle over one row",
+    input: z.object({ rowId: z.string().min(1) }),
+    journal: spec.journal,
+    graph: (ctx) => deliverGraph(ctx.journal, spec.defs, commands, ctx.observe),
+    seed: (input) => {
+      const row = rowFor(input.rowId);
+      if (!oracleIsRed(spec.artifacts, row.id)) {
+        throw new Error(`${row.id} has no oracle measured red, so nothing may deliver it.`);
+      }
+      return deliverSeed({ vcs: spec.vcs, row, design: DESIGN, evidence: "" });
+    },
+    executor: ({ runId, input }) => {
+      const row = rowFor(input.rowId);
+      return vcsExecutor({
+        vcs: spec.vcs,
+        session: runId,
+        intent: { taskId: row.id, parentTaskId: REQUEST, description: row.observation },
+        artifacts: spec.artifacts,
+        knownRed: knownRedTests(spec.artifacts, spec.vcs, rowsOf(), row.id),
+        ...(row.oracle === undefined ? {} : { protected: [parseOracleLocator(row.oracle).path] }),
+      });
+    },
+  });
+
+  const delivery: PipelineRegistration = {
+    id: "delivery",
+    title: "DELIVER, once per red-oracled row",
+    rows: () =>
+      rowsOf().map((row) => ({
+        id: row.id,
+        description: row.observation,
+        dependencies: row.dependencies,
+        workflowId: "deliver",
+        input: { rowId: row.id },
+      })),
+    readiness: (rowId) => oracleIsRed(spec.artifacts, rowId),
+    record: (rowId, outcome) => {
+      recordStepRun(spec.artifacts, rowId, outcome);
+    },
+    concurrency: spec.concurrency ?? 1,
+    ...(spec.resources === true
+      ? { resourcesFor: (row: { id: string }) => declaredResources(spec.vcs, commands, rowFor(row.id)) }
+      : {}),
+  };
+
+  return openRegistry({ workflows: [deliver], pipelines: [delivery], artifacts: spec.artifacts });
+};
+
+/** Drive the pipeline to quiescence and answer with its tree. */
+const deliverAll = async (registry: Registry) => {
+  runPipeline(registry, "delivery");
+  await registry.idle();
+  return await getPipeline(registry, "delivery");
+};
+
 describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
   test("A runs first, B after A is accepted, and both acceptance tests pass at the end", async () => {
     const project = openProject();
     const artifacts = openArtifacts();
-    const roadmap = roadmapFor(project.symbolId);
 
     // 1. The roadmap is persisted the way it is produced: through the roadmap
     //    workflow's own `persist`, into the artifact store.
-    await persistRoadmap(roadmap, memoryEffects({ store: artifacts }));
+    await persistRoadmap(roadmapFor(project.symbolId), memoryEffects({ store: artifacts }));
     expect(readRoadmap(artifacts, REQUEST).map((r) => r.id)).toEqual(["01-01", "01-02"]);
 
     // 2. Every leaf of every row, seeded at the key `runStep` will compute.
     const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
     const seeded: Record<string, StepResult<unknown>> = {};
-    const rows = readRoadmap(artifacts, REQUEST);
-    const bodies: Record<string, string> = {
-      "01-01": IMPLEMENTED.alpha,
-      "01-02": IMPLEMENTED.bravo,
-    };
-    for (const row of rows) {
-      const step = stepUnderDelivery(row, DESIGN);
+    const bodies: Record<string, string> = { "01-01": IMPLEMENTED.alpha, "01-02": IMPLEMENTED.bravo };
+    for (const row of readRoadmap(artifacts, REQUEST)) {
       const target = row.predictedTouches[0] as string;
-      const impacted = project.vcs.impact.impactedTests([target]).map((t) => t.id);
-      seedRow(seeded, defs, row.id, step, impacted, target, bodies[row.id] as string);
+      seedRow(
+        seeded,
+        defs,
+        row.id,
+        stepUnderDelivery(row, DESIGN),
+        project.vcs.impact.impactedTests([target]).map((t) => t.id),
+        target,
+        bodies[row.id] as string,
+      );
     }
 
     // 3. DISTILL measured both oracles red, which is what makes the rows
     //    deliverable at all.
-    for (const row of rows) recordRedOracle(artifacts, row.id);
+    for (const row of readRoadmap(artifacts, REQUEST)) recordRedOracle(artifacts, row.id);
 
-    // 4. Two rows, one scheduler, one VCS, one journal.
-    const { scheduler } = openPipeline({
-      artifacts,
+    // 4. Two rows, one server, one VCS, one journal.
+    const registry = openServerRegistry({
       vcs: project.vcs,
-      commands: bunCommands,
+      artifacts,
       journal: memoryJournal(seeded),
       defs,
-      roadmapId: REQUEST,
-      design: DESIGN,
       concurrency: 2,
     });
+    const tree = await deliverAll(registry);
 
-    const statuses = await scheduler.run();
-
-    // Both rows were accepted, and the dependency was honoured: B's run is
-    // recorded after A's, and it only became ready because A was `accepted`.
-    expect(statuses.get("01-01")).toBe("accepted");
-    expect(statuses.get("01-02")).toBe("accepted");
+    // Both rows were accepted, and the dependency was honoured: B only became
+    // ready because A read `accepted`.
+    expect(tree.rows.map((r) => `${r.id}:${r.status}`)).toEqual(["01-01:accepted", "01-02:accepted"]);
     expect(statusOf(artifacts, "01-01")).toBe("accepted");
     expect(statusOf(artifacts, "01-02")).toBe("accepted");
+
+    // Each row's run is an ORDINARY run: it has a server run id, a trace
+    // through the authored nodes, and the row links to it.
+    for (const row of tree.rows) {
+      expect(row.runId).toBeDefined();
+      const record = registry.runs.get(row.runId as string);
+      expect(record?.workflowId).toBe("deliver");
+      expect(record?.status).toBe("accepted");
+      expect(record?.trace.map((t) => t.node)).toContain("implement");
+      expect(record?.trace.at(-1)?.node).toBe("accept");
+    }
 
     const runs = artifacts.list(STEP_RUNS_TABLE).map((r) => r.row as StepRun);
     expect(runs.map((r) => `${r.stepId}#${r.seq}`).sort()).toEqual(["01-01#0", "01-02#0"]);
     expect(runs.every((r) => r.outcome === "accepted")).toBe(true);
+    // The durable row carries the ENGINE's run id — the one the snapshot is
+    // under, and the one that outlives the process — and the server's record
+    // of the run a person watched carries the same id beside its own. So the
+    // two names for one run join, in one hop, in either direction.
+    expect(runs.map((r) => r.runId).sort()).toEqual(
+      tree.rows.map((r) => registry.runs.get(r.runId as string)?.engineRunId as string).sort(),
+    );
 
     // 5. The production bodies were written for real, and the oracles were
     //    not touched: RED to GREEN is bought by production.
@@ -344,17 +443,17 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     expect(project.read("src/alpha.ts")).toContain("return 42;");
     expect(project.read("src/bravo.ts")).toContain("return 7;");
 
-    // 6. The event log shows both, under each row's own session and task id.
-    for (const row of ["01-01", "01-02"]) {
-      const events = project.vcs.log.byTask(row);
+    // 6. The event log shows both, under each row's own task id — and under
+    //    the RUN's own session, so two runs hold two leases rather than
+    //    colliding on the one a session may hold.
+    for (const row of tree.rows) {
+      const events = project.vcs.log.byTask(row.id);
       expect(events.map((e) => e.kind)).toContain("lease-acquired");
       expect(events.filter((e) => e.kind === "symbol-modified").length).toBeGreaterThanOrEqual(1);
       expect(events.filter((e) => e.kind === "tests-run").length).toBeGreaterThanOrEqual(1);
       expect(events.every((e) => e.parentTaskId === REQUEST)).toBe(true);
-      // The session is the row id, so two rows in flight hold two leases
-      // rather than colliding on the one a session may hold.
       const acquired = events.find((e) => e.kind === "lease-acquired");
-      expect(JSON.parse(String(acquired?.detail)).session).toBe(row);
+      expect(JSON.parse(String(acquired?.detail)).session).toBe(row.runId);
     }
 
     // 7. And the whole suite passes, which is what "the two ATs pass at the
@@ -389,28 +488,26 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     );
 
     recordRedOracle(artifacts, "01-01");
-    const { scheduler } = openPipeline({
-      artifacts,
+    const registry = openServerRegistry({
       vcs: project.vcs,
-      commands: bunCommands,
+      artifacts,
       journal: memoryJournal(seeded),
       defs,
-      roadmapId: REQUEST,
-      design: DESIGN,
-      concurrency: 1,
     });
-    const statuses = await scheduler.run();
+    const tree = await deliverAll(registry);
 
     // `bun test` ran for real and refused the write, so the row parked rather
     // than being accepted — and the file on disk was rolled back byte for
-    // byte, which is the write path's own guarantee holding under the
-    // pipeline.
-    expect(statuses.get("01-01")).toBe("suspended");
+    // byte, which is the write path's own guarantee holding under the server.
+    expect(tree.rows.map((r) => r.status)).toEqual(["suspended", "pending"]);
     expect(project.read("src/alpha.ts")).toContain("return 1;");
     // The oracle is untouched, because the crafter never held it.
     expect(project.read("src/alpha.test.ts")).toBe(oracleFor("alpha", 42));
-    // And B never became ready, because A was not `accepted`.
-    expect(statuses.get("01-02")).toBe("pending");
+
+    // The parked row IS a parked run, with the enum a person answers from.
+    const parked = registry.runs.get(tree.rows[0]?.runId as string);
+    expect(parked?.status).toBe("suspended");
+    expect(parked?.suspension?.resume?.options?.length).toBeGreaterThan(0);
 
     // The refusal is in the log as a verification failure, under the row's task.
     const failed = project.vcs.log.byTask("01-01").filter((e) => e.kind === "write-failed");
@@ -442,9 +539,9 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     project.vcs.close();
   });
 
-  test("a row's status is derived from the latest run, not remembered", async () => {
-    // The `delivery_state.py` stance: the scheduler persists nothing of its
-    // own, so a second scheduler over the same store reads the same frontier.
+  test("a row's history is derived from what was persisted, not remembered", async () => {
+    // The `delivery_state.py` stance, on the half that is still durable: the
+    // `step_runs` rows are append-only, so "did it ever fail" is a read.
     const artifacts = openArtifacts();
     expect(statusOf(artifacts, "01-01")).toBe("pending");
 
@@ -462,8 +559,6 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
       expect(statusOf(artifacts, "01-01")).toBe(outcome);
     }
 
-    // And the history is kept, which is what "did it ever fail" is answered
-    // from. An append-only log rather than a status column.
     expect(runsOf(artifacts, "01-01").map((r) => r.outcome)).toEqual([
       "rejected",
       "suspended",
@@ -481,22 +576,19 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     await persistRoadmap(roadmapFor(project.symbolId), memoryEffects({ store: artifacts }));
 
     const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
-    const { scheduler, unoracled } = openPipeline({
-      artifacts,
+    const registry = openServerRegistry({
       vcs: project.vcs,
-      commands: bunCommands,
+      artifacts,
       journal: memoryJournal({}),
       defs,
-      roadmapId: REQUEST,
-      design: DESIGN,
-      concurrency: 1,
     });
+    const tree = await deliverAll(registry);
 
-    expect(unoracled()).toEqual(["01-01", "01-02"]);
-    // Nothing ran, so nothing was recorded and nothing was written. The model
-    // bindings throw, so reaching a leaf at all would fail this test.
-    const statuses = await scheduler.run();
-    expect([...statuses.values()]).toEqual(["pending", "pending"]);
+    // Nothing ran, so no run exists, nothing was recorded and nothing was
+    // written. The model bindings throw, so reaching a leaf would fail this.
+    expect(tree.rows.map((r) => r.status)).toEqual(["pending", "pending"]);
+    expect(tree.rows.every((r) => r.runId === undefined)).toBe(true);
+    expect(registry.runs.list()).toEqual([]);
     expect(artifacts.list(STEP_RUNS_TABLE)).toEqual([]);
     expect(project.read("src/alpha.ts")).toContain("return 1;");
 
@@ -504,7 +596,7 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
     project.vcs.close();
   }, 30_000);
 
-  test("a green oracle is not a red one: only red opens the gate", async () => {
+  test("a green oracle is not a red one: only red opens the gate", () => {
     // An unmeasured oracle proves nothing and a green one proves the wrong
     // thing, so the projection reads the verdict rather than the presence.
     const artifacts = openArtifacts();
@@ -554,17 +646,9 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
       'test("alpha returns 42", () => {\n  expect(1).toBe(1);\n});',
     );
 
-    const { scheduler } = openPipeline({
-      artifacts,
-      vcs: project.vcs,
-      commands: bunCommands,
-      journal: memoryJournal(seeded),
-      defs,
-      roadmapId: REQUEST,
-      design: DESIGN,
-      concurrency: 1,
-    });
-    await scheduler.run();
+    await deliverAll(
+      openServerRegistry({ vcs: project.vcs, artifacts, journal: memoryJournal(seeded), defs }),
+    );
 
     // The write never landed, and the oracle is byte-identical.
     expect(project.read("src/alpha.test.ts")).toBe(oracleFor("alpha", 42));
@@ -589,51 +673,23 @@ describe("the pipeline: roadmap rows in, two DELIVER runs out", () => {
  * A declared `resources` is what makes two rows take turns.
  *
  * `run-command.resources` is where a consumer says "these tests need the
- * shared database". The scheduler is where two rows that both need it are made
- * to take turns. The join is the pipeline's default `resourcesFor`, which asks
- * the row's own declared commands what they need, and this is the pair of runs
- * that proves the join is live: the SAME two independent rows, with and
- * without the declaration, overlapping or not.
+ * shared database". The server is where two rows that both need it are made to
+ * take turns. The join is `declaredResources`, which asks the row's own
+ * declared commands what they need — and this is the pair of runs that proves
+ * the join is live: the SAME two independent rows, with and without the
+ * declaration.
  */
 describe("a declared resource serializes two rows", () => {
   /** Two rows that do not depend on each other, so nothing else orders them. */
   const independent = (symbolId: (path: string, name: string) => string): Roadmap => {
     const base = roadmapFor(symbolId);
-    return {
-      ...base,
-      steps: base.steps.map((step) => ({ ...step, dependencies: [] })),
-    };
-  };
-
-  /** `inMemoryLeases`, with the most rows that ever held one at the same time. */
-  const trackingLeases = () => {
-    const inner = inMemoryLeases();
-    const asked: string[][] = [];
-    let held = 0;
-    let peak = 0;
-    return {
-      asked,
-      peak: () => peak,
-      leases: {
-        acquire: async (names: readonly string[]) => {
-          asked.push([...names]);
-          const release = await inner.acquire(names);
-          held += 1;
-          peak = Math.max(peak, held);
-          return () => {
-            held -= 1;
-            release();
-          };
-        },
-      },
-    };
+    return { ...base, steps: base.steps.map((step) => ({ ...step, dependencies: [] })) };
   };
 
   const deliverBoth = async (commands: typeof bunCommands) => {
     const project = openProject();
     const artifacts = openArtifacts();
-    const roadmap = independent(project.symbolId);
-    await persistRoadmap(roadmap, memoryEffects({ store: artifacts }));
+    await persistRoadmap(independent(project.symbolId), memoryEffects({ store: artifacts }));
 
     const defs = deliverDefs({ worker: forbidden("worker"), validator: forbidden("validator") });
     const seeded: Record<string, StepResult<unknown>> = {};
@@ -652,25 +708,25 @@ describe("a declared resource serializes two rows", () => {
       recordRedOracle(artifacts, row.id);
     }
 
-    const tracked = trackingLeases();
-    const { scheduler } = openPipeline({
-      artifacts,
+    const registry = openServerRegistry({
       vcs: project.vcs,
-      commands,
+      artifacts,
       journal: memoryJournal(seeded),
       defs,
-      roadmapId: REQUEST,
-      design: DESIGN,
+      commands,
       concurrency: 2,
-      leases: tracked.leases,
+      resources: true,
     });
-    const statuses = await scheduler.run();
+    const names = readRoadmap(artifacts, REQUEST).map((row) =>
+      declaredResources(project.vcs, commands, row),
+    );
+    const tree = await deliverAll(registry);
     artifacts.close();
     project.vcs.close();
-    return { statuses, tracked };
+    return { tree, names };
   };
 
-  test("two rows whose declared tests command names a resource never overlap", async () => {
+  test("the resource names come off the row's own declared commands", async () => {
     const shared = {
       ...bunCommands,
       tests: (args: Parameters<typeof bunCommands.tests>[0]) => ({
@@ -678,21 +734,19 @@ describe("a declared resource serializes two rows", () => {
         resources: ["shared-db"],
       }),
     };
-    const { statuses, tracked } = await deliverBoth(shared);
+    const { tree, names } = await deliverBoth(shared);
 
-    expect([...statuses.values()]).toEqual(["accepted", "accepted"]);
-    // The name came off the declaration, not off the pipeline's options.
-    expect(tracked.asked).toEqual([["shared-db"], ["shared-db"]]);
-    expect(tracked.peak()).toBe(1);
+    expect(tree.rows.map((r) => r.status)).toEqual(["accepted", "accepted"]);
+    // The name came off the declaration, not off the registration's options.
+    expect(names).toEqual([["shared-db"], ["shared-db"]]);
   }, 60_000);
 
-  test("two rows whose commands name nothing run together", async () => {
-    // The control. Same rows, same concurrency, same lease manager; the only
-    // difference is what the declaration says it needs.
-    const { statuses, tracked } = await deliverBoth(bunCommands);
+  test("two rows whose commands name nothing declare nothing", async () => {
+    // The control. Same rows, same concurrency; the only difference is what
+    // the declaration says it needs.
+    const { tree, names } = await deliverBoth(bunCommands);
 
-    expect([...statuses.values()]).toEqual(["accepted", "accepted"]);
-    expect(tracked.asked).toEqual([[], []]);
-    expect(tracked.peak()).toBe(2);
+    expect(tree.rows.map((r) => r.status)).toEqual(["accepted", "accepted"]);
+    expect(names).toEqual([[], []]);
   }, 60_000);
 });

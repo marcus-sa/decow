@@ -50,6 +50,6 @@
   // waves against that target. Everything else in a target is that target's
   // own project, typechecked by the write path's own declared typecheck
   // command inside a run; `runs/` holds the copies.
-  "include": ["packages", "examples", "targets/*/commands.ts", "targets/*/.des"],
+  "include": ["packages", "examples", "targets/*/commands.ts", "targets/*/.des/**/*.ts"],
   "exclude": ["node_modules", "runs", "packages/ui/.output", "packages/ui/.nitro", "packages/ui/dist"]
 }
