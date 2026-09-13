@@ -26,7 +26,7 @@
  * on the exit status exactly as it does for every other declared command.
  */
 
-import type { Commands } from "../../src/core/commands.ts";
+import type { Commands } from "@des/core/commands";
 
 export const commands: Commands = {
   typecheck: () => ["bunx", "tsc", "--noEmit"],

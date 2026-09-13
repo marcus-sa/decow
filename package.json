@@ -3,8 +3,9 @@
   "version": "0.0.0",
   "type": "module",
   "private": true,
+  "workspaces": ["packages/*"],
   "scripts": {
-    "test": "bun test ./src ./examples ./targets/todo/.des",
+    "test": "bun test ./packages ./examples ./targets/todo/.des",
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun run test",
     "smoke:deliver": "bun run examples/nwave/deliver/smoke.ts",
@@ -24,11 +25,7 @@
     "typescript": "^5"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.3.269",
-    "@mastra/core": "^1.66.0",
-    "@mastra/libsql": "^1.22.5",
-    "tree-sitter": "^0.25.1",
-    "tree-sitter-typescript": "^0.23.2",
+    "@des/core": "workspace:*",
     "zod": "^4.6.2"
   }
 }

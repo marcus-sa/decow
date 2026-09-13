@@ -30,7 +30,7 @@
  */
 
 import { join } from "node:path";
-import type { RunOutcome } from "../../../src/core/workflow.ts";
+import type { RunOutcome } from "@des/core/workflow";
 import { openPipeline } from "../../../examples/nwave/deliver/pipeline.ts";
 import type { State } from "../../../examples/nwave/deliver/graph.ts";
 import { describeModels, todoDeliverDefs } from "./models.ts";

@@ -36,8 +36,8 @@
  * mind.
  */
 
-import { mastraAgent } from "../../../src/bindings/mastra.ts";
-import type { ModelBinding } from "../../../src/core/step.ts";
+import { mastraAgent } from "@des/core/bindings/mastra";
+import type { ModelBinding } from "@des/core/step";
 import { deliverDefs, LEAF_IDS, type DeliverDefs, type LeafId } from "../../../examples/nwave/deliver/steps.ts";
 import { obligationsDefs, type ObligationsDefs } from "../../../examples/nwave/distill/obligations/steps.ts";
 import { oracleDefs, type OracleDefs } from "../../../examples/nwave/distill/oracle/steps.ts";

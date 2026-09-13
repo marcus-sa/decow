@@ -19,8 +19,8 @@
  */
 
 import { join } from "node:path";
-import { run, type RunOutcome } from "../../../src/core/workflow.ts";
-import { vcsExecutor } from "../../../src/vcs/executor.ts";
+import { run, type RunOutcome } from "@des/core/workflow";
+import { vcsExecutor } from "@des/core/vcs/executor";
 import { roadmapGraph, seed, type State } from "../../../examples/nwave/roadmap/graph.ts";
 import { describeModels, todoRoadmapDefs } from "./models.ts";
 import { heading, renderReviewTrail, renderTrace } from "./render.ts";

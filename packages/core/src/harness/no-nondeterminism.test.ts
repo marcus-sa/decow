@@ -14,11 +14,15 @@ import { describe, expect, test } from "bun:test";
 import { Glob } from "bun";
 import { dirname, join, relative } from "node:path";
 
-/** This file is `<src>/harness/no-nondeterminism.test.ts`. */
+/** This file is `<repo>/packages/core/src/harness/no-nondeterminism.test.ts`. */
 const SRC = dirname(dirname(import.meta.path));
 
-/** The repository root. Every scanned path is reported relative to it. */
-const REPO = dirname(SRC);
+/**
+ * The repository root. Every scanned path is reported relative to it, so a
+ * failure names `packages/core/src/core/compile.ts` rather than a path that
+ * only means something inside one package.
+ */
+const REPO = dirname(dirname(dirname(SRC)));
 
 /** `<repo>/examples`, where a consumer's waves live. */
 const EXAMPLES = join(REPO, "examples");
@@ -32,8 +36,8 @@ const BANNED = ["Date.now", "Math.random", "new Date(", "randomUUID"] as const;
 /**
  * The agent-native VCS takes its clock and its id generator as constructor
  * arguments so that a lease TTL is a function call rather than a wait and an
- * event log is comparable across runs. `src/vcs/defaults.ts` is the one file
- * allowed to supply the real ones, so it is the one file excluded.
+ * event log is comparable across runs. `@des/core`'s own `vcs/defaults.ts` is
+ * the one file allowed to supply the real ones, so it is the one file excluded.
  */
 const EXEMPT = new Set([join(SRC, "vcs/defaults.ts")]);
 
@@ -66,8 +70,9 @@ const EXEMPT = new Set([join(SRC, "vcs/defaults.ts")]);
  * day it lands.
  *
  * The examples are a second root rather than a subdirectory of the first:
- * `examples/` sits beside `src/` at the repository root, because a consumer's
- * waves are not the framework. The globs are relative to that root, and they
+ * `examples/` sits beside `packages/` at the repository root, because a
+ * consumer's waves are not the framework. The globs are relative to that root,
+ * and they
  * are deliberately NOT narrowed to `nwave/**`: a second consumer's example set
  * must be scanned the day it lands, not the day somebody remembers to add a
  * glob for it.
@@ -116,8 +121,8 @@ const stripComments = (source: string): string =>
 describe("no nondeterminism inside the graph", () => {
   test("the scanned set is non-empty and includes the runner and every graph", async () => {
     const files = (await scanned()).map((f) => relative(REPO, f));
-    expect(files).toContain("src/core/workflow.ts");
-    expect(files).toContain("src/core/compile.ts");
+    expect(files).toContain("packages/core/src/core/workflow.ts");
+    expect(files).toContain("packages/core/src/core/compile.ts");
     expect(files).toContain("examples/nwave/deliver/graph.ts");
     expect(files).toContain("examples/nwave/distill/manifest.ts");
     expect(files).toContain("examples/nwave/distill/obligations/graph.ts");
@@ -126,15 +131,15 @@ describe("no nondeterminism inside the graph", () => {
     expect(files).toContain("examples/nwave/roadmap/graph.ts");
     expect(files).toContain("examples/nwave/roadmap/shape.ts");
     expect(files).toContain("examples/nwave/roadmap/disjointness.ts");
-    expect(files).toContain("src/core/scheduler.ts");
+    expect(files).toContain("packages/core/src/core/scheduler.ts");
     expect(files).toContain("examples/nwave/deliver/pipeline.ts");
-    expect(files).toContain("src/artifacts/store.ts");
-    expect(files).toContain("src/vcs/registry.ts");
-    expect(files).toContain("src/vcs/leases.ts");
-    expect(files).toContain("src/vcs/writes.ts");
-    expect(files).toContain("src/vcs/executor.ts");
-    expect(files).toContain("src/vcs/structural/typescript.ts");
-    expect(files).not.toContain("src/vcs/defaults.ts");
+    expect(files).toContain("packages/core/src/artifacts/store.ts");
+    expect(files).toContain("packages/core/src/vcs/registry.ts");
+    expect(files).toContain("packages/core/src/vcs/leases.ts");
+    expect(files).toContain("packages/core/src/vcs/writes.ts");
+    expect(files).toContain("packages/core/src/vcs/executor.ts");
+    expect(files).toContain("packages/core/src/vcs/structural/typescript.ts");
+    expect(files).not.toContain("packages/core/src/vcs/defaults.ts");
     // The consumer's own declaration of how its project is built and tested.
     expect(files).toContain("targets/todo/commands.ts");
     expect(files.length).toBeGreaterThanOrEqual(30);

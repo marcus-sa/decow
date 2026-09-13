@@ -19,7 +19,7 @@
  */
 
 import { join } from "node:path";
-import type { RunOutcome } from "../../../src/core/workflow.ts";
+import type { RunOutcome } from "@des/core/workflow";
 import { HUMAN_DECISIONS, type HumanDecision, type State } from "../../../examples/nwave/deliver/graph.ts";
 import { openPipeline } from "../../../examples/nwave/deliver/pipeline.ts";
 import { todoDeliverDefs } from "./models.ts";

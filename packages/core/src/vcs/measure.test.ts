@@ -20,8 +20,11 @@ import { openVcs } from "./index.ts";
 import { bunCommands, counterIds, manualClock, tempProject } from "./testing.ts";
 import { defaultVerifier, oracleContext, oracleVerdict, parseOracleLocator } from "./verify.ts";
 
-/** This file is `<root>/src/vcs/measure.test.ts`. */
-const REPO = dirname(dirname(dirname(import.meta.path)));
+/** This file is `<root>/packages/core/src/vcs/measure.test.ts`. */
+const PACKAGE = dirname(dirname(dirname(import.meta.path)));
+
+/** The workspace root, where bun hoists `node_modules` for every package. */
+const ROOT = dirname(dirname(PACKAGE));
 
 describe("the oracle locator, split", () => {
   test("path::selector names one test; a bare path names the file", () => {
@@ -101,7 +104,7 @@ describe("the real runner", () => {
 
   const open = () => {
     const root = tempProject(PROJECT);
-    symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"));
+    symlinkSync(join(ROOT, "node_modules"), join(root, "node_modules"));
     const vcs = openVcs({
       root,
       verifier: defaultVerifier({ commands: bunCommands, root }),

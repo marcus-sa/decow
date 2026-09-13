@@ -20,8 +20,8 @@
  */
 
 import { join } from "node:path";
-import { resume } from "../../../src/core/workflow.ts";
-import { vcsExecutor } from "../../../src/vcs/executor.ts";
+import { resume } from "@des/core/workflow";
+import { vcsExecutor } from "@des/core/vcs/executor";
 import {
   REVIEW_DECISIONS,
   REVIEW_REASONS,

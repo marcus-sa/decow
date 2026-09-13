@@ -18,8 +18,8 @@ import type { RegisteredSymbol } from "./registry.ts";
 import { counterIds, manualClock, passingVerifier, tempProject } from "./testing.ts";
 import type { Intent } from "./log.ts";
 
-/** This file is `<root>/src/vcs/registry.test.ts`. */
-const REPO = dirname(dirname(dirname(import.meta.path)));
+/** This file is `<root>/packages/core/src/vcs/registry.test.ts`. */
+const PACKAGE = dirname(dirname(dirname(import.meta.path)));
 
 const open = (files: Readonly<Record<string, string>>) => {
   const root = tempProject(files);
@@ -191,7 +191,7 @@ describe("identity registry", () => {
 
 describe("dogfooding this repo", () => {
   test("src/ inventories, the framework's own constructors are in it, and the ids hold", () => {
-    const vcs = openVcs({ root: REPO, verifier: passingVerifier(), clock: manualClock(1_000), ids: counterIds() });
+    const vcs = openVcs({ root: PACKAGE, verifier: passingVerifier(), clock: manualClock(1_000), ids: counterIds() });
     const files = vcs.trackTree("src");
     expect(files.length).toBeGreaterThan(20);
 

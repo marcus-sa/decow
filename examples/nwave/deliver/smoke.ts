@@ -29,14 +29,14 @@
  * The proposal shape is what `smoke:oracle` exercises.
  */
 
-import { claudeCode } from "../../../src/bindings/claude-code.ts";
-import { mastraAgent } from "../../../src/bindings/mastra.ts";
-import type { Commands } from "../../../src/core/commands.ts";
-import type { EffectResult } from "../../../src/core/effects.ts";
-import { memoryJournal } from "../../../src/core/journal.ts";
-import type { ModelBinding } from "../../../src/core/step.ts";
-import { run } from "../../../src/core/workflow.ts";
-import { describeTrace } from "../../../src/harness/matchers.ts";
+import { claudeCode } from "@des/core/bindings/claude-code";
+import { mastraAgent } from "@des/core/bindings/mastra";
+import type { Commands } from "@des/core/commands";
+import type { EffectResult } from "@des/core/effects";
+import { memoryJournal } from "@des/core/journal";
+import type { ModelBinding } from "@des/core/step";
+import { run } from "@des/core/workflow";
+import { describeTrace } from "@des/core/harness";
 import { deliverGraph, seed, type State } from "./graph.ts";
 import { deliverDefs, type LeafId } from "./steps.ts";
 

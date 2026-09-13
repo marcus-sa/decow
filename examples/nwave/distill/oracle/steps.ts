@@ -27,9 +27,9 @@
  */
 
 import { z } from "zod";
-import type { Effect } from "../../../../src/core/effects.ts";
-import type { Requirement } from "../../../../src/core/requirement.ts";
-import { stepOutput, type ModelBinding, type StepDef } from "../../../../src/core/step.ts";
+import type { Effect } from "@des/core/effects";
+import type { Requirement } from "@des/core/requirement";
+import { stepOutput, type ModelBinding, type StepDef } from "@des/core/step";
 import { AcceptanceObligation } from "../../roadmap/schema.ts";
 
 export const ORACLE_LEAF_IDS = ["author-oracle"] as const;

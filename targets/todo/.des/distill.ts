@@ -33,7 +33,7 @@ import { join } from "node:path";
 import { openOracles, runObligations, testPathScope } from "../../../examples/nwave/distill/pipeline.ts";
 import type { State as OracleState } from "../../../examples/nwave/distill/oracle/graph.ts";
 import type { RecordedVerdict } from "../../../examples/nwave/distill/runs.ts";
-import type { RunOutcome } from "../../../src/core/workflow.ts";
+import type { RunOutcome } from "@des/core/workflow";
 import { describeModels, todoObligationsDefs, todoOracleDefs } from "./models.ts";
 import { heading, renderDeliverTrail, renderTrace } from "./render.ts";
 import { openReport } from "./report.ts";

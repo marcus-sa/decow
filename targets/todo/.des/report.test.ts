@@ -18,9 +18,9 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
-import { memoryJournal } from "../../../src/core/journal.ts";
-import type { Requirement } from "../../../src/core/requirement.ts";
-import { runStep, stepOutput, type ModelBinding, type StepAttempt, type StepDef } from "../../../src/core/step.ts";
+import { memoryJournal } from "@des/core/journal";
+import type { Requirement } from "@des/core/requirement";
+import { runStep, stepOutput, type ModelBinding, type StepAttempt, type StepDef } from "@des/core/step";
 import { openReport, readReport, readTokens, renderTable, summarize, type ReportLine } from "./report.ts";
 
 /* ------------------------------------------------------------ the fixtures */

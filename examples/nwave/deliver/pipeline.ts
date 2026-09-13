@@ -21,17 +21,17 @@
  * it reads `pending` and is simply run again.
  */
 
-import { openArtifacts, type ArtifactStore } from "../../../src/artifacts/store.ts";
-import { normalizeCommand, type Commands } from "../../../src/core/commands.ts";
-import type { Journal } from "../../../src/core/journal.ts";
-import { openScheduler, type ResourceLeases, type RowStatus, type SchedulerRow } from "../../../src/core/scheduler.ts";
-import type { StepObserver } from "../../../src/core/step.ts";
-import type { WorkflowRuntime } from "../../../src/core/compile.ts";
-import { resume, run, type RunOutcome } from "../../../src/core/workflow.ts";
-import { vcsExecutor } from "../../../src/vcs/executor.ts";
-import type { Vcs } from "../../../src/vcs/index.ts";
-import { identityKey } from "../../../src/vcs/structural/parser.ts";
-import { parseOracleLocator } from "../../../src/vcs/verify.ts";
+import { openArtifacts, type ArtifactStore } from "@des/core/artifacts";
+import { normalizeCommand, type Commands } from "@des/core/commands";
+import type { Journal } from "@des/core/journal";
+import { openScheduler, type ResourceLeases, type RowStatus, type SchedulerRow } from "@des/core/scheduler";
+import type { StepObserver } from "@des/core/step";
+import type { WorkflowRuntime } from "@des/core/compile";
+import { resume, run, type RunOutcome } from "@des/core/workflow";
+import { vcsExecutor } from "@des/core/vcs/executor";
+import type { Vcs } from "@des/core/vcs";
+import { identityKey } from "@des/core/vcs/structural/parser";
+import { parseOracleLocator } from "@des/core/vcs/verify";
 import { oracleIsRed } from "../distill/runs.ts";
 import { deliverGraph, seed, type State } from "./graph.ts";
 import type { DeliverDefs, StepUnderDelivery } from "./steps.ts";

@@ -5,11 +5,7 @@
     "": {
       "name": "deterministic-workflows",
       "dependencies": {
-        "@anthropic-ai/claude-agent-sdk": "^0.3.269",
-        "@mastra/core": "^1.66.0",
-        "@mastra/libsql": "^1.22.5",
-        "tree-sitter": "^0.25.1",
-        "tree-sitter-typescript": "^0.23.2",
+        "@des/core": "workspace:*",
         "zod": "^4.6.2",
       },
       "devDependencies": {
@@ -18,6 +14,18 @@
       },
       "peerDependencies": {
         "typescript": "^5",
+      },
+    },
+    "packages/core": {
+      "name": "@des/core",
+      "version": "0.0.0",
+      "dependencies": {
+        "@anthropic-ai/claude-agent-sdk": "^0.3.269",
+        "@mastra/core": "^1.66.0",
+        "@mastra/libsql": "^1.22.5",
+        "tree-sitter": "^0.25.1",
+        "tree-sitter-typescript": "^0.23.2",
+        "zod": "^4.6.2",
       },
     },
   },
@@ -77,6 +85,8 @@
     "@biomejs/cli-win32-arm64": ["@biomejs/cli-win32-arm64@2.5.13", "", { "os": "win32", "cpu": "arm64" }, "sha512-+WD13qshXrr0Icv4BfsAdzm8Fs3TL+nZ59zEQxsYNd8lcgZJ0A5+OrlwsL1PipVCmWeRpxgIPD6DAcEd7smkCQ=="],
 
     "@biomejs/cli-win32-x64": ["@biomejs/cli-win32-x64@2.5.13", "", { "os": "win32", "cpu": "x64" }, "sha512-VOofU/nW761XWzUeUNE8zzYNyPrxuMuNFMizL0qz7J75yeV8N7WFheUlk1/K6dOkaFpH9wJ+lDKlwjAbw0346w=="],
+
+    "@des/core": ["@des/core@workspace:packages/core"],
 
     "@hono/node-server": ["@hono/node-server@2.1.1", "", { "peerDependencies": { "hono": "^4" } }, "sha512-ELuehkj5VCBdgEw9zs+ivkKwyzzUCSQuE96YmiPvn1ECBoZCczbFXJLeEGMTYjphP6gydh4pHMqEYPVMYUVgQg=="],
 

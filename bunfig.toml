@@ -1,8 +1,9 @@
-# The test suite is `src/` plus each target's own composition under
-# `targets/*/.des`. A target's project files (`targets/*/src`, `targets/*/test`)
-# and the run copies under `runs/` are not part of this repository's own suite;
-# the `test` script names the roots explicitly instead of scanning the tree. Each
-# root is written `./`-prefixed: bun reads a bare path as a name filter, and a
-# dot-directory is invisible to its own scan, so `./targets/todo/.des` is the
-# only form that runs the composition's tests.
+# The test suite is `packages/` — the workspace's own packages — plus each
+# target's composition under `targets/*/.des`. A target's project files
+# (`targets/*/src`, `targets/*/test`) and the run copies under `runs/` are not
+# part of this repository's own suite; the `test` script names the roots
+# explicitly instead of scanning the tree. Each root is written `./`-prefixed:
+# bun reads a bare path as a name filter, and a dot-directory is invisible to
+# its own scan, so `./targets/todo/.des` is the only form that runs the
+# composition's tests.
 [test]

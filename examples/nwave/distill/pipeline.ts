@@ -18,15 +18,15 @@
  * bypasses RED" lives now that the step cycle has no RED node.
  */
 
-import type { ArtifactStore } from "../../../src/artifacts/store.ts";
-import type { WorkflowRuntime } from "../../../src/core/compile.ts";
-import { measurementOf } from "../../../src/core/effects.ts";
-import type { Journal } from "../../../src/core/journal.ts";
-import { openScheduler, type SchedulerRow } from "../../../src/core/scheduler.ts";
-import type { StepObserver } from "../../../src/core/step.ts";
-import { resume, run, type RunOutcome } from "../../../src/core/workflow.ts";
-import { vcsExecutor } from "../../../src/vcs/executor.ts";
-import type { Vcs } from "../../../src/vcs/index.ts";
+import type { ArtifactStore } from "@des/core/artifacts";
+import type { WorkflowRuntime } from "@des/core/compile";
+import { measurementOf } from "@des/core/effects";
+import type { Journal } from "@des/core/journal";
+import { openScheduler, type SchedulerRow } from "@des/core/scheduler";
+import type { StepObserver } from "@des/core/step";
+import { resume, run, type RunOutcome } from "@des/core/workflow";
+import { vcsExecutor } from "@des/core/vcs/executor";
+import type { Vcs } from "@des/core/vcs";
 import { readRoadmap, ROADMAP_STEPS_TABLE, type RoadmapRow } from "../deliver/pipeline.ts";
 import {
   oracleRunsOf,

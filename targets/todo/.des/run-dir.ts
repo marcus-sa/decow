@@ -30,11 +30,11 @@
 
 import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { openArtifacts, type ArtifactStore } from "../../../src/artifacts/store.ts";
-import type { Commands } from "../../../src/core/commands.ts";
-import { openWorkflowRuntime, type WorkflowRuntime } from "../../../src/core/compile.ts";
-import { sqliteJournal, type Journal } from "../../../src/core/journal.ts";
-import { openVcs, type Vcs } from "../../../src/vcs/index.ts";
+import { openArtifacts, type ArtifactStore } from "@des/core/artifacts";
+import type { Commands } from "@des/core/commands";
+import { openWorkflowRuntime, type WorkflowRuntime } from "@des/core/compile";
+import { sqliteJournal, type Journal } from "@des/core/journal";
+import { openVcs, type Vcs } from "@des/core/vcs";
 
 /** This file is `<repo>/targets/todo/.des/run-dir.ts`. */
 export const REPO = dirname(dirname(dirname(dirname(import.meta.path))));

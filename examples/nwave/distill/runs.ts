@@ -13,10 +13,10 @@
  * new Date. src/harness/no-nondeterminism.test.ts enforces that mechanically.
  */
 
-import type { ArtifactStore } from "../../../src/artifacts/store.ts";
-import type { OracleVerdict } from "../../../src/core/effects.ts";
-import type { RowStatus } from "../../../src/core/scheduler.ts";
-import type { RunOutcome } from "../../../src/core/workflow.ts";
+import type { ArtifactStore } from "@des/core/artifacts";
+import type { OracleVerdict } from "@des/core/effects";
+import type { RowStatus } from "@des/core/scheduler";
+import type { RunOutcome } from "@des/core/workflow";
 
 /** Where a finished oracle run is recorded. Append-only, one row per run. */
 export const ORACLE_RUNS_TABLE = "oracle_runs";

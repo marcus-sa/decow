@@ -23,8 +23,11 @@ import type { Intent } from "./log.ts";
 import { bunCommands, counterIds, manualClock, tempProject } from "./testing.ts";
 import { defaultVerifier } from "./verify.ts";
 
-/** This file is `<root>/src/vcs/real-tools.test.ts`. */
-const REPO = dirname(dirname(dirname(import.meta.path)));
+/** This file is `<root>/packages/core/src/vcs/real-tools.test.ts`. */
+const PACKAGE = dirname(dirname(dirname(import.meta.path)));
+
+/** The workspace root, where bun hoists `node_modules` for every package. */
+const ROOT = dirname(dirname(PACKAGE));
 
 const TSCONFIG = `${JSON.stringify(
   {
@@ -71,7 +74,7 @@ const open = () => {
     "lib.ts": LIB,
     "lib.test.ts": LIB_TEST,
   });
-  symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"));
+  symlinkSync(join(ROOT, "node_modules"), join(root, "node_modules"));
 
   const vcs = openVcs({
     root,

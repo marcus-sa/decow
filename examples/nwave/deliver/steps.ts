@@ -43,9 +43,9 @@
  */
 
 import { z } from "zod";
-import { verbatim } from "../../../src/checks/verbatim.ts";
-import type { Requirement } from "../../../src/core/requirement.ts";
-import { stepOutput, type ModelBinding, type StepDef } from "../../../src/core/step.ts";
+import { verbatim } from "@des/core/checks/verbatim";
+import type { Requirement } from "@des/core/requirement";
+import { stepOutput, type ModelBinding, type StepDef } from "@des/core/step";
 
 /**
  * One acceptance obligation of the row, as DISTILL left it: a stimulus and the

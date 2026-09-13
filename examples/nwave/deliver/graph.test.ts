@@ -14,10 +14,10 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_COMMAND_TIMEOUT_MS, type Commands } from "../../../src/core/commands.ts";
-import { memoryEffects, type Effect, type EffectResult } from "../../../src/core/effects.ts";
-import { stepIdFromKey, type Journal } from "../../../src/core/journal.ts";
-import type { StepResult } from "../../../src/core/step.ts";
+import { DEFAULT_COMMAND_TIMEOUT_MS, type Commands } from "@des/core/commands";
+import { memoryEffects, type Effect, type EffectResult } from "@des/core/effects";
+import { stepIdFromKey, type Journal } from "@des/core/journal";
+import type { StepResult } from "@des/core/step";
 import {
   loop,
   resume,
@@ -25,7 +25,7 @@ import {
   type EffectExecutor,
   type Node,
   type Workflow,
-} from "../../../src/core/workflow.ts";
+} from "@des/core/workflow";
 import {
   enumeratePaths,
   graphDefects,
@@ -33,9 +33,9 @@ import {
   scriptedExecutor,
   type Choose,
   type EffectOutcomeSpace,
-} from "../../../src/harness/enumerate-paths.ts";
-import { endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "../../../src/harness/matchers.ts";
-import { exhausted, ok, stubJournal } from "../../../src/harness/stub-journal.ts";
+} from "@des/core/harness";
+import { endedOnDeclaredNode, isDeclaredOutcome, visitCount, visited } from "@des/core/harness";
+import { exhausted, ok, stubJournal } from "@des/core/harness/stub-journal";
 import {
   cycleDone,
   deliverGraph,

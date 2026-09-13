@@ -68,9 +68,9 @@
  */
 
 import { z } from "zod";
-import type { Effect, EffectResult } from "../../../src/core/effects.ts";
-import type { Journal } from "../../../src/core/journal.ts";
-import type { StepObserver } from "../../../src/core/step.ts";
+import type { Effect, EffectResult } from "@des/core/effects";
+import type { Journal } from "@des/core/journal";
+import type { StepObserver } from "@des/core/step";
 import {
   branch,
   leaf,
@@ -80,7 +80,7 @@ import {
   type Node,
   type NodeId,
   type Workflow,
-} from "../../../src/core/workflow.ts";
+} from "@des/core/workflow";
 import {
   DISJOINTNESS_VERDICTS,
   measureDisjointness,
