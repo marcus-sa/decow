@@ -359,7 +359,7 @@ export type Command =
 export type Commands = { [K in keyof CommandArgs]: (args: CommandArgs[K]) => Command };
 ```
 
-The framework knows the four **jobs**; the consumer knows the four **commands**. `targets/todo/commands.ts` is one, in the consumer's own source, and the run directory loads it out of the copy. It is refused **by name** when absent, the same way the test path scope is: a default would run one project's toolchain against every other project and call the result a verdict.
+The framework knows the four **jobs**; the consumer knows the four **commands**. `targets/todo/.des/commands.ts` is one, in the consumer's own DES configuration, and the run directory loads it from beside the composition. It is refused **by name** when absent, the same way the test path scope is: a default would run one project's toolchain against every other project and call the result a verdict.
 
 A bare `string[]` normalises to `{ argv }` at the framework's default timeout. The object form exists for the three things an argv cannot say: an environment overlay (never a replacement, because `bunx biome check` needs a `PATH`), a budget, and a named shared resource.
 
@@ -389,7 +389,7 @@ Both effect executors run it, because a command needs no VCS behind it and an ex
 
 The declared command is told **where to write a JUnit report**, and [`packages/core/src/vcs/junit.ts`](./packages/core/src/vcs/junit.ts) is the one place in the repository that reads one. Reading the interchange format rather than a runner's own summary lines is what keeps the verdict from being a function of one runner's human output, which would leave a consumer with any other runner unmeasurable.
 
-The flags in `targets/todo/commands.ts` were **measured against bun 1.3.12**, not assumed: `bun test <file> -t <name> --reporter=junit --reporter-outfile=<path>` writes a `<testsuites>` document with `tests`, `failures` and `skipped` counts and one `<testcase>` per test. It does **not** create the report's parent directory, so the stage mints a temp one. A run whose file does not parse, or whose import does not resolve, writes **no document at all**.
+The flags in `targets/todo/.des/commands.ts` were **measured against bun 1.3.12**, not assumed: `bun test <file> -t <name> --reporter=junit --reporter-outfile=<path>` writes a `<testsuites>` document with `tests`, `failures` and `skipped` counts and one `<testcase>` per test. It does **not** create the report's parent directory, so the stage mints a temp one. A run whose file does not parse, or whose import does not resolve, writes **no document at all**.
 
 That last fact is why the reader keeps two absences apart, and it is what lets the four-word verdict rule stay exactly as it was:
 
@@ -982,7 +982,7 @@ everything a model would say: see [The real run](#the-real-run).
 
 ## The todo target
 
-[`targets/todo/`](./targets/todo) is what the three waves are pointed at. A `TodoStore` with `add`, `complete`, `remove` and `list`; `add` and `list` implemented; **`complete` and `remove` stubs whose bodies throw**; a `design.md` that is the authority for the public surface, the driving port, and the test path scope; and a [`commands.ts`](#declared-commands) that is the authority for how it is checked.
+[`targets/todo/`](./targets/todo) is what the three waves are pointed at. A `TodoStore` with `add`, `complete`, `remove` and `list`; `add` and `list` implemented; **`complete` and `remove` stubs whose bodies throw**; a `design.md` that is the authority for the public surface, the driving port, and the test path scope; and a [`.des/commands.ts`](#declared-commands) that is the authority for how it is checked.
 
 **There is no test file**, and that is the point rather than an omission. The oracle for each value is authored by DISTILL into `test/` and measured red before one production byte is written. A pre-written test would make RED a thing the repository asserted rather than a thing the runner measured.
 
@@ -996,7 +996,7 @@ The walking-skeleton shape still matters for the production half. `replace-symbo
 
 Three consumers read it, which is why it is one line and not three constants: the author writes there, the executor walls the oracle there, and the manifest validator refuses a support outside it. `testPathScope` refuses by name when it is absent, because a default of `test/` would work silently for every project whose substrate lives there and mis-scope every project whose does not.
 
-`commands.ts` is the same shape of declaration one layer over, and it is refused by name for the same reason:
+`.des/commands.ts` is the same shape of declaration one layer over, and it is refused by name for the same reason:
 
 ```ts
 export const commands: Commands = {
@@ -1011,7 +1011,7 @@ export const commands: Commands = {
 
 The target carries `@biomejs/biome` as a dev dependency and a three-line `biome.json`, so **lint is real**: it is the write path's third stage over every file a write touches, and it is the DELIVER cycle's whole quality gate. `biome check` exits 0 on warnings and non-zero on errors, which is why the two stub bodies — whose `id` parameters are unused, and warned about — pass the gate before they are implemented and pass it after.
 
-It imports the `Commands` type and nothing else, so the import is erased before the file is loaded and a copy sitting under `runs/` resolves with no path back to this repository. It is typechecked here anyway: the repo's own `tsconfig.json` includes `targets/*/commands.ts` and excludes everything else in a target, because a declaration nothing checks is a declaration that drifts. The no-nondeterminism scanner covers it for the same reason, one property over.
+It is read by the framework and by nothing in the project, which is why it sits in `.des/` with the composition rather than in the target's own source. `.des/` is excluded from the copy every run works in, so the copy carries no declaration: the commands are loaded once from beside the composition and RUN with `cwd` set to the copy, which resolves `bunx biome` and `bunx tsc` through the `node_modules` symlink the copy is made with. It is typechecked here: the repo's own `tsconfig.json` includes `targets/*/.des/**/*.ts` and excludes everything else in a target, because a declaration nothing checks is a declaration that drifts. The no-nondeterminism scanner covers it for the same reason, one property over.
 
 **The template is never mutated.** Every run copies it to `runs/<name>/todo/` and works there.
 
@@ -1042,7 +1042,7 @@ Full detail in [`examples/nwave/README.md`](./examples/nwave/README.md#targetsto
 
 `targets/todo/.des/todo.test.ts` is the same path with the inference removed — every leaf scripted at the binding, so the schemas, the mechanical checks and the validators all run — and it is the one test that covers all three waves:
 
-- the target copied to a temp directory, its own `commands.ts` loaded out of the copy exactly as a run directory loads it, and tracked with the **default** verifier over those commands — a real `bunx tsc --noEmit`, a real `bunx biome check`, a real impact-scoped `bun test`, a real oracle measurement;
+- the target copied to a temp directory without its `.des/`, the composition's own `commands.ts` loaded from beside it exactly as a run directory loads it, and the copy tracked with the **default** verifier over those commands — a real `bunx tsc --noEmit`, a real `bunx biome check`, a real impact-scoped `bun test`, a real oracle measurement;
 - the roadmap authored through the roadmap workflow's own graph and persisted by its own `persist`, with all three of DISTILL's fields empty;
 - the obligations graph filling them in and `persist` writing the enriched rows back;
 - the oracle graph authoring one test file per value through a real `write-file` and a **real `bun test` measuring each one red** — nothing in the test file asserts the redness, because the runner is what says so;
@@ -1240,9 +1240,9 @@ The document's code sketches are sketches. Where one of them is underspecified o
 
 64. **`State.paths` and a fourth argument to `seed`.** The gate lints the files the step writes, and a `predictedTouches` entry is an opaque SYMBOL id. Only the registry can map one to a path, so `pipeline.ts` resolves them once where the step becomes a run — the same boundary the impact floor and the acceptance-test ids already sit on — and the graph carries the result. `writtenPaths` is exported for the same reason `oracleTests` is.
 
-65. **`openRunDir` is async, and `openVcs` takes `commands`.** The run directory loads the target's `commands.ts` out of the copy, which is a dynamic import, which is a promise. `openVcs` refuses by name when neither `commands` nor a `verifier` is supplied, because a default set of commands would run bun and biome against a project that is neither and call the result a verdict.
+65. **`openRunDir` is async, and `openVcs` takes `commands`.** The run directory loads the composition's `commands.ts` from `.des/`, which is a dynamic import, which is a promise. `openVcs` refuses by name when neither `commands` nor a `verifier` is supplied, because a default set of commands would run bun and biome against a project that is neither and call the result a verdict.
 
-66. **The repo's `tsconfig.json` gained an `include`.** It excluded `targets` wholesale. `targets/*/commands.ts` is the one file in a target that declares conformance to a framework type, so it is typechecked here; everything else in a target is that target's own project, checked by the target's own declared typecheck command inside a run.
+66. **The repo's `tsconfig.json` gained an `include`.** It excluded `targets` wholesale. `targets/*/.des` is the part of a target that is the composition's — including the `commands.ts` that declares conformance to a framework type — so it is typechecked here; everything else in a target is that target's own project, checked by the target's own declared typecheck command inside a run.
 
 67. **The repository is a bun workspace, and the framework is `@des/core`.** `src/` became `packages/core/src`, with `@des/server` and `@des/ui` beside it. Consumers import subpaths — `@des/core/workflow` — resolved through the package's own `exports` map rather than a `paths` alias, because `moduleResolution: "bundler"` reads exports and bun resolves the same way at run time: one resolution story rather than two, and no relative path into a package. The map points at the TypeScript sources; bun runs `.ts` directly, so there is no build step and no compiled copy between a stack trace and its source. `targets/todo` is deliberately not a member: it is a template a run COPIES, and a workspace member is a thing bun links.
 

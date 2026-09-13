@@ -28,7 +28,7 @@
 import { describe, expect, test } from "bun:test";
 import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { openArtifacts } from "@des/core/artifacts";
 import { memoryEffects } from "@des/core/effects";
 import { memoryJournal } from "@des/core/journal";
@@ -73,15 +73,17 @@ import {
 /** A temp copy of `targets/todo`, tracked in a fresh VCS with the real gate. */
 const openProject = async () => {
   const root = mkdtempSync(join(tmpdir(), "dw-todo-"));
-  cpSync(TARGET, root, { recursive: true });
+  // `.des/` is left behind, exactly as a run directory leaves it: the
+  // composition is not part of the project it delivers.
+  cpSync(TARGET, root, { recursive: true, filter: (source) => basename(source) !== ".des" });
   // `tsc`, `biome` and `bun test` all resolve out of here; one symlink beats
   // one install per copy.
   symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"));
 
-  // The target's OWN declaration, loaded out of the copy exactly as a run
-  // directory loads it. Every process this test runs against the project comes
-  // from here and from nowhere else.
-  const commands = await loadCommands(root);
+  // The COMPOSITION's declaration, loaded from `.des/` exactly as a run
+  // directory loads it. Every process this test runs against the copy comes
+  // from there and from nowhere else.
+  const commands = await loadCommands();
 
   // The DEFAULT verifier over those commands: a real `bunx tsc --noEmit`, a
   // real `bunx biome check`, a real impact-scoped `bun test`, a real oracle

@@ -331,11 +331,11 @@ what every DELIVER run quotes.
 `TodoStore` with `add`, `complete`, `remove` and `list`. `add` and `list` are
 implemented; **`complete` and `remove` are stubs whose bodies throw**.
 `design.md` is the authority for what it is: the public surface, the behaviour
-of each method, the driving port, and the test path scope. `commands.ts` is the
-authority for how it is checked: the four commands that typecheck, lint, test
-and measure it, declared as this consumer's own source and read by the
-framework. `biome.json` and a `@biomejs/biome` dev dependency are what make the
-lint command real.
+of each method, the driving port, and the test path scope. `.des/commands.ts`
+is the authority for how it is checked: the four commands that typecheck, lint,
+test and measure it, declared as this consumer's own DES configuration and read
+by the framework. `biome.json` and a `@biomejs/biome` dev dependency are what
+make the lint command real.
 
 **There is no test file.** The oracle is authored into `test/` by the oracle
 graph and measured red before one production byte is written. A pre-written
@@ -354,8 +354,8 @@ body.
 
 ```
 runs/<name>/
-  todo/              the copied target, which the VCS writes into, and whose
-                     commands.ts says how it is checked
+  todo/              the copied target, which the VCS writes into and which
+                     every declared command runs against
   vcs.sqlite         symbol registry, lease table, event log
   artifacts.sqlite   roadmaps, roadmap_steps, oracle_runs, step_runs
   journal.sqlite     what each step decided, keyed by content
@@ -370,10 +370,12 @@ prior run, keeps a delivered step delivered, and answers a suspension its
 predecessor produced. `runs/` is gitignored. `test/` is tracked only once it
 exists, because the oracle is what creates it.
 
-Every command the framework runs against the copy comes from that copy's own
-`commands.ts`, loaded by `loadCommands` and refused BY NAME when absent. The
-import in it is type-only, so it is erased before the file is loaded and a copy
-sitting under `runs/` resolves with no path back to this repository.
+Every command the framework runs against the copy comes from
+`targets/todo/.des/commands.ts`, loaded by `loadCommands` and refused BY NAME
+when absent. It is the composition's declaration rather than the project's
+source, so `.des/` is excluded from the copy and the copy carries none: the
+commands are loaded once, from beside the composition, and RUN with `cwd` set
+to the copy.
 
 The **design source** every leaf reads is `design.md` plus the VCS symbol
 inventory, and the addition is load-bearing: `predictedTouches` and
@@ -475,7 +477,7 @@ how you find out.
 
 ## Not built on the consumer side
 
-- A declared MUTATION command. `commands.ts` has four keys. The quality gate
+- A declared MUTATION command. `.des/commands.ts` has four keys. The quality gate
   runs lint and nothing else, so `mutation-below-gate` has no producer and
   there is no `add-test` leaf to answer it. Adding the key is additive: a fifth
   `CommandArgs` member, a second effect from `gates`, and a fourth gate

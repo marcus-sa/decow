@@ -65,6 +65,6 @@ Nothing is pre-written there. The oracle for each value is authored by DISTILL
 software measures it red before any production byte is written. A locator is
 `test/<file>.test.ts::<test name>`.
 
-How an oracle is RUN is not this document's to say. `commands.ts` declares it,
+How an oracle is RUN is not this document's to say. `.des/commands.ts` declares it,
 along with how the project is typechecked, linted and tested, and the framework
 reads those four declarations and derives nothing.

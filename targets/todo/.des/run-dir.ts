@@ -10,9 +10,11 @@
  * server restarted against the same name continues where it left off rather
  * than beginning again:
  *
- *   todo/             the copied target, which the VCS writes into, and
- *                     whose `commands.ts` says how it is typechecked,
- *                     linted, tested and measured
+ *   todo/             the copied target, which the VCS writes into and which
+ *                     every declared command runs against. The declaration
+ *                     itself is `.des/commands.ts`, which the copy does not
+ *                     carry: it is DES configuration rather than project
+ *                     source
  *   vcs.sqlite        the symbol registry, the lease table, the event log
  *   artifacts.sqlite  roadmap rows, roadmap_steps rows, step_runs rows
  *   journal.sqlite    what each step decided, keyed by content
@@ -38,8 +40,11 @@ import { openWorkflowRuntime, type WorkflowRuntime } from "@des/core/compile";
 import { sqliteJournal, type Journal } from "@des/core/journal";
 import { openVcs, type Vcs } from "@des/core/vcs";
 
-/** This file is `<repo>/targets/todo/.des/run-dir.ts`. */
-export const REPO = dirname(dirname(dirname(dirname(import.meta.path))));
+/** This composition's own directory: `<repo>/targets/todo/.des`. */
+export const DES = dirname(import.meta.path);
+
+/** The repository root, three directories above the composition. */
+export const REPO = dirname(dirname(dirname(DES)));
 
 /** The template every run copies. Committed; never written to. */
 export const TARGET = join(REPO, "targets", "todo");
@@ -69,28 +74,34 @@ export type RunDir = {
 /** The directories every command tracks, in order, when they exist. */
 export const TRACKED = ["src", "test"] as const;
 
-/** The file a target declares its four commands in. */
+/** The file a composition declares its four commands in. */
 export const COMMANDS_FILE = "commands.ts";
 
 /**
- * The target's own `commands.ts`, loaded out of the COPY.
+ * The four commands, loaded from the composition's own directory.
+ *
+ * `commands.ts` is DES CONFIGURATION rather than project source: nothing in
+ * the todo application reads it, only the framework does. So it lives beside
+ * this file in `.des/`, which is the one directory a run's copy leaves behind
+ * — the copy carries no declaration, and the commands it declares are RUN
+ * with `cwd` set to the copy.
  *
  * Refused BY NAME when it is absent, the same way the test path scope is:
  * every process this framework runs against a project comes from here, so a
  * default would run bun and biome against a project that is neither and call
  * the result a verdict.
  *
- * The file imports the `Commands` type and nothing else, so the import is
- * erased before it is loaded and a copy sitting under `runs/` resolves with no
- * path back to this repository.
+ * `from` names another directory, for a caller whose project is not this one:
+ * `examples/nwave/distill/smoke.ts` writes a temp project and its declaration
+ * together and loads that one.
  */
-export const loadCommands = async (project: string): Promise<Commands> => {
-  const path = join(project, COMMANDS_FILE);
+export const loadCommands = async (from: string = DES): Promise<Commands> => {
+  const path = join(from, COMMANDS_FILE);
   if (!existsSync(path)) {
     throw new Error(
-      `no ${COMMANDS_FILE} at ${path}. A target declares how it is typechecked, linted, tested ` +
-        "and measured; there is no default, because a default would run one project's toolchain " +
-        "against every other project.",
+      `no ${COMMANDS_FILE} at ${path}. A composition declares how its target is typechecked, ` +
+        "linted, tested and measured; there is no default, because a default would run one " +
+        "project's toolchain against every other project.",
     );
   }
   const loaded = (await import(path)) as { commands?: Commands };
@@ -168,7 +179,9 @@ export const openRunDir = async (name: string): Promise<RunDir> => {
   }
   const project = join(path, "todo");
 
-  const commands = await loadCommands(project);
+  // From `.des/`, never from the copy: the declaration is this composition's,
+  // and the copy is only where the commands it declares are run.
+  const commands = await loadCommands();
   const vcs = openVcs({ root: project, dbPath: join(path, "vcs.sqlite"), commands });
   // `track` returns the tracked file untouched when the path is already known,
   // so a re-open costs a lookup and changes nothing.

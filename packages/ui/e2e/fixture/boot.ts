@@ -179,7 +179,9 @@ const openProject = async () => {
   // `tsc`, `biome` and `bun test` all resolve out of here.
   symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"));
 
-  const commands = await loadCommands(root);
+  // The composition's declaration, loaded from `.des/` exactly as a run
+  // directory loads it. The copy carries none; it is only where they run.
+  const commands = await loadCommands();
   const vcs = openVcs({ root, commands });
   vcs.trackTree("src");
 

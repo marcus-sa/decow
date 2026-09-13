@@ -20,14 +20,14 @@ in a browser, against a throwaway copy of this directory.
 | File | What it is |
 |---|---|
 | `design.md` | The authority for WHAT it is. The whole public surface, the behaviour of each method, the driving port, and the test path scope. |
-| `commands.ts` | The authority for HOW it is checked. Four functions, from typed arguments to a command: typecheck, lint, tests, oracle. |
+| [`.des/commands.ts`](.des/commands.ts) | The authority for HOW it is checked. Four functions, from typed arguments to a command: typecheck, lint, tests, oracle. DES configuration, so it sits with the composition rather than with the project. |
 | `biome.json` | Three lines, so the declared lint command has something to run. |
 | `src/todo.ts` | `TodoStore`. `add` and `list` are implemented; `complete` and `remove` are stubs whose bodies throw. |
 
 **The framework knows the four jobs; this project knows the four commands.**
 Nothing in the framework knows that this is a bun project, that its linter is
 biome, or that its test runner writes a JUnit report behind `--reporter=junit`.
-Those are declarations, and `commands.ts` is where they are made:
+Those are declarations, and `.des/commands.ts` is where they are made:
 
 ```ts
 export const commands: Commands = {
@@ -54,9 +54,12 @@ keys on the exit status exactly as it does for every other declared command —
 which is why the two stub bodies, whose `id` parameters are unused and warned
 about, pass the gate both before and after they are implemented.
 
-It imports the `Commands` type and nothing else, so the import is erased before
-the file is loaded and a copy of this directory under `runs/` resolves with no
-path back to the framework. The framework typechecks it anyway, and its
+It is read by the framework and by nothing in this project, which is why it
+lives in `.des/` beside the composition that drives the waves. `.des/` is
+excluded from the copy every run works in, so the copy carries no declaration:
+the commands are loaded from here and RUN with `cwd` set to the copy, which
+resolves `bunx biome` and `bunx tsc` through the `node_modules` symlink the
+copy is made with. The framework typechecks the file, and its
 no-nondeterminism scanner reads it: a declaration built out of a clock would
 make the same write produce a different command on every run.
 

@@ -43,13 +43,12 @@
   // because `moduleResolution: "bundler"` reads exports and bun resolves the
   // same way at run time — one resolution story rather than two.
   //
-  // `targets/*/commands.ts` and `targets/*/.des` are the files in a target
-  // that are OURS to typecheck: the first declares conformance to the
-  // framework's `Commands` type, and a declaration nothing checks is a
-  // declaration that drifts; the second is the composition that drives the
-  // waves against that target. Everything else in a target is that target's
-  // own project, typechecked by the write path's own declared typecheck
-  // command inside a run; `runs/` holds the copies.
-  "include": ["packages", "examples", "targets/*/commands.ts", "targets/*/.des/**/*.ts"],
+  // `targets/*/.des` is the part of a target that is OURS to typecheck: the
+  // composition that drives the waves against it, and the `commands.ts` that
+  // declares conformance to the framework's `Commands` type — a declaration
+  // nothing checks is a declaration that drifts. Everything else in a target
+  // is that target's own project, typechecked by the write path's own
+  // declared typecheck command inside a run; `runs/` holds the copies.
+  "include": ["packages", "examples", "targets/*/.des/**/*.ts"],
   "exclude": ["node_modules", "runs", "packages/ui/.output", "packages/ui/.nitro", "packages/ui/dist"]
 }

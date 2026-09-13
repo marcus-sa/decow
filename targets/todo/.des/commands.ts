@@ -1,5 +1,12 @@
 /**
- * How this project is typechecked, linted, tested, and how one oracle is run.
+ * How the todo project is typechecked, linted, tested, and how one oracle is
+ * run. DES configuration: the framework reads it, and nothing in the project
+ * does.
+ *
+ * It sits in `.des/` beside the composition that drives the waves, because
+ * that is whose declaration it is. A run works in a COPY of `targets/todo`
+ * and `.des/` is excluded from that copy, so the copy carries no declaration:
+ * the commands are loaded from here, once, and RUN with `cwd` set to the copy.
  *
  * The framework knows the four JOBS. It does not know that this project is a
  * bun project, that its linter is biome, or that its test runner writes a
@@ -23,7 +30,9 @@
  * nothing" rather than "nothing failed".
  *
  * `biome check` exits 0 on warnings and non-zero on errors, so the gate keys
- * on the exit status exactly as it does for every other declared command.
+ * on the exit status exactly as it does for every other declared command. The
+ * copied project resolves biome through the `node_modules` symlink the copy
+ * is made with, which points at this repository's own install.
  */
 
 import type { Commands } from "@des/core/commands";

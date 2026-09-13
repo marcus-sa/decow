@@ -85,7 +85,7 @@ export const measuresAs = (
 /**
  * The four commands a bun project declares, with biome as its linter.
  *
- * The same shape `targets/todo/commands.ts` declares, kept here so a VCS test
+ * The same shape `targets/todo/.des/commands.ts` declares, kept here so a VCS test
  * that wants the REAL stages does not have to reach into a target directory
  * for them. The JUnit flags are measured against bun 1.3.12, not assumed:
  * `--reporter=junit --reporter-outfile=<path>` writes a `<testsuites>`
