@@ -1,41 +1,37 @@
 /**
  * A pipeline: the rows, what each one's status projects, and the run each one
- * drilled into.
+ * is on.
  *
  * There is no second graph here. A pipeline is the one fixed graph
  * instantiated once per row, so the tree is a list and each row's link is a
- * run of that graph.
+ * run of that graph — an ordinary run, with a trace, drawn on the same page
+ * every other run is.
  */
 
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useState } from "react";
-import { api, subscribe, type PipelineTree } from "../api.ts";
+import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { subscribe } from "../events.ts";
+import { getPipeline, runPipeline } from "../server/functions.ts";
 
-export const Route = createFileRoute("/pipelines/$id")({ component: PipelinePage });
+export const Route = createFileRoute("/pipelines/$id")({
+  loader: async ({ params }) => await getPipeline({ data: { id: params.id } }),
+  component: PipelinePage,
+});
 
 function PipelinePage(): React.ReactElement {
-  const { id } = Route.useParams();
-  const [tree, setTree] = useState<PipelineTree | undefined>();
+  const tree = Route.useLoaderData();
+  const router = useRouter();
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
 
-  const reload = useCallback((): void => {
-    void api
-      .pipeline(id)
-      .then(setTree)
-      .catch((e: Error) => setError(e.message));
-  }, [id]);
-
-  useEffect(() => {
-    reload();
-    return subscribe((event) => {
-      if (event.type === "pipeline-row" && event.pipelineId === id) reload();
-      if (event.type === "terminal" || event.type === "suspended") reload();
-    });
-  }, [id, reload]);
-
-  if (error !== undefined) return <p className="error">{error}</p>;
-  if (tree === undefined) return <p className="meta">…</p>;
+  useEffect(
+    () =>
+      subscribe((event) => {
+        if (event.type === "pipeline-row" && event.pipelineId === tree.id) void router.invalidate();
+        if (event.type === "terminal" || event.type === "suspended") void router.invalidate();
+      }),
+    [tree.id, router],
+  );
 
   return (
     <div className="page">
@@ -45,11 +41,12 @@ function PipelinePage(): React.ReactElement {
       <button
         type="button"
         disabled={busy}
+        data-testid="run-pipeline"
         onClick={() => {
           setBusy(true);
-          void api
-            .runPipeline(id)
-            .then(() => reload())
+          setError(undefined);
+          void runPipeline({ data: { id: tree.id } })
+            .then(() => router.invalidate())
             .catch((e: Error) => setError(e.message))
             .finally(() => setBusy(false));
         }}
@@ -57,10 +54,13 @@ function PipelinePage(): React.ReactElement {
         run the ready set
       </button>
 
+      {error === undefined ? null : <p className="error">{error}</p>}
+      {tree.error === undefined ? null : <p className="error">{tree.error}</p>}
+
       <h2>Rows</h2>
-      <ul className="tree">
+      <ul className="tree" data-testid="rows">
         {tree.rows.map((row) => (
-          <li key={row.id} className="row">
+          <li key={row.id} className="row" data-row={row.id} data-status={row.status}>
             {row.runId === undefined ? (
               <span className="card">
                 <span className={`pill ${row.status}`}>{row.status}</span> <code>{row.id}</code>

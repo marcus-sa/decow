@@ -8,49 +8,43 @@
  * and the words say why.
  */
 
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, refusal, subscribe, type ListedWorkflow, type RunRecord } from "../api.ts";
+import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
+import { useEffect, useMemo, useState } from "react";
+import { subscribe } from "../events.ts";
 import { GraphView, type NodeState } from "../graph.tsx";
+import { getRun, getWorkflow, resumeRun } from "../server/functions.ts";
 import { SuspensionDialog } from "../suspension.tsx";
 
-export const Route = createFileRoute("/runs/$runId")({ component: RunPage });
+export const Route = createFileRoute("/runs/$runId")({
+  loader: async ({ params }) => {
+    const run = await getRun({ data: { runId: params.runId } });
+    return { run, workflow: await getWorkflow({ data: { id: run.workflowId } }) };
+  },
+  component: RunPage,
+});
 
 function RunPage(): React.ReactElement {
-  const { runId } = Route.useParams();
-  const [run, setRun] = useState<RunRecord | undefined>();
-  const [workflow, setWorkflow] = useState<ListedWorkflow | undefined>();
-  const [error, setError] = useState<string | undefined>();
+  const { run, workflow } = Route.useLoaderData();
+  const router = useRouter();
   const [answerError, setAnswerError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [dismissed, setDismissed] = useState(false);
 
-  const reload = useCallback((): void => {
-    void api
-      .run(runId)
-      .then(setRun)
-      .catch((e: Error) => setError(e.message));
-  }, [runId]);
-
-  useEffect(() => {
-    reload();
-    // Every event about THIS run re-reads it. The record is the truth and the
-    // event is the nudge: a client that missed one is still correct.
-    return subscribe((event) => {
-      if ("runId" in event && event.runId === runId) reload();
-    });
-  }, [runId, reload]);
-
-  useEffect(() => {
-    if (run === undefined || workflow !== undefined) return;
-    void api.workflow(run.workflowId).then(setWorkflow).catch(() => {});
-  }, [run, workflow]);
+  useEffect(
+    () =>
+      // Every event about THIS run re-reads it. The record is the truth and
+      // the event is the nudge: a client that missed one is still correct.
+      subscribe((event) => {
+        if ("runId" in event && event.runId === run.runId) void router.invalidate();
+      }),
+    [run.runId, router],
+  );
 
   const states = useMemo((): Record<string, NodeState> => {
     const painted: Record<string, NodeState> = {};
-    for (const entry of run?.trace ?? []) painted[entry.node] = "visited";
-    const last = run?.trace.at(-1)?.node;
-    if (last !== undefined && run?.status !== "accepted" && run?.status !== "rejected") {
+    for (const entry of run.trace) painted[entry.node] = "visited";
+    const last = run.trace.at(-1)?.node;
+    if (last !== undefined && run.status !== "accepted" && run.status !== "rejected") {
       painted[last] = "current";
     }
     return painted;
@@ -58,26 +52,22 @@ function RunPage(): React.ReactElement {
 
   const iterations = useMemo((): Record<string, number> => {
     const counts: Record<string, number> = {};
-    for (const entry of run?.trace ?? []) counts[entry.node] = entry.iteration;
+    for (const entry of run.trace) counts[entry.node] = entry.iteration;
     return counts;
   }, [run]);
-
-  if (error !== undefined) return <p className="error">{error}</p>;
-  if (run === undefined) return <p className="meta">…</p>;
 
   return (
     <div className="split">
       <div className="canvas">
-        {workflow === undefined ? (
-          <p className="meta">…</p>
-        ) : (
-          <GraphView projection={workflow.graph} states={states} iterations={iterations} />
-        )}
+        <GraphView projection={workflow.graph} states={states} iterations={iterations} />
       </div>
 
       <aside className="panel">
         <h1>
-          <span className={`pill ${run.status}`}>{run.status}</span> <code>{run.runId}</code>
+          <span className={`pill ${run.status}`} data-testid="run-status">
+            {run.status}
+          </span>{" "}
+          <code>{run.runId}</code>
         </h1>
         <p className="lede">
           <Link to="/workflows/$id" params={{ id: run.workflowId }}>
@@ -99,7 +89,7 @@ function RunPage(): React.ReactElement {
         )}
 
         <h2>Trace</h2>
-        <div className="trace mono">
+        <div className="trace mono" data-testid="trace">
           {run.trace.map((entry, i) => (
             <span key={`${entry.node}-${i}`}>
               {entry.node}
@@ -168,13 +158,9 @@ function RunPage(): React.ReactElement {
           onAnswer={(answer) => {
             setBusy(true);
             setAnswerError(undefined);
-            void api
-              .resumeRun(run.runId, answer)
-              .then(() => reload())
-              .catch((e: unknown) => {
-                const refused = refusal(e);
-                setAnswerError(refused?.error ?? String(e));
-              })
+            void resumeRun({ data: { runId: run.runId, answer } })
+              .then(() => router.invalidate())
+              .catch((e: Error) => setAnswerError(e.message))
               .finally(() => setBusy(false));
           }}
         />

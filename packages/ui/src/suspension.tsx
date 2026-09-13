@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useState } from "react";
-import type { RunRecord } from "./api.ts";
+import type { RunRecord } from "@des/server";
 
 export type SuspensionDialogProps = {
   run: RunRecord;

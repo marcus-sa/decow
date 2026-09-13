@@ -1,38 +1,28 @@
 /**
  * One graph, drawn, with the one control that starts a run of it.
+ *
+ * The graph and the input schema arrive together from one server function,
+ * because the schema is the REGISTRATION's rather than the graph's: a graph
+ * says nothing about what a person supplies before it starts.
  */
 
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { api, type ListedWorkflow } from "../api.ts";
+import { useState } from "react";
 import { SchemaForm, type JsonSchema } from "../form.tsx";
 import { GraphView } from "../graph.tsx";
+import { getWorkflow, startRun } from "../server/functions.ts";
 
-export const Route = createFileRoute("/workflows/$id")({ component: WorkflowPage });
+export const Route = createFileRoute("/workflows/$id")({
+  loader: async ({ params }) => await getWorkflow({ data: { id: params.id } }),
+  component: WorkflowPage,
+});
 
 function WorkflowPage(): React.ReactElement {
-  const { id } = Route.useParams();
+  const workflow = Route.useLoaderData();
   const navigate = useNavigate();
-  const [workflow, setWorkflow] = useState<ListedWorkflow | undefined>();
-  const [schema, setSchema] = useState<JsonSchema | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [selected, setSelected] = useState<string | undefined>();
-
-  useEffect(() => {
-    void api
-      .workflow(id)
-      .then((found) => {
-        setWorkflow(found);
-        // The input schema is not on the projection — it is the registration's
-        // — so it is fetched from the same place the run is started.
-        setSchema(inputSchemaOf(found));
-      })
-      .catch((e: Error) => setError(e.message));
-  }, [id]);
-
-  if (error !== undefined) return <p className="error">{error}</p>;
-  if (workflow === undefined) return <p className="meta">…</p>;
 
   const node = workflow.graph.nodes.find((n) => n.id === selected);
 
@@ -48,14 +38,14 @@ function WorkflowPage(): React.ReactElement {
 
         <h2>Run it</h2>
         <SchemaForm
-          schema={schema ?? {}}
+          schema={(workflow.input ?? {}) as JsonSchema}
           submitLabel="Start"
           busy={busy}
           {...(error === undefined ? {} : { error })}
           onSubmit={(input) => {
             setBusy(true);
-            void api
-              .startRun(workflow.id, input)
+            setError(undefined);
+            void startRun({ data: { id: workflow.id, input } })
               .then(({ runId }) => navigate({ to: "/runs/$runId", params: { runId } }))
               .catch((e: Error) => setError(e.message))
               .finally(() => setBusy(false));
@@ -119,13 +109,3 @@ function WorkflowPage(): React.ReactElement {
     </div>
   );
 }
-
-/**
- * The input schema, off the registration.
- *
- * `GET /api/workflows/:id` carries it beside the projection, because the
- * schema is the registration's rather than the graph's: a graph says nothing
- * about what a person supplies before it starts.
- */
-const inputSchemaOf = (workflow: ListedWorkflow): JsonSchema =>
-  (workflow as unknown as { input?: JsonSchema }).input ?? {};

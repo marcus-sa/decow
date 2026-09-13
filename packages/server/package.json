@@ -3,12 +3,13 @@
   "version": "0.0.0",
   "type": "module",
   "private": true,
-  "description": "One HTTP surface over the registered graphs: the authored projection, the runs, the suspensions, the artifact rows, and the pipelines.",
+  "description": "The registration types, the registry, the runner, the pipeline scheduler, and `serve`.",
   "exports": {
     ".": "./src/index.ts"
   },
   "dependencies": {
     "@des/core": "workspace:*",
+    "@des/ui": "workspace:*",
     "zod": "^4.6.2"
   }
 }

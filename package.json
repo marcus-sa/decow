@@ -11,7 +11,6 @@
     "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun run test",
     "ui:build": "bun run --filter @des/ui build",
-    "ui:dev": "bun run --filter @des/ui dev",
     "smoke:deliver": "bun run examples/nwave/deliver/smoke.ts",
     "smoke:oracle": "bun run examples/nwave/distill/smoke.ts",
     "todo": "bun run targets/todo/.des/main.ts"

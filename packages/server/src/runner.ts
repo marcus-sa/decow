@@ -27,6 +27,7 @@ import {
 import type { RunWatcher, WorkflowRuntime } from "@des/core/compile";
 import type { StepAttempt } from "@des/core/step";
 import type { EventBus } from "./events.ts";
+import { asJson } from "./json.ts";
 import { parkedAt, resumeOptionsOf } from "./projection.ts";
 import type { AnyWorkflowRegistration } from "./registration.ts";
 import { traceEntries, type RunStore } from "./runs.ts";
@@ -111,7 +112,8 @@ export const openRunner = (options: RunnerOptions): Runner => {
       const suspension = {
         ...(node === undefined ? {} : { node }),
         reason: outcome.reason,
-        trail: outcome.trail,
+        // The trail is on its way to a person, through a serializer.
+        trail: outcome.trail.map(asJson),
         ...(parked?.type === "suspend" ? { resume: resumeOptionsOf(parked.resumeSchema) } : {}),
       };
       runs.settle(runId, {
@@ -129,7 +131,7 @@ export const openRunner = (options: RunnerOptions): Runner => {
       trace,
       terminal:
         terminal.kind === "rejected"
-          ? { kind: "rejected", trail: terminal.trail }
+          ? { kind: "rejected", trail: terminal.trail.map(asJson) }
           : { kind: "accepted" },
       engineRunId: outcome.runId,
     });
@@ -187,7 +189,7 @@ export const openRunner = (options: RunnerOptions): Runner => {
         throw new Error(`no workflow ${workflowId} is registered, so nothing can be run`);
       }
       const runId = mintId();
-      runs.start({ runId, workflowId: registration.id, input });
+      runs.start({ runId, workflowId: registration.id, input: asJson(input) });
       events.emit({ type: "run-started", runId, workflowId: registration.id });
 
       const graph = registration.graph({

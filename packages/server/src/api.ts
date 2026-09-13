@@ -17,6 +17,7 @@
 
 import type { RowStatus } from "@des/core/scheduler";
 import { z } from "zod";
+import { asJson, type Json } from "./json.ts";
 import { continueAfterResume, start, tree, type PipelineTree } from "./pipelines.ts";
 import type { GraphProjection, ResumeOptions } from "./projection.ts";
 import type { AnyWorkflowRegistration } from "./registration.ts";
@@ -36,7 +37,7 @@ export type DescribedWorkflow = {
    * what precedes it — so it travels beside the projection rather than inside
    * it, and it travels as JSON Schema because a browser cannot hold a zod type.
    */
-  input: unknown;
+  input: Json;
 };
 
 /** One pipeline, as the index lists it. */
@@ -65,7 +66,7 @@ const described = (registry: Registry, registration: AnyWorkflowRegistration): D
   id: registration.id,
   title: registration.title,
   graph: registry.projections.get(registration.id) as GraphProjection,
-  input: z.toJSONSchema(registration.input, { target: "draft-07", unrepresentable: "any" }),
+  input: asJson(z.toJSONSchema(registration.input, { target: "draft-07", unrepresentable: "any" })),
 });
 
 const workflowOf = (registry: Registry, id: string): AnyWorkflowRegistration => {
@@ -164,8 +165,8 @@ export const resumeRun = (
 /* ----------------------------------------------------------- the artifacts */
 
 export type ArtifactRead =
-  | { table: string; rows: { id: string; version: number; row: unknown }[] }
-  | { table: string; id: string; version: number; row: unknown };
+  | { table: string; rows: { id: string; version: number; row: Json }[] }
+  | { table: string; id: string; version: number; row: Json };
 
 /**
  * The rows one table holds, one of them, or the body one held at a past
@@ -180,15 +181,18 @@ export const readArtifacts = (
     throw new Error("this server registered no artifact store, so there are no rows to read");
   }
   const { table, id, version } = args;
-  if (id === undefined) return { table, rows: store.list(table) };
+  if (id === undefined) {
+    // An artifact row body is JSON text in the store it came out of.
+    return { table, rows: store.list(table).map((r) => ({ ...r, row: asJson(r.row) })) };
+  }
   if (version !== undefined) {
     const at = store.at(table, id, version);
     if (at === undefined) throw new Error(`no ${table}/${id} at version ${version}`);
-    return { table, id, version, row: at };
+    return { table, id, version, row: asJson(at) };
   }
   const row = store.read(table, id);
   if (row === undefined) throw new Error(`no ${table}/${id}`);
-  return { table, id, version: row.version, row: row.row };
+  return { table, id, version: row.version, row: asJson(row.row) };
 };
 
 /* ----------------------------------------------------------- the pipelines */

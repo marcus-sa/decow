@@ -20,6 +20,7 @@
 
 import type { StepAttempt } from "@des/core/step";
 import type { NodeId } from "@des/core/workflow";
+import type { Json } from "./json.ts";
 import type { ResumeOptions } from "./projection.ts";
 
 export const RUN_STATUSES = ["running", "suspended", "accepted", "rejected", "failed"] as const;
@@ -33,7 +34,7 @@ export type Suspension = {
   /** The suspend node it is sitting on, when the trace names one. */
   node?: NodeId;
   reason: string;
-  trail: unknown[];
+  trail: Json[];
   /** The closed enum a person answers from, off that node's own schema. */
   resume?: ResumeOptions;
 };
@@ -44,13 +45,13 @@ export type RunRecord = {
   workflowId: string;
   status: RunStatus;
   /** The validated input the run was started with. */
-  input: unknown;
+  input: Json;
   /** The nodes entered so far, in order, with their iteration counters. */
   trace: TraceEntry[];
   /** Every attempt of every leaf, as `runStep` reported it. */
   attempts: StepAttempt[];
   suspension?: Suspension;
-  terminal?: { kind: "accepted" | "rejected"; trail?: unknown[] };
+  terminal?: { kind: "accepted" | "rejected"; trail?: Json[] };
   /** The message of the graph bug that ended the run, when one did. */
   error?: string;
   /** The engine's own run id, once the run has produced one. */
@@ -66,7 +67,7 @@ export type RunSummary = Omit<RunRecord, "trace" | "attempts" | "input"> & {
 };
 
 export type RunStore = {
-  start(spec: { runId: string; workflowId: string; input: unknown }): RunRecord;
+  start(spec: { runId: string; workflowId: string; input: Json }): RunRecord;
   get(runId: string): RunRecord | undefined;
   list(): RunSummary[];
   /** Append a node the run just entered, with its iteration counter. */

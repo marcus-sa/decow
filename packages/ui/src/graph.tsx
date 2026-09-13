@@ -9,11 +9,17 @@
  * loop's body sits in a dashed box with the bound written on it, and a run
  * paints itself over the top — every node it entered, the one it is on, and
  * the iteration counter on anything it entered twice.
+ *
+ * JOINTJS IS IMPORTED INSIDE THE EFFECT, not at module scope. This route is
+ * server-rendered like every other one, and a drawing library that wants a
+ * document has nothing to do on a server. The type import is erased, so the
+ * server bundle never loads it and the client loads it once, when there is
+ * something to draw on.
  */
 
-import { dia, shapes } from "@joint/core";
 import { useEffect, useRef } from "react";
-import type { GraphProjection, ProjectedNode } from "./api.ts";
+import type { dia } from "@joint/core";
+import type { GraphProjection, ProjectedNode } from "@des/server";
 import { clusterId, layout, NODE_HEIGHT, NODE_WIDTH, type Layout } from "./layout.ts";
 
 /** What a node is doing right now, when the drawing is of a live run. */
@@ -28,6 +34,9 @@ export type GraphViewProps = {
   /** Called with the node a reader clicked, when anything cares. */
   onSelect?: (id: string) => void;
 };
+
+/** The JointJS module, as the effect loads it. */
+type Joint = typeof import("@joint/core");
 
 /** One colour per node kind, and one per state. The state wins. */
 const FILL: Record<ProjectedNode["kind"], string> = {
@@ -72,8 +81,9 @@ const subtitle = (node: ProjectedNode, iterations?: number): string => {
 };
 
 /** Build every cell: the loop boxes first, then the nodes, then the edges. */
-const cellsFor = (props: GraphViewProps, placed: Layout): dia.Cell[] => {
+const cellsFor = (joint: Joint, props: GraphViewProps, placed: Layout): dia.Cell[] => {
   const { projection, states = {}, iterations = {} } = props;
+  const { shapes } = joint;
   const cells: dia.Cell[] = [];
 
   for (const [loop, box] of placed.clusters) {
@@ -175,7 +185,6 @@ const cellsFor = (props: GraphViewProps, placed: Layout): dia.Cell[] => {
 
 export const GraphView = (props: GraphViewProps): React.ReactElement => {
   const host = useRef<HTMLDivElement | null>(null);
-  const paper = useRef<dia.Paper | null>(null);
   const { projection, states, iterations, onSelect } = props;
 
   // Rebuilt when the graph or what is painted on it changes, and not once per
@@ -184,39 +193,60 @@ export const GraphView = (props: GraphViewProps): React.ReactElement => {
   useEffect(() => {
     const el = host.current;
     if (el === null) return;
+    let view: dia.Paper | undefined;
+    let cancelled = false;
 
-    const model = new dia.Graph({}, { cellNamespace: shapes });
-    const placed = layout(projection);
-    const view = new dia.Paper({
-      el,
-      model,
-      width: placed.width,
-      height: placed.height,
-      gridSize: 1,
-      interactive: false,
-      background: { color: "transparent" },
-      cellViewNamespace: shapes,
-      defaultConnectionPoint: { name: "boundary" },
-    });
-    paper.current = view;
+    void (async () => {
+      const joint = await import("@joint/core");
+      if (cancelled) return;
+      const { dia: diagram, shapes } = joint;
 
-    model.addCells(cellsFor({ projection, ...(states === undefined ? {} : { states }), ...(iterations === undefined ? {} : { iterations }) }, placed));
-    // The loop boxes are drawn first and would otherwise sit over the nodes
-    // they contain; JointJS paints in insertion order, so push them back.
-    for (const loop of placed.clusters.keys()) model.getCell(clusterId(loop))?.toBack();
-
-    if (onSelect !== undefined) {
-      view.on("element:pointerclick", (cellView: dia.CellView) => {
-        const id = String(cellView.model.id);
-        if (!id.startsWith("cluster:")) onSelect(id);
+      const model = new diagram.Graph({}, { cellNamespace: shapes });
+      const placed = layout(projection);
+      view = new diagram.Paper({
+        el,
+        model,
+        width: placed.width,
+        height: placed.height,
+        gridSize: 1,
+        interactive: false,
+        background: { color: "transparent" },
+        cellViewNamespace: shapes,
+        defaultConnectionPoint: { name: "boundary" },
       });
-    }
+
+      model.addCells(
+        cellsFor(
+          joint,
+          {
+            projection,
+            ...(states === undefined ? {} : { states }),
+            ...(iterations === undefined ? {} : { iterations }),
+          },
+          placed,
+        ),
+      );
+      // The loop boxes are drawn first and would otherwise sit over the nodes
+      // they contain; JointJS paints in insertion order, so push them back.
+      for (const loop of placed.clusters.keys()) model.getCell(clusterId(loop))?.toBack();
+
+      if (onSelect !== undefined) {
+        view.on("element:pointerclick", (cellView: dia.CellView) => {
+          const id = String(cellView.model.id);
+          if (!id.startsWith("cluster:")) onSelect(id);
+        });
+      }
+      // The drawing is complete. A test waits on this rather than on a
+      // timeout, because "the graph is drawn" is a fact and not a duration.
+      el.setAttribute("data-drawn", "true");
+    })();
 
     return () => {
-      view.remove();
-      paper.current = null;
+      cancelled = true;
+      view?.remove();
+      el.removeAttribute("data-drawn");
     };
   }, [projection, states, iterations, onSelect]);
 
-  return <div className="graph" ref={host} />;
+  return <div className="graph" data-testid="graph" ref={host} />;
 };

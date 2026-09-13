@@ -20,10 +20,10 @@
   },
   "description": "The authored graph, drawn, with a live trace and a place to answer.",
   "scripts": {
-    "dev": "vite dev",
     "build": "vite build"
   },
   "exports": {
-    ".": "./src/serve.ts"
+    ".": "./src/handler.ts",
+    "./handler": "./src/handler.ts"
   }
 }

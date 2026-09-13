@@ -17,8 +17,7 @@ import type { ArtifactStore } from "@des/core/artifacts";
 import type { EventBus } from "./events.ts";
 import type { GraphProjection } from "./projection.ts";
 import type { AnyWorkflowRegistration, PipelineRegistration } from "./registration.ts";
-import { openRegistry, setRegistry, type Registry } from "./registry.ts";
-import { openRouter } from "./router.ts";
+import { clearRegistry, getRegistry, openRegistry, setRegistry, type Registry } from "./registry.ts";
 import type { Runner } from "./runner.ts";
 import type { RunStore } from "./runs.ts";
 
@@ -40,11 +39,6 @@ export type ServeOptions = {
   runtimeUrl?: string;
   /** Where `upsert-artifact` rows are read back from. */
   artifacts?: ArtifactStore;
-  /**
-   * Anything not under `/api`. The UI is mounted here; without one the server
-   * is the API and nothing else.
-   */
-  fallback?: (request: Request) => Response | undefined | Promise<Response | undefined>;
   /** The id a new run is given. Injected so a test can name its runs. */
   mintId?: () => string;
 };
@@ -71,17 +65,21 @@ export const serve = async (options: ServeOptions): Promise<Server> => {
     ...(options.artifacts === undefined ? {} : { artifacts: options.artifacts }),
     ...(options.mintId === undefined ? {} : { mintId: options.mintId }),
   });
+  // Set BEFORE the handler is mounted: a server function reads the registry
+  // from module scope, and the first request may arrive before this line
+  // would otherwise have run.
   setRegistry(registry);
 
-  const router = openRouter({
-    registry,
-    ...(options.fallback === undefined ? {} : { fallback: options.fallback }),
-  });
+  // The one place this package reaches `@des/ui`, at run time, for a built
+  // artifact. A static import would make the module graph a cycle; this does
+  // not, because `@des/ui/handler` imports nothing from here.
+  const { uiHandler } = await import("@des/ui/handler");
+  const handle = await uiHandler();
 
   const server = Bun.serve({
     port: options.port ?? 3000,
     idleTimeout: 0,
-    fetch: (request) => router.handle(request),
+    fetch: (request) => handle(request),
   });
 
   return {
@@ -89,6 +87,9 @@ export const serve = async (options: ServeOptions): Promise<Server> => {
     port: Number(server.url.port),
     stop: async () => {
       await server.stop(true);
+      // Only if this server still owns the slot: a process that started a
+      // second one has already handed it over.
+      if (getRegistry() === registry) clearRegistry();
     },
     registry,
     events: registry.events,

@@ -1,40 +1,40 @@
 /**
  * What this target can run, and what it has run.
+ *
+ * The loader is three server functions, so the first paint is server-rendered
+ * from the registry itself rather than from a fetch the client has not made
+ * yet. Every event re-invalidates the route, which re-runs the loader.
  */
 
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { api, subscribe, type ListedWorkflow, type RunSummary } from "../api.ts";
+import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
+import { useEffect } from "react";
+import { subscribe } from "../events.ts";
+import { listPipelines, listRuns, listWorkflows } from "../server/functions.ts";
 
-export const Route = createFileRoute("/")({ component: Index });
+export const Route = createFileRoute("/")({
+  loader: async () => ({
+    workflows: await listWorkflows(),
+    pipelines: await listPipelines(),
+    runs: await listRuns(),
+  }),
+  component: Index,
+});
 
 function Index(): React.ReactElement {
-  const [workflows, setWorkflows] = useState<ListedWorkflow[]>([]);
-  const [pipelines, setPipelines] = useState<{ id: string; title: string }[]>([]);
-  const [runs, setRuns] = useState<RunSummary[]>([]);
-  const [error, setError] = useState<string | undefined>();
+  const { workflows, pipelines, runs } = Route.useLoaderData();
+  const router = useRouter();
 
-  useEffect(() => {
-    const load = (): void => {
-      void api.workflows().then(setWorkflows).catch((e: Error) => setError(e.message));
-      void api.pipelines().then(setPipelines).catch(() => {});
-      void api.runs().then(setRuns).catch(() => {});
-    };
-    load();
-    return subscribe(load);
-  }, []);
+  useEffect(() => subscribe(() => void router.invalidate()), [router]);
 
   return (
     <div className="page">
-      {error === undefined ? null : <p className="error">{error}</p>}
-
       <section>
         <h1>Graphs</h1>
         <p className="lede">
           Each one is fixed and hand-written. A run fills in the leaves; nothing here generates a
           graph.
         </p>
-        <ul className="cards">
+        <ul className="cards" data-testid="workflows">
           {workflows.map((workflow) => (
             <li key={workflow.id} className="card">
               <Link to="/workflows/$id" params={{ id: workflow.id }}>
@@ -58,7 +58,7 @@ function Index(): React.ReactElement {
           <p className="lede">
             One fixed graph, instantiated once per row, with the frontier running concurrently.
           </p>
-          <ul className="cards">
+          <ul className="cards" data-testid="pipelines">
             {pipelines.map((pipeline) => (
               <li key={pipeline.id} className="card">
                 <Link to="/pipelines/$id" params={{ id: pipeline.id }}>
@@ -73,7 +73,7 @@ function Index(): React.ReactElement {
 
       <section>
         <h1>Runs</h1>
-        <ul className="rows">
+        <ul className="rows" data-testid="runs">
           {runs.map((run) => (
             <li key={run.runId} className="row">
               <Link to="/runs/$runId" params={{ runId: run.runId }}>

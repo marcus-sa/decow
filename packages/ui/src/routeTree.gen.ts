@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiEventsRouteImport } from './routes/api.events'
 import { Route as PipelinesIdRouteImport } from './routes/pipelines.$id'
 import { Route as RunsRunIdRouteImport } from './routes/runs.$runId'
 import { Route as WorkflowsIdRouteImport } from './routes/workflows.$id'
@@ -17,6 +18,11 @@ import { Route as WorkflowsIdRouteImport } from './routes/workflows.$id'
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiEventsRoute = ApiEventsRouteImport.update({
+  id: '/api/events',
+  path: '/api/events',
   getParentRoute: () => rootRouteImport,
 } as any)
 const PipelinesIdRoute = PipelinesIdRouteImport.update({
@@ -37,12 +43,14 @@ const WorkflowsIdRoute = WorkflowsIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/events': typeof ApiEventsRoute
   '/pipelines/$id': typeof PipelinesIdRoute
   '/runs/$runId': typeof RunsRunIdRoute
   '/workflows/$id': typeof WorkflowsIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/events': typeof ApiEventsRoute
   '/pipelines/$id': typeof PipelinesIdRoute
   '/runs/$runId': typeof RunsRunIdRoute
   '/workflows/$id': typeof WorkflowsIdRoute
@@ -50,20 +58,29 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/events': typeof ApiEventsRoute
   '/pipelines/$id': typeof PipelinesIdRoute
   '/runs/$runId': typeof RunsRunIdRoute
   '/workflows/$id': typeof WorkflowsIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/pipelines/$id' | '/runs/$runId' | '/workflows/$id'
+  fullPaths:
+    '/' | '/api/events' | '/pipelines/$id' | '/runs/$runId' | '/workflows/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/pipelines/$id' | '/runs/$runId' | '/workflows/$id'
-  id: '__root__' | '/' | '/pipelines/$id' | '/runs/$runId' | '/workflows/$id'
+  to: '/' | '/api/events' | '/pipelines/$id' | '/runs/$runId' | '/workflows/$id'
+  id:
+    | '__root__'
+    | '/'
+    | '/api/events'
+    | '/pipelines/$id'
+    | '/runs/$runId'
+    | '/workflows/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiEventsRoute: typeof ApiEventsRoute
   PipelinesIdRoute: typeof PipelinesIdRoute
   RunsRunIdRoute: typeof RunsRunIdRoute
   WorkflowsIdRoute: typeof WorkflowsIdRoute
@@ -76,6 +93,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/events': {
+      id: '/api/events'
+      path: '/api/events'
+      fullPath: '/api/events'
+      preLoaderRoute: typeof ApiEventsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/pipelines/$id': {
@@ -104,6 +128,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiEventsRoute: ApiEventsRoute,
   PipelinesIdRoute: PipelinesIdRoute,
   RunsRunIdRoute: RunsRunIdRoute,
   WorkflowsIdRoute: WorkflowsIdRoute,

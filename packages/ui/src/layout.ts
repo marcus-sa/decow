@@ -14,7 +14,7 @@
  */
 
 import dagre from "@dagrejs/dagre";
-import type { GraphProjection } from "./api.ts";
+import type { GraphProjection } from "@des/server";
 
 export const NODE_WIDTH = 190;
 export const NODE_HEIGHT = 48;

@@ -12,7 +12,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import type { GraphProjection } from "./api.ts";
+import type { GraphProjection } from "@des/server";
 import { clusterId, layout, NODE_HEIGHT, NODE_WIDTH } from "./layout.ts";
 
 /** A loop over two body nodes, a branch after it, and two terminals. */

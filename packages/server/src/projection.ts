@@ -23,6 +23,7 @@
 import { inspectGraph, loopBody } from "@des/core/harness";
 import type { NodeId, Workflow } from "@des/core/workflow";
 import { z } from "zod";
+import { asJson, type Json } from "./json.ts";
 
 export const NODE_KINDS = ["leaf", "step", "branch", "suspend", "loop", "terminal", "fanout"] as const;
 export type NodeKind = (typeof NODE_KINDS)[number];
@@ -30,7 +31,7 @@ export type NodeKind = (typeof NODE_KINDS)[number];
 /** The closed set a person answers a suspension from. */
 export type ResumeOptions = {
   /** The JSON Schema of the whole answer, from `resumeSchema`. */
-  schema: unknown;
+  schema: Json;
   /** The field the closed enum sits on, when the answer has one. */
   field?: string;
   /** The enum's members, which are the buttons a person is offered. */
@@ -96,10 +97,10 @@ export const resumeOptionsOf = (schema: z.ZodType<unknown>): ResumeOptions => {
   for (const [field, property] of Object.entries(json.properties ?? {})) {
     const values = property.enum;
     if (Array.isArray(values) && values.every((v) => typeof v === "string")) {
-      return { schema: json, field, options: values };
+      return { schema: asJson(json), field, options: values };
     }
   }
-  return { schema: json };
+  return { schema: asJson(json) };
 };
 
 /** Every edge out of a node, with the branch key that takes it. */

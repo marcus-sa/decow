@@ -11,9 +11,10 @@
  * it is read — in the UI, from the closed enum the node itself declares — and
  * the run continues without anybody quoting a run id back at a shell.
  *
- * WHAT IT SERVES. Four graphs and two pipelines (`./registrations.ts`), the
- * API over them (`@des/server`), and the UI that draws them (`@des/ui`). One
- * origin, one port, one process.
+ * WHAT IT SERVES. Four graphs and two pipelines (`./registrations.ts`) and the
+ * application that draws them. `serve` mounts `@des/ui`'s built request
+ * handler, so the server functions the UI calls run in THIS process, over
+ * THESE registrations. One origin, one port, one process.
  *
  * NO KEY IS NEEDED TO START IT, and that is deliberate rather than convenient.
  * The graphs, the projections, the artifact rows and the event stream are all
@@ -35,7 +36,6 @@
 
 import { join } from "node:path";
 import { serve } from "@des/server";
-import { ui } from "@des/ui";
 import { describeModels } from "./models.ts";
 import { openReport } from "./report.ts";
 import { todoRegistrations, ROADMAP_ID } from "./registrations.ts";
@@ -65,7 +65,6 @@ const main = async (): Promise<void> => {
     workflows,
     pipelines,
     artifacts: dir.artifacts,
-    fallback: ui(),
   });
 
   console.log(describeModels());

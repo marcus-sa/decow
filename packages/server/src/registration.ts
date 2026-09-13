@@ -27,6 +27,7 @@ import type { StepObserver } from "@des/core/step";
 import type { EffectExecutor, RunOutcome, Workflow } from "@des/core/workflow";
 import type { WorkflowRuntime } from "@des/core/compile";
 import type { z } from "zod";
+import type { Json } from "./json.ts";
 
 /** What the server hands a graph factory. */
 export type GraphContext = {
@@ -88,7 +89,7 @@ export type PipelineRow = {
   /** The registered workflow one row's run is a run OF. */
   workflowId: string;
   /** The input that run is started with, as that workflow's schema parses it. */
-  input: unknown;
+  input: Json;
 };
 
 /**
