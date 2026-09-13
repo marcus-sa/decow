@@ -13,7 +13,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { GraphProjection } from "@des/server";
-import { clusterId, layout, NODE_HEIGHT, NODE_WIDTH } from "./layout.ts";
+import { clusterId, edgeKey, labelSize, layout, NODE_HEIGHT, NODE_WIDTH } from "./layout.ts";
 
 /** A loop over two body nodes, a branch after it, and two terminals. */
 const projection: GraphProjection = {
@@ -102,5 +102,67 @@ describe("the layout", () => {
     // the drawing's own and is prefixed so the two cannot meet.
     expect(clusterId("spin")).toBe("cluster:spin");
     expect(projection.nodes.some((n) => n.id.startsWith("cluster:"))).toBe(false);
+  });
+
+  test("every labelled edge gets a point of its own", () => {
+    const placed = layout(projection);
+    const labelled = projection.edges
+      .map((edge, at) => ({ edge, at }))
+      .filter(({ edge }) => edge.key !== undefined);
+
+    expect(labelled.length).toBeGreaterThan(0);
+    for (const { at } of labelled) expect(placed.labels.get(at)).toBeDefined();
+    // An unlabelled edge asks dagre for no room and gets no point.
+    const bare = projection.edges.findIndex((edge) => edge.key === undefined);
+    expect(placed.labels.get(bare)).toBeUndefined();
+  });
+
+  test("two edges out of one node do not share a label position", () => {
+    // This is the defect. `spin` sends `body` one way and `done` the other,
+    // and both used to be painted at their own edge's midpoint — which, for
+    // edges that share an endpoint and run between the same two ranks, is the
+    // same place. Several graphs here have three such edges converging on one
+    // loop node, and all three labels landed on top of each other.
+    const placed = layout(projection);
+    const from = (id: string) =>
+      projection.edges
+        .map((edge, at) => ({ edge, at }))
+        .filter(({ edge }) => edge.from === id && edge.key !== undefined)
+        .map(({ at }) => placed.labels.get(at))
+        .filter((point): point is { x: number; y: number } => point !== undefined);
+
+    for (const id of ["spin", "spin.verdict"]) {
+      const points = from(id);
+      expect(points.length).toBe(2);
+      const apart = points.map((p) => `${Math.round(p.x)},${Math.round(p.y)}`);
+      expect(new Set(apart).size).toBe(points.length);
+    }
+  });
+
+  test("a label's box is wide enough for the text it holds, and rounds up", () => {
+    // Too wide costs a little horizontal space; too narrow costs a collision,
+    // which is the thing this exists to stop.
+    const short = labelSize("body");
+    const long = labelSize("cannot-decompose");
+    expect(long.width).toBeGreaterThan(short.width);
+    expect(short.width).toBeGreaterThan("body".length * 6);
+    expect(Number.isInteger(short.width)).toBe(true);
+    expect(short.height).toBe(long.height);
+  });
+
+  test("an edge is addressed by its index, so two edges between one pair stay two", () => {
+    // The layout graph is a multigraph and this is the name each edge is put
+    // in under. A simple graph would keep one of them, and one edge is one
+    // label position for two keys.
+    expect(edgeKey(0)).not.toBe(edgeKey(1));
+    const twice: GraphProjection = {
+      ...projection,
+      edges: [
+        { from: "spin.verdict", to: "accept", key: "done" },
+        { from: "spin.verdict", to: "accept", key: "stuck" },
+      ],
+    };
+    const placed = layout(twice);
+    expect(placed.labels.size).toBe(2);
   });
 });

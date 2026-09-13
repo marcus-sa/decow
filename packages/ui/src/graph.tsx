@@ -10,6 +10,14 @@
  * paints itself over the top — every node it entered, the one it is on, and
  * the iteration counter on anything it entered twice.
  *
+ * AN EDGE LABEL GOES WHERE DAGRE PUT IT, not at the edge's midpoint. Several
+ * edges routinely share an endpoint — every loop-exit edge converges on the
+ * loop node — and their midpoints then coincide, which is how `exhausted`,
+ * `cannot-decompose` and `invalid` ended up painted on top of one another.
+ * `layout.ts` gives dagre each label's size, dagre reserves a rank for it and
+ * answers with a point, and `getLabelPosition` turns that point into the
+ * distance-and-offset a JointJS label is addressed by.
+ *
  * JOINTJS IS IMPORTED INSIDE THE EFFECT, not at module scope. This route is
  * server-rendered like every other one, and a drawing library that wants a
  * document has nothing to do on a server. The type import is erased, so the
@@ -145,42 +153,72 @@ const cellsFor = (joint: Joint, props: GraphViewProps, placed: Layout): dia.Cell
     );
   }
 
-  for (const edge of projection.edges) {
-    if (!placed.nodes.has(edge.from) || !placed.nodes.has(edge.to)) continue;
+  projection.edges.forEach((edge, at) => {
+    if (!placed.nodes.has(edge.from) || !placed.nodes.has(edge.to)) return;
     const taken = states[edge.from] !== undefined && states[edge.to] !== undefined;
-    cells.push(
-      new shapes.standard.Link({
-        source: { id: edge.from },
-        target: { id: edge.to },
-        attrs: {
-          line: {
-            stroke: taken ? "#7fd6a1" : "#3b4a5a",
-            strokeWidth: taken ? 2 : 1.2,
-            targetMarker: { type: "path", d: "M 8 -4 0 0 8 4 z" },
-          },
+    const link = new shapes.standard.Link({
+      source: { id: edge.from },
+      target: { id: edge.to },
+      attrs: {
+        line: {
+          stroke: taken ? "#7fd6a1" : "#3b4a5a",
+          strokeWidth: taken ? 2 : 1.2,
+          targetMarker: { type: "path", d: "M 8 -4 0 0 8 4 z" },
         },
-        labels:
-          edge.key === undefined
-            ? []
-            : [
-                {
-                  position: { distance: 0.5 },
-                  attrs: {
-                    text: {
-                      text: edge.key,
-                      fill: "#93a4b8",
-                      fontSize: 10,
-                      fontFamily: "ui-monospace, monospace",
-                    },
-                    rect: { fill: "#0b0d12", stroke: "none" },
+      },
+      labels:
+        edge.key === undefined
+          ? []
+          : [
+              {
+                // A placeholder. `placeLabels` replaces it with the point
+                // dagre chose, once the paper has a view to ask.
+                position: { distance: 0.5 },
+                attrs: {
+                  text: {
+                    text: edge.key,
+                    fill: "#93a4b8",
+                    fontSize: 10,
+                    fontFamily: "ui-monospace, monospace",
                   },
+                  rect: { fill: "#0b0d12", stroke: "none" },
                 },
-              ],
-      }),
-    );
-  }
+              },
+            ],
+    });
+    // The projection's own index, so the label placement can find its point.
+    link.set("edgeIndex", at);
+    cells.push(link);
+  });
 
   return cells;
+};
+
+/**
+ * Move every edge label onto the point dagre chose for it.
+ *
+ * A JointJS label is addressed by a distance along the link and an offset from
+ * it, not by a paper coordinate — so the paper coordinate is handed to the
+ * LINK'S OWN VIEW, which knows the route it drew and converts. Absolute on
+ * both axes, because the point may sit anywhere dagre's label rank put it.
+ *
+ * After `addCells`, because a view is what does the converting and a view
+ * exists once the model has been added.
+ */
+const placeLabels = (paper: dia.Paper, placed: Layout): void => {
+  for (const link of paper.model.getLinks()) {
+    const at = link.get("edgeIndex") as number | undefined;
+    const point = at === undefined ? undefined : placed.labels.get(at);
+    if (point === undefined || !link.hasLabels()) continue;
+    const view = paper.findViewByModel(link) as dia.LinkView | undefined;
+    if (view === undefined) continue;
+    link.label(0, {
+      position: view.getLabelPosition(point.x, point.y, {
+        absoluteDistance: true,
+        absoluteOffset: true,
+      }),
+    });
+  }
 };
 
 export const GraphView = (props: GraphViewProps): React.ReactElement => {
@@ -229,6 +267,8 @@ export const GraphView = (props: GraphViewProps): React.ReactElement => {
       // The loop boxes are drawn first and would otherwise sit over the nodes
       // they contain; JointJS paints in insertion order, so push them back.
       for (const loop of placed.clusters.keys()) model.getCell(clusterId(loop))?.toBack();
+
+      placeLabels(view, placed);
 
       if (onSelect !== undefined) {
         view.on("element:pointerclick", (cellView: dia.CellView) => {
