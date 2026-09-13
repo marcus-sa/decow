@@ -44,7 +44,7 @@ const main = async (): Promise<void> => {
     process.exit(1);
   }
 
-  const dir = openRunDir(name);
+  const dir = await openRunDir(name);
   const report = openReport({ path: join(dir.path, "report.jsonl"), run: name });
   const defs = todoDeliverDefs({ onUsage: report.onUsage });
   const evidence = runSuite(dir.project);
@@ -53,6 +53,7 @@ const main = async (): Promise<void> => {
   const { resumeParked, rows } = openPipeline({
     artifacts: dir.artifacts,
     vcs: dir.vcs,
+    commands: dir.commands,
     journal: dir.journal,
     defs,
     roadmapId: dir.manifest.request,

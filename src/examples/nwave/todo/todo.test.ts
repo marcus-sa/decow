@@ -25,7 +25,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openArtifacts } from "../../../artifacts/store.ts";
@@ -44,20 +44,36 @@ import { roadmapGraph, seed as seedRoadmap, type State as RoadmapState } from ".
 import type { Roadmap } from "../roadmap/schema.ts";
 import { roadmapDefs } from "../roadmap/steps.ts";
 import { REQUEST } from "./request.ts";
-import { createRunDir, designSource, openRunDir, REPO, RUNS, runSuite, TARGET } from "./run-dir.ts";
+import {
+  createRunDir,
+  designSource,
+  loadCommands,
+  openRunDir,
+  REPO,
+  RUNS,
+  runSuite,
+  TARGET,
+} from "./run-dir.ts";
 
 /* --------------------------------------------------------------- the copy */
 
 /** A temp copy of `targets/todo`, tracked in a fresh VCS with the real gate. */
-const openProject = () => {
+const openProject = async () => {
   const root = mkdtempSync(join(tmpdir(), "dw-todo-"));
   cpSync(TARGET, root, { recursive: true });
-  // `tsc` and `bun test` both need `@types/bun`; one symlink beats one install.
+  // `tsc`, `biome` and `bun test` all resolve out of here; one symlink beats
+  // one install per copy.
   symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"));
 
-  // The DEFAULT verifier: real `bunx tsc --noEmit`, real impact-scoped
-  // `bun test`, real oracle measurement. Nothing is stubbed at the gate.
-  const vcs = openVcs({ root });
+  // The target's OWN declaration, loaded out of the copy exactly as a run
+  // directory loads it. Every process this test runs against the project comes
+  // from here and from nowhere else.
+  const commands = await loadCommands(root);
+
+  // The DEFAULT verifier over those commands: a real `bunx tsc --noEmit`, a
+  // real `bunx biome check`, a real impact-scoped `bun test`, a real oracle
+  // measurement. Nothing is stubbed at the gate.
+  const vcs = openVcs({ root, commands });
   vcs.trackTree("src");
 
   const symbolId = (path: string, name: string): string => {
@@ -67,7 +83,7 @@ const openProject = () => {
     return symbol.id;
   };
 
-  return { root, vcs, symbolId, read: (p: string) => readFileSync(join(root, p), "utf8") };
+  return { root, vcs, commands, symbolId, read: (p: string) => readFileSync(join(root, p), "utf8") };
 };
 
 /** A model binding that fails the test if anything reaches a model. */
@@ -280,7 +296,6 @@ const HAPPY: Partial<Record<LeafId, string>> = {
   implement: "written",
   "select-tests": "no-extra",
   refactor: "refactored",
-  gates: "clean",
   commit: "committed",
 };
 
@@ -362,7 +377,7 @@ const persistRoadmap = async (roadmap: Roadmap, design: string, effects: ReturnT
 
 describe("the todo target, delivered", () => {
   test("DISTILL states the facts and measures each oracle red, then DELIVER turns them green", async () => {
-    const project = openProject();
+    const project = await openProject();
     const artifacts = openArtifacts();
     const design = designSource(project.root, project.vcs);
 
@@ -417,11 +432,15 @@ describe("the todo target, delivered", () => {
     expect(oracleRunsOf(artifacts, "01-02").at(-1)?.verdict).toBe("red");
     expect(project.read("test/complete.test.ts")).toBe(ORACLE_BODIES["test/complete.test.ts"] ?? "");
     expect(project.read("test/remove.test.ts")).toBe(ORACLE_BODIES["test/remove.test.ts"] ?? "");
-    // And the measurements are on the event log, under each value's own task.
+    // And the measurements are on the event log, under each value's own task,
+    // with the argv the TARGET declared rather than one the framework picked.
     for (const row of ["01-01", "01-02"]) {
       const events = project.vcs.log.byTask(row).filter((e) => e.kind === "oracle-measured");
       expect(events).toHaveLength(1);
-      expect(JSON.parse(String(events[0]?.detail)).verdict).toBe("red");
+      const detail = JSON.parse(String(events[0]?.detail));
+      expect(detail.verdict).toBe("red");
+      expect(detail.argv).toContain("--reporter=junit");
+      expect(detail.argv.some((a: string) => a.startsWith("--reporter-outfile="))).toBe(true);
     }
 
     /* ---- DELIVER ------------------------------------------------------ */
@@ -441,6 +460,7 @@ describe("the todo target, delivered", () => {
     const { scheduler, unoracled } = openPipeline({
       artifacts,
       vcs: project.vcs,
+      commands: project.commands,
       journal: memoryJournal(seeded),
       defs,
       roadmapId: REQUEST,
@@ -463,6 +483,19 @@ describe("the todo target, delivered", () => {
     expect(source).toContain("todo.done = true;");
     expect(source).toContain("this.#todos.splice(at, 1);");
 
+    // The quality gate ran the target's OWN declared lint command, for real,
+    // over the file the row wrote. Not a leaf classifying a string: a command
+    // the consumer named, and an exit status.
+    for (const row of ["01-01", "01-02"]) {
+      const lints = project.vcs.log
+        .byTask(row)
+        .filter((e) => e.kind === "trail")
+        .map((e) => JSON.parse(String(e.detail)) as { ran?: string[]; exit?: number });
+      const gate = lints.find((l) => l.ran?.includes("biome"));
+      expect(gate?.ran).toEqual(["bunx", "biome", "check", "src/todo.ts"]);
+      expect(gate?.exit).toBe(0);
+    }
+
     // And the oracles are byte-identical: RED to GREEN was bought by
     // production, and the crafter's executor is what made that structural.
     expect(project.read("test/complete.test.ts")).toBe(ORACLE_BODIES["test/complete.test.ts"] ?? "");
@@ -479,7 +512,7 @@ describe("the todo target, delivered", () => {
   }, 120_000);
 
   test("a value whose oracle is not red is refused by name, and blocks its dependents", async () => {
-    const project = openProject();
+    const project = await openProject();
     const artifacts = openArtifacts();
     const design = designSource(project.root, project.vcs);
     await persistRoadmap(roadmapFor(project.symbolId), design, memoryEffects({ store: artifacts }));
@@ -488,6 +521,7 @@ describe("the todo target, delivered", () => {
     const { scheduler, unoracled } = openPipeline({
       artifacts,
       vcs: project.vcs,
+      commands: project.commands,
       journal: memoryJournal({}),
       defs,
       roadmapId: REQUEST,
@@ -505,12 +539,12 @@ describe("the todo target, delivered", () => {
     project.vcs.close();
   }, 30_000);
 
-  test("a run directory is a fresh checkout, and a second open sees what the first left", () => {
+  test("a run directory is a fresh checkout, and a second open sees what the first left", async () => {
     const name = `_test-${process.pid}`;
     const path = join(RUNS, name);
     try {
       expect(createRunDir(name)).toBe(path);
-      const first = openRunDir(name);
+      const first = await openRunDir(name);
       expect(readFileSync(join(first.project, "src/todo.ts"), "utf8")).toContain(
         'throw new Error("not implemented")',
       );
@@ -520,7 +554,7 @@ describe("the todo target, delivered", () => {
       first.save({ name, request: REQUEST, roadmapRunId: "run-abc", roadmapReason: "roadmap-ready" });
       first.close();
 
-      const second = openRunDir(name);
+      const second = await openRunDir(name);
       expect(second.manifest).toMatchObject({ request: REQUEST, roadmapRunId: "run-abc" });
       expect(second.vcs.registry.files()).toHaveLength(1);
       expect(second.design).toContain("## Symbol inventory");
@@ -532,8 +566,53 @@ describe("the todo target, delivered", () => {
     }
   });
 
-  test("the design source carries the symbol ids a write has to name, and the test path scope", () => {
-    const project = openProject();
+  test("a target with no commands.ts is refused by name, not defaulted", async () => {
+    // The same refusal the test path scope gets, for the same reason: every
+    // process the framework runs against a project comes from that file, so a
+    // default would run one project's toolchain against every other project
+    // and call the result a verdict.
+    const empty = mkdtempSync(join(tmpdir(), "dw-no-commands-"));
+    await expect(loadCommands(empty)).rejects.toThrow(/no commands\.ts/);
+
+    // And a file that exports the wrong thing is refused by name too.
+    const wrong = mkdtempSync(join(tmpdir(), "dw-wrong-commands-"));
+    writeFileSync(join(wrong, "commands.ts"), "export const notCommands = {};\n", "utf8");
+    await expect(loadCommands(wrong)).rejects.toThrow(/exports no `commands`/);
+  });
+
+  test("the target declares four commands, and they are the ones the framework reads", async () => {
+    const project = await openProject();
+    const junit = "/tmp/report.xml";
+
+    expect(project.commands.typecheck({})).toEqual(["bunx", "tsc", "--noEmit"]);
+    expect(project.commands.lint({ paths: ["src/todo.ts"] })).toEqual([
+      "bunx",
+      "biome",
+      "check",
+      "src/todo.ts",
+    ]);
+    expect(project.commands.tests({ file: "test/a.test.ts", selector: "does it", junit })).toEqual([
+      "bun",
+      "test",
+      "test/a.test.ts",
+      "-t",
+      "does it",
+      "--reporter=junit",
+      `--reporter-outfile=${junit}`,
+    ]);
+    // A bare path names the whole file, so the selector is simply absent.
+    expect(project.commands.oracle({ file: "test/a.test.ts", junit })).toEqual([
+      "bun",
+      "test",
+      "test/a.test.ts",
+      "--reporter=junit",
+      `--reporter-outfile=${junit}`,
+    ]);
+    project.vcs.close();
+  });
+
+  test("the design source carries the symbol ids a write has to name, and the test path scope", async () => {
+    const project = await openProject();
     const design = designSource(project.root, project.vcs);
     const completeId = project.symbolId("src/todo.ts", "complete");
 

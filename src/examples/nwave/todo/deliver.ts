@@ -9,14 +9,16 @@
  * own checkout. `implement` is Sonnet; every other leaf is Haiku; the oracle,
  * the activation and the suite are not models at all.
  *
- * WHAT IS REAL HERE, and it is nearly all of it: the oracle resolves each
- * obligation's locator against the VCS symbol inventory, `activate-at` strips
- * the `test.skip(` marker through the write path, `implement` writes a method
- * body through the write path under a lease, and every one of those writes is
- * gated by a real `tsc --noEmit` and a real impact-scoped `bun test` that rolls
- * the file back byte for byte when it refuses. Then the whole suite runs once
- * at the end, because "the acceptance tests pass" is a thing you run, not a
- * thing you infer.
+ * WHAT IS REAL HERE, and it is nearly all of it: every process this command
+ * runs comes from the copied target's own `commands.ts`. `implement` writes a
+ * method body through the write path under a lease, gated by the declared
+ * typecheck, the declared lint over the file it touched, and the declared test
+ * command over the impact-scoped subset, rolling the file back byte for byte
+ * when any of them refuses. The quality gate is the declared lint command
+ * again, over the files the row writes, and its exit status is the verdict
+ * rather than a model's reading of it. Then the whole suite runs once at the
+ * end, because "the acceptance tests pass" is a thing you run, not a thing you
+ * infer.
  *
  * CONCURRENCY IS 1. Two reasons, and the second is the load-bearing one. The
  * roadmap's two rows write different methods of the same class but they SHARE a
@@ -40,7 +42,7 @@ const main = async (): Promise<void> => {
   requireCredential("todo:deliver");
   const name = requireRunName("todo:deliver", process.argv.slice(2));
 
-  const dir = openRunDir(name);
+  const dir = await openRunDir(name);
   const request = dir.manifest.request;
   if (request.length === 0) {
     console.error(`todo:deliver: run "${name}" has no approved roadmap. Run todo:review ${name} approve first.`);
@@ -64,6 +66,7 @@ const main = async (): Promise<void> => {
   const { scheduler, rows, unoracled } = openPipeline({
     artifacts: dir.artifacts,
     vcs: dir.vcs,
+    commands: dir.commands,
     journal: dir.journal,
     defs,
     roadmapId: request,

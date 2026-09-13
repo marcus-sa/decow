@@ -27,8 +27,12 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  // `targets/` is a template project with its own tsconfig, and `runs/` holds
-  // copies of it. Neither is this repository's own source; the copies are
-  // typechecked by the write path's own `tsc` stage, inside the run.
-  "exclude": ["node_modules", "targets", "runs"]
+  // `src/` is this repository. `targets/*/commands.ts` is the one file in a
+  // target that is OURS to typecheck: it declares conformance to the
+  // framework's `Commands` type, and a declaration nothing checks is a
+  // declaration that drifts. Everything else in a target is that target's own
+  // project, typechecked by the write path's own declared typecheck command
+  // inside a run; `runs/` holds the copies.
+  "include": ["src", "targets/*/commands.ts"],
+  "exclude": ["node_modules", "runs"]
 }

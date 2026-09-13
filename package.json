@@ -17,6 +17,7 @@
     "todo:report": "bun run src/examples/nwave/todo/summary.ts"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.13",
     "@types/bun": "latest"
   },
   "peerDependencies": {

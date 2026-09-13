@@ -53,7 +53,7 @@ const main = async (): Promise<void> => {
     process.exit(1);
   }
 
-  const dir = openRunDir(name);
+  const dir = await openRunDir(name);
   const { roadmapRunId, roadmapReason } = dir.manifest;
   if (roadmapRunId === undefined) {
     console.error(`todo:review: run "${name}" has no parked roadmap. Run todo:roadmap ${name} first.`);

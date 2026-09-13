@@ -60,10 +60,11 @@ never returned, and it carries the id it was given.
 
 - Test path scope: `test/`
 
-Nothing is pre-written there. The oracle for each value is authored by
-`des oracle` — one executable file per value, plus any whole-file support it
-declares — and software measures it red before any production byte is written.
-A locator is `test/<file>.test.ts::<test name>`.
+Nothing is pre-written there. The oracle for each value is authored by DISTILL
+— one executable file per value, plus any whole-file support it declares — and
+software measures it red before any production byte is written. A locator is
+`test/<file>.test.ts::<test name>`.
 
-The oracle runner is `bun test`, which is the default the framework derives
-from a locator: `bun test <file> -t <test name>`.
+How an oracle is RUN is not this document's to say. `commands.ts` declares it,
+along with how the project is typechecked, linted and tested, and the framework
+reads those four declarations and derives nothing.

@@ -43,7 +43,7 @@ const main = async (): Promise<void> => {
   requireCredential("todo:distill");
   const name = requireRunName("todo:distill", process.argv.slice(2));
 
-  const dir = openRunDir(name);
+  const dir = await openRunDir(name);
   const request = dir.manifest.request;
   if (request.length === 0) {
     console.error(`todo:distill: run "${name}" has no approved roadmap. Run todo:review ${name} approve first.`);

@@ -9,7 +9,9 @@
  * Five stores, one directory, all of them files rather than `:memory:`,
  * because the three commands are three PROCESSES:
  *
- *   todo/             the copied target, which the VCS writes into
+ *   todo/             the copied target, which the VCS writes into, and
+ *                     whose `commands.ts` says how it is typechecked,
+ *                     linted, tested and measured
  *   vcs.sqlite        the symbol registry, the lease table, the event log
  *   artifacts.sqlite  roadmap rows, roadmap_steps rows, step_runs rows
  *   journal.sqlite    what each step decided, keyed by content
@@ -29,6 +31,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { openArtifacts, type ArtifactStore } from "../../../artifacts/store.ts";
+import type { Commands } from "../../../core/commands.ts";
 import { openWorkflowRuntime, type WorkflowRuntime } from "../../../core/compile.ts";
 import { sqliteJournal, type Journal } from "../../../core/journal.ts";
 import { openVcs, type Vcs } from "../../../vcs/index.ts";
@@ -59,6 +62,8 @@ export type RunDir = {
   path: string;
   /** `runs/<name>/todo`, the copied target. */
   project: string;
+  /** The target's own declaration of how it is built and tested. */
+  commands: Commands;
   vcs: Vcs;
   artifacts: ArtifactStore;
   journal: Journal & { close: () => void };
@@ -75,6 +80,37 @@ export type RunDir = {
 export const TRACKED = ["src", "test"] as const;
 
 const manifestPath = (path: string): string => join(path, "run.json");
+
+/** The file a target declares its four commands in. */
+export const COMMANDS_FILE = "commands.ts";
+
+/**
+ * The target's own `commands.ts`, loaded out of the COPY.
+ *
+ * Refused BY NAME when it is absent, the same way the test path scope is:
+ * every process this framework runs against a project comes from here, so a
+ * default would run bun and biome against a project that is neither and call
+ * the result a verdict.
+ *
+ * The file imports the `Commands` type and nothing else, so the import is
+ * erased before it is loaded and a copy sitting under `runs/` resolves with no
+ * path back to this repository.
+ */
+export const loadCommands = async (project: string): Promise<Commands> => {
+  const path = join(project, COMMANDS_FILE);
+  if (!existsSync(path)) {
+    throw new Error(
+      `no ${COMMANDS_FILE} at ${path}. A target declares how it is typechecked, linted, tested ` +
+        "and measured; there is no default, because a default would run one project's toolchain " +
+        "against every other project.",
+    );
+  }
+  const loaded = (await import(path)) as { commands?: Commands };
+  if (loaded.commands === undefined) {
+    throw new Error(`${path} exports no \`commands\`. It must export one, named \`commands\`.`);
+  }
+  return loaded.commands;
+};
 
 export const readManifest = (path: string): RunManifest =>
   JSON.parse(readFileSync(manifestPath(path), "utf8")) as RunManifest;
@@ -142,14 +178,15 @@ export type OpenRunOptions = {
  * Open every store of a run directory. Used by all four commands, so the
  * second and third see exactly what the first left behind.
  */
-export const openRunDir = (name: string, options: OpenRunOptions = {}): RunDir => {
+export const openRunDir = async (name: string, options: OpenRunOptions = {}): Promise<RunDir> => {
   const path = join(RUNS, name);
   if (!existsSync(path)) {
     throw new Error(`no run "${name}" at ${path}. Start one with: bun run todo:roadmap ${name}`);
   }
   const project = join(path, "todo");
 
-  const vcs = openVcs({ root: project, dbPath: join(path, "vcs.sqlite") });
+  const commands = await loadCommands(project);
+  const vcs = openVcs({ root: project, dbPath: join(path, "vcs.sqlite"), commands });
   if (options.track !== false) {
     // `track` returns the tracked file untouched when the path is already
     // known, so a re-open costs a lookup and changes nothing.
@@ -175,6 +212,7 @@ export const openRunDir = (name: string, options: OpenRunOptions = {}): RunDir =
     name,
     path,
     project,
+    commands,
     vcs,
     artifacts,
     journal,

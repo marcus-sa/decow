@@ -33,7 +33,7 @@ const main = async (): Promise<void> => {
   const name = requireRunName("todo:roadmap", process.argv.slice(2));
 
   const path = createRunDir(name);
-  const dir = openRunDir(name);
+  const dir = await openRunDir(name);
   dir.save({ name, request: REQUEST });
 
   const report = openReport({ path: join(path, "report.jsonl"), run: name });

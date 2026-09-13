@@ -17,6 +17,9 @@ import { dirname, join, relative } from "node:path";
 /** This file is `<src>/harness/no-nondeterminism.test.ts`. */
 const SRC = dirname(dirname(import.meta.path));
 
+/** `<repo>/targets`, where a consumer declares its own commands. */
+const TARGETS = join(dirname(SRC), "targets");
+
 /** Literal source fragments that introduce nondeterminism into a decision. */
 const BANNED = ["Date.now", "Math.random", "new Date(", "randomUUID"] as const;
 
@@ -48,6 +51,14 @@ const EXEMPT = new Set([join(SRC, "vcs/defaults.ts")]);
  * which rows run, and a frontier that depended on when it was computed would
  * make a feature's delivery order a function of the clock.
  *
+ * A TARGET's `commands.ts` is scanned too, and it is the one scanned file that
+ * is not this repository's. It is consumer code rather than rows, and it is
+ * read on every write: a declaration that built a temp path out of a clock, or
+ * a seed out of an RNG, would make the same write produce a different command
+ * on every run, which is the property this whole scan exists to hold. The glob
+ * is `targets/*` rather than `targets/todo` so a second target is scanned the
+ * day it lands.
+ *
  * The examples live one directory deeper than they used to — `examples/nwave/`
  * groups the three that model one consumer's waves — and the globs are
  * unchanged, because `**` spans any depth. They are deliberately NOT narrowed
@@ -78,6 +89,9 @@ const scanned = async (): Promise<string[]> => {
       files.add(match);
     }
   }
+  for await (const match of new Glob("*/commands.ts").scan({ cwd: TARGETS, absolute: true })) {
+    files.add(match);
+  }
   return [...files].sort();
 };
 
@@ -107,7 +121,9 @@ describe("no nondeterminism inside the graph", () => {
     expect(files).toContain("vcs/executor.ts");
     expect(files).toContain("vcs/structural/typescript.ts");
     expect(files).not.toContain("vcs/defaults.ts");
-    expect(files.length).toBeGreaterThanOrEqual(28);
+    // The consumer's own declaration of how its project is built and tested.
+    expect(files).toContain("../targets/todo/commands.ts");
+    expect(files.length).toBeGreaterThanOrEqual(30);
   });
 
   test("no scanned file reads a clock or an RNG", async () => {
@@ -132,6 +148,15 @@ describe("no nondeterminism inside the graph", () => {
     const source = await Bun.file(join(SRC, "vcs/defaults.ts")).text();
     expect(source).toContain("Date.now");
     expect(source).toContain("randomUUID");
+  });
+
+  test("a target's declared commands are scanned, and a clock in one would fail", async () => {
+    // The one scanned file that is not this repository's. It is read on every
+    // write, so a declaration built out of a clock would make the same write
+    // produce a different command on every run.
+    const declared = await Bun.file(join(TARGETS, "todo", "commands.ts")).text();
+    expect(BANNED.some((b) => stripComments(declared).includes(b))).toBe(false);
+    expect((await scanned()).some((f) => f.endsWith("targets/todo/commands.ts"))).toBe(true);
   });
 
   test("the scanner would catch a planted violation", async () => {

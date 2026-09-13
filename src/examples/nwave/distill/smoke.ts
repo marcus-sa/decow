@@ -34,6 +34,7 @@ import { run } from "../../../core/workflow.ts";
 import { describeTrace } from "../../../harness/matchers.ts";
 import { vcsExecutor } from "../../../vcs/executor.ts";
 import { openVcs } from "../../../vcs/index.ts";
+import { loadCommands } from "../todo/run-dir.ts";
 import { oracleGraph, seed, type State } from "./oracle/graph.ts";
 import { oracleDefs, type ValueUnderOracle } from "./oracle/steps.ts";
 
@@ -124,7 +125,35 @@ const project = (): string => {
     )}\n`,
     "utf8",
   );
-  symlinkSync(join(REPO, "node_modules"), join(root, "node_modules"));
+  writeFileSync(
+    join(root, "biome.json"),
+    `${JSON.stringify(
+      { linter: { enabled: true }, formatter: { enabled: false }, assist: { enabled: false } },
+      null,
+      2,
+    )}\n`,
+    "utf8",
+  );
+  // The project's own declaration of how it is built and tested. Written out
+  // here rather than imported, because this temp project is the consumer.
+  writeFileSync(
+    join(root, "commands.ts"),
+    `export const commands = {\n` +
+      `  typecheck: () => ["bunx", "tsc", "--noEmit"],\n` +
+      `  lint: ({ paths }) => ["bunx", "biome", "check", ...paths],\n` +
+      `  tests: ({ file, selector, junit }) => [\n` +
+      `    "bun", "test", file,\n` +
+      `    ...(selector ? ["-t", selector] : []),\n` +
+      `    "--reporter=junit", \`--reporter-outfile=\${junit}\`,\n` +
+      `  ],\n` +
+      `  oracle: ({ file, selector, junit }) => [\n` +
+      `    "bun", "test", file,\n` +
+      `    ...(selector ? ["-t", selector] : []),\n` +
+      `    "--reporter=junit", \`--reporter-outfile=\${junit}\`,\n` +
+      `  ],\n` +
+      `};\n`,
+    "utf8",
+  );
   return root;
 };
 
@@ -135,7 +164,9 @@ const main = async (): Promise<void> => {
   }
 
   const root = project();
-  const vcs = openVcs({ root });
+  // Loaded out of the project, exactly as a run directory loads it: the four
+  // commands are the consumer's declaration and there is no default.
+  const vcs = openVcs({ root, commands: await loadCommands(root) });
   vcs.track("counter.ts");
 
   const defs = oracleDefs({

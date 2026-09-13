@@ -1,0 +1,5 @@
+{
+  "linter": { "enabled": true },
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false }
+}
