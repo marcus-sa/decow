@@ -68,6 +68,14 @@ export type ScriptSource =
 export type ScriptedBindingOptions = {
   /** Reported verbatim as `Attempt.model`. */
   id?: string;
+  /**
+   * Milliseconds to wait before answering a WORKER call. Exists for the one
+   * thing a script otherwise cannot exercise: the moment between a leaf
+   * being announced and it answering, where `StepStarted` is the only fact
+   * on offer. The validator always passes immediately regardless — it is
+   * not the call under test.
+   */
+  delayMs?: number;
 };
 
 /** What a scripted validator returns. There is only one. */
@@ -88,6 +96,10 @@ export const scriptedBinding = (
 
     async generate<T>(req: GenerateRequest<T>): Promise<T> {
       if (req.step.role === "validator") return req.schema.parse(PASS);
+
+      if (options.delayMs !== undefined) {
+        await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+      }
 
       if (req.step.attempt === 1 || !chosen.has(req.step.id)) {
         const answers = resolve({ step: req.step, system: req.system, prompt: req.prompt });

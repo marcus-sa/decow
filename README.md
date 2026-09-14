@@ -353,6 +353,18 @@ Keyword restrictions OpenAI has relaxed over time — `maxLength`, `pattern`, `m
 
 `strictJsonSchema` is also asserted **against the wire**: `mastra.endpoint.test.ts` drives a real `Agent` at a real loopback endpoint with the decompose leaf's schema and asserts the captured `json_schema.schema` is byte-identical to what the checker computes, and carries zero defects. The checker cannot pass a schema the binding then sends differently.
 
+### A leaf is visible while it runs
+
+A worker call in flight and a worker call that never happened used to look identical on the run page: status `RUNNING`, a trace two nodes long, and a panel saying **"No model was called: every leaf was a journal hit, or none has run yet."** That was true of a journal hit and false of a frontier-class call a minute into answering — the panel could not tell them apart because nothing reported the second one until it came back.
+
+`StepObserver` now carries a `phase`: `{ phase: "started"; started: StepStarted }` before a worker call, `{ phase: "attempt"; attempt: StepAttempt }` after one settles. `StepStarted` is `{ stepId, version, key, attempt, model }` — everything `StepAttempt` carries **except** what only exists once the call has come back: no decision, no cause, no cost. `runStep` reports it immediately before `model.generate(...)`, because that is the only moment at which "a call is in flight" is news; the validator's own call is not announced separately, since it runs inside an attempt the worker already started.
+
+The server publishes it as `leaf-started` — over the event bus, appended to `run_events` — but does **not** record it onto the run: the row holds what a run decided and what it cost, and a call that has not come back has said neither. What the row gains instead is `running?: StepStarted`, derived off the event log exactly as the trace is: a `leaf-started` with nothing after it that settled — no `leaf-attempt`, no `suspended`, no `terminal` — is a call still out. The server keeps no clock: **how long** a call has been running is the browser's own count, from the moment it first saw this leaf running, not from when the call actually began — there is no `Date.now()` on the server side of this feature either.
+
+The run page shows it live: the leaf's id, its attempt, the model answering, and an elapsed-seconds count that ticks locally while `run.running` stays set. The empty-attempts message is now two messages rather than one — **"No model was called…"** only for a run that has **settled** with nothing in its trail; a run still going, with no leaf announced yet, says **"Running: no leaf has started yet."** instead, so silence before the first call and silence after the last one no longer read the same.
+
+`03-suspension.e2e.ts` is the test that would have caught the original gap: `fixture/boot.ts` gives the browser-authored roadmap's `decompose` call a **held-open** binding — an id and a delay, conditional on `prompt.includes(BROWSER_REQUEST)` so the delivery roadmap's own pre-baked `decompose` call is untouched — and the test asserts the running-leaf line, with that model's id, is visible before the attempt that settles it lands.
+
 ### Opaque and proposal
 
 Two shapes, and the binding's `proposal` option selects between them.
@@ -971,7 +983,7 @@ reach it.
 | `listPipelines` · `getPipeline` | The compositions, and one's run tree — for the input naming what it is a composition of — with the run each step is on. |
 | `runPipeline` · `resumeStep` | Drive the frontier for one input; answer a parked step. |
 | `exportRun` | One run as JSON lines: the run, then its attempts, then its events. |
-| `GET /api/events` | The one route rather than a function: `run-started`, `node-entered`, `node-left`, `leaf-attempt`, `suspended`, `resumed`, `terminal`, `pipeline-step` — every one of them appended to `run_events` before it is published. |
+| `GET /api/events` | The one route rather than a function: `run-started`, `node-entered`, `node-left`, `leaf-started`, `leaf-attempt`, `suspended`, `resumed`, `terminal`, `pipeline-step` — every one of them appended to `run_events` before it is published. |
 
 **The run id is the server's, and the engine's is recorded beside it.** `run`
 mints its own and hands it back when it stops, so a call that must answer with
@@ -1071,10 +1083,11 @@ with `todoRegistrations(dir, { models: scripted })` and nothing more.
 - **The drawing**: every node under the id its author wrote, the `author` loop
   as a box labelled `max 2` with the loop node outside it and its body inside,
   and `human` / `human-review` drawn as suspends — and the only two.
-- **A suspension**: a roadmap run started from the form, parked at
-  `human-review` under `edges-added`, offering exactly `approve` / `revise` /
-  `abandon`; approve carries the SAME run to `accepted` and the trace spans
-  both halves. Recorded to video.
+- **A suspension**: a roadmap run started from the form — its `decompose`
+  call held open long enough to catch the running-leaf line, model id and
+  all, before it settles — parked at `human-review` under `edges-added`,
+  offering exactly `approve` / `revise` / `abandon`; approve carries the SAME
+  run to `accepted` and the trace spans both halves. Recorded to video.
 - **A pipeline**: two pending steps, one button, both `accepted`, and each step's
   link opening its own run page with the step cycle's trace on it — nothing
   below the graph stubbed, so each step writes a real body through the real
@@ -1407,6 +1420,8 @@ The document's code sketches are sketches. Where one of them is underspecified o
 92. **The oracle leaf's `payload.proposal` is gone, and the proposal-shape binding is not.** It was `z.array(z.custom<Effect>()).optional()`, and both halves are outside strict mode. Making it strict-expressible would have been worse than removing it: an effects channel in the output space is one a MODEL can fill, and `write-oracle` preferred it over `files` without `everyPathIsTestSubstrate` or `authoredNamesEveryDeclaredPath` seeing it. So `AuthorOutput` carries `files` and `reason`, the binding's derived effects are dropped by the zod parse, and what is committed is the bodies the turn answered. `claudeCode` itself is unchanged and a step built with a plain `z.object` may still declare the field — which is what `claude-code.test.ts` now does. The scratch copy still keeps the agent's own edits off the real tree, and a byte outside the allowed paths still refuses the whole turn.
 
 93. **A schema failure ends the step, and an attempt says why it did not stand.** `runStep` treated every throw the same and spent the budget on all of them, so an endpoint answering outside the output space burned two attempts and an escalation on the same question. It now ends the step on the first one and returns `validator-exhausted` with that single attempt on the trail; a transport error still keeps its retries. The distinction is typed rather than sniffed — `mastraAgent` throws the new `SchemaFailure` for both of its routes into that state — and `claudeCode`'s "produced no schema-conforming output in N attempts" is deliberately transport, because it is a call reporting it could not get an answer after spending its own budget. `Attempt` and `StepAttempt` gained `cause: schema | transport | validator`, `leaf_attempts` gained the column, and the run page and the suspension dialog print it: `validator-exhausted` was one word for two different situations and a person could not tell them apart. An existing `runs.sqlite` is not migrated — the column is added to the `CREATE TABLE`, and a run directory from before this commit is deleted rather than upgraded.
+
+94. **`StepObserver` gained a `phase`, and a run in flight is visible before it settles.** A frontier-class call a minute into answering and a journal hit looked identical on the run page — status `RUNNING`, a trace two nodes long, "no model was called" — because nothing was reported until the call came back. `runStep` now announces `{ phase: "started", started: StepStarted }` immediately before `model.generate(...)`, the same moment a `StepAttempt` is reported after one; the server publishes it as `leaf-started` and derives `RunRecord.running` off the event log rather than storing it, for the same reason the trace is derived — a `leaf-started` with nothing after it that settled is a call still out. The server reads no clock for it: elapsed time is the browser's own count from when it first saw the leaf running. `03-suspension.e2e.ts` gained the test that would have caught the gap — `fixture/boot.ts` holds the browser-authored roadmap's `decompose` call open, conditional on the request so the delivery roadmap's own pre-baked call is untouched — asserting the running-leaf line, model id included, before its attempt lands. Fixing that conditional was itself a finding: an unconditional delay on `decompose` pushed pre-bake past a pre-existing race with `04-pipeline.e2e.ts`'s own click — the HTTP port accepts real traffic the moment `serve()` returns, well before pre-bake finishes, and Playwright's health check does not wait for it either; normally pre-bake's small remaining work wins that race on its own.
 
 Source is ~31,330 lines: ~18,660 of implementation and ~12,670 of tests. The VCS module is ~7,410 of that; DELIVER is ~3,570; DISTILL is ~3,065; the server is ~3,470, split ~2,535 implementation and ~935 tests; the UI is ~2,700, of which ~700 are the browser tests and their fixture; the roadmap example is ~2,520; the todo composition is ~1,515, split ~840 and ~675; the artifact store is ~415.
 

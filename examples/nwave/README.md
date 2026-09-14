@@ -464,11 +464,18 @@ in inference, to keep the graph honest. The UI shows it per run, and
 whatever the concurrency, because `runStep` attributes each call to the attempt
 that made it rather than draining a queue in call order.
 
+**A leaf in flight is visible before it settles.** `runStep` announces a
+worker call — stepId, attempt, model — the moment before it is made, not only
+once it comes back; the run page shows it live, with an elapsed count the
+browser keeps its own clock for, so a frontier-class call a minute into
+answering no longer reads the same as a journal hit that never called a
+model at all.
+
 ## Running things
 
 ```
 bun test ./examples/nwave       # all four waves, no network, no key
-bun run e2e                     # a browser over a seeded server: the graphs, a suspension, a pipeline
+bun run e2e                     # a browser over a seeded server: the graphs, a running leaf, a suspension, a pipeline
 bun run smoke:oracle            # one oracle, authored by a real subagent in the PROPOSAL shape
 bun run smoke:deliver           # DELIVER against Haiku plus three Claude Code subagents
 bun run todo                    # the four waves, served, against a copy of the todo target

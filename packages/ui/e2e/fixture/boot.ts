@@ -32,7 +32,11 @@ import { openArtifacts } from "@des/core/artifacts";
 import { openWorkflowRuntime } from "@des/core/compile";
 import { memoryJournal, type Journal } from "@des/core/journal";
 import type { ModelBinding } from "@des/core/step";
-import { scriptedBinding, type ScriptedAnswer } from "@des/core/harness/scripted-binding";
+import {
+  scriptedBinding,
+  type ScriptedAnswer,
+  type ScriptedCall,
+} from "@des/core/harness/scripted-binding";
 import { openVcs } from "@des/core/vcs";
 import {
   getPipeline,
@@ -218,8 +222,17 @@ const verdictsFor = (roadmap: Roadmap) =>
   roadmap.steps.map((step) => ({ stepId: step.id, verdict: "is-slice", anchor: step.observation }));
 
 /**
- * The five roles, all answered by ONE scripted binding — the whole of what
- * this fixture injects into the composition.
+ * `decompose`'s own call is held open this long before it answers.
+ *
+ * Long enough for `03-suspension.e2e.ts` to see the running leaf on the page
+ * — its model id, before the attempt that settles it — without making every
+ * other scripted call pay for it: nothing else routes through this binding.
+ */
+const DECOMPOSE_DELAY_MS = 1200;
+
+/**
+ * The five roles, answered by scripted bindings over one routing function —
+ * the whole of what this fixture injects into the composition.
  *
  * Which subject a call is about is on the PROMPT, exactly where the model it
  * stands in for would read it: the two roadmaps by their request, the two
@@ -227,7 +240,7 @@ const verdictsFor = (roadmap: Roadmap) =>
  * nothing in `.des/` exists so that it could.
  */
 const scriptedModels = (symbolFor: (stepId: string) => string): Models => {
-  const binding: ModelBinding = scriptedBinding(({ step, prompt }): ScriptedAnswer[] | undefined => {
+  const route = ({ step, prompt }: ScriptedCall): ScriptedAnswer[] | undefined => {
     if (step.id === "roadmap.decompose") {
       const roadmap = prompt.includes(BROWSER_REQUEST) ? BROWSER_ROADMAP : DELIVERY_ROADMAP();
       return [{ decision: "proposed", payload: { roadmap, rationale: "one step per value" } }];
@@ -276,10 +289,33 @@ const scriptedModels = (symbolFor: (stepId: string) => string): Models => {
         },
       },
     ];
-  });
+  };
+
+  const binding: ModelBinding = scriptedBinding(route);
+  // A distinct id, so the run page's running-leaf line has something of its
+  // own to show. The DELAY is held to the browser-authored roadmap alone —
+  // `prompt.includes(BROWSER_REQUEST)` — never to the delivery roadmap's own
+  // `decompose` call, which pre-bake makes before the server is ever
+  // announced ready: the HTTP port accepts real traffic the moment `serve()`
+  // returns, well before pre-bake finishes, and Playwright's health check
+  // does not wait for pre-bake either. Normally pre-bake's small remaining
+  // work still wins that race by the time a person (or `03-suspension`) can
+  // click anything; holding pre-bake's OWN decompose call open for a second
+  // would not — it would let `04-pipeline`'s drive land on the SAME project
+  // files pre-bake's own oracle authoring is still writing.
+  const decomposeUnscripted: ModelBinding = scriptedBinding(route, { id: "fake-decompose" });
+  const decompose: ModelBinding = {
+    id: decomposeUnscripted.id,
+    async generate(req) {
+      if (req.prompt.includes(BROWSER_REQUEST)) {
+        await new Promise((resolve) => setTimeout(resolve, DECOMPOSE_DELAY_MS));
+      }
+      return decomposeUnscripted.generate(req);
+    },
+  };
 
   return {
-    decompose: binding,
+    decompose,
     authorOracle: binding,
     implement: binding,
     other: binding,

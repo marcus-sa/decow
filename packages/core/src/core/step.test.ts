@@ -19,6 +19,7 @@ import {
   type ModelBinding,
   type StepAttempt,
   type StepCall,
+  type StepObserver,
   type StepDef,
   type Verdict,
 } from "./step.ts";
@@ -90,6 +91,16 @@ const def = (models: { worker: ModelBinding; validator: ModelBinding; escalateTo
     maxAttempts: 2,
     escalateTo: models.escalateTo,
   }) satisfies StepDef<Input, Output>;
+
+/**
+ * An observer that only wants the settled attempts. The `started` phase is
+ * the subject of its own tests, further down.
+ */
+const onAttempt =
+  (take: (attempt: StepAttempt) => void): StepObserver =>
+  (observation) => {
+    if (observation.phase === "attempt") take(observation.attempt);
+  };
 
 const PASS: Verdict = { verdict: "pass", violations: [] };
 const out = (decision: "yes" | "no", anchor: string): Output => ({ decision, payload: { anchor } });
@@ -359,7 +370,7 @@ describe("runStep", () => {
         def(models),
         { text: "the quick brown fox" },
         memoryJournal(),
-        (a) => seen.push(a),
+        onAttempt((a) => seen.push(a)),
       );
 
       expect(result.decision).toBe("ok");
@@ -454,8 +465,11 @@ describe("runStep", () => {
       verdicts: [PASS],
       usage: true,
     });
-    await runStep(def(models), { text: "the quick brown fox" }, memoryJournal(), (a) =>
-      attempts.push(a),
+    await runStep(
+      def(models),
+      { text: "the quick brown fox" },
+      memoryJournal(),
+      onAttempt((a) => attempts.push(a)),
     );
 
     // Call 1 is attempt 1's worker; a mechanical check refused it, so attempt 1

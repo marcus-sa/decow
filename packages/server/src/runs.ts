@@ -15,6 +15,8 @@
  *   trace                                 the run's `node-entered` events, in
  *                                         `seq` order, with the iteration
  *                                         counter derived by counting
+ *   running                               its last `leaf-started` with nothing
+ *                                         after it that settled
  *   attempts                              its `leaf_attempts` rows
  *
  * The trace is DERIVED rather than stored, and that is the point of an
@@ -31,11 +33,11 @@
  * resuming a run that parked, including from a different process.
  */
 
-import type { StepAttempt } from "@des/core/step";
+import type { StepAttempt, StepStarted } from "@des/core/step";
 import type { NodeId } from "@des/core/workflow";
 import type { Json } from "./json.ts";
 import type { ResumeOptions } from "./projection.ts";
-import type { RunDatabase } from "./store.ts";
+import type { RunDatabase, StoredEvent } from "./store.ts";
 
 export const RUN_STATUSES = ["running", "suspended", "accepted", "rejected", "failed"] as const;
 export type RunStatus = (typeof RUN_STATUSES)[number];
@@ -64,6 +66,15 @@ export type RunRecord = {
   trace: TraceEntry[];
   /** Every attempt of every leaf, as `runStep` reported it. */
   attempts: StepAttempt[];
+  /**
+   * The leaf this run is in the middle of, if it is in the middle of one.
+   *
+   * DERIVED, like the trace, and for the same reason: it is a function of the
+   * events before it, so a stored copy could disagree with them. A
+   * `leaf-started` with nothing after it that settled — no `leaf-attempt`, no
+   * suspension, no terminal — is a call still out.
+   */
+  running?: StepStarted;
   suspension?: Suspension;
   terminal?: { kind: "accepted" | "rejected"; trail?: Json[] };
   /** The message of the graph bug that ended the run, when one did. */
@@ -109,6 +120,29 @@ const enteredNode = (payload: Json): NodeId | undefined => {
 };
 
 /**
+ * The leaf a run is in the middle of, off its own events.
+ *
+ * A `leaf-started` sets it and the next thing that settles clears it. Nothing
+ * here reads a clock: the server's only order is `seq`, so how LONG a call has
+ * been out is the browser's to count, from when it first saw this leaf running.
+ */
+const runningLeaf = (events: readonly StoredEvent[]): StepStarted | undefined => {
+  let running: StepStarted | undefined;
+  for (const event of events) {
+    if (event.kind === "leaf-started") {
+      running = (event.payload as { started?: StepStarted }).started;
+    } else if (
+      event.kind === "leaf-attempt" ||
+      event.kind === "suspended" ||
+      event.kind === "terminal"
+    ) {
+      running = undefined;
+    }
+  }
+  return running;
+};
+
+/**
  * The trace, read off the run's own `node-entered` events.
  *
  * The iteration counter is derived by counting rather than stored, because it
@@ -129,10 +163,9 @@ const STATUSES = new Set<string>(RUN_STATUSES);
 const statusOf = (raw: string): RunStatus => (STATUSES.has(raw) ? (raw as RunStatus) : "failed");
 
 export const openRuns = (db: RunDatabase): RunStore => {
-  const traceOf = (runId: string): TraceEntry[] =>
+  const traceOf = (events: readonly StoredEvent[]): TraceEntry[] =>
     traceEntries(
-      db.events
-        .of(runId)
+      events
         .filter((event) => event.kind === "node-entered")
         .map((event) => enteredNode(event.payload))
         .filter((node): node is NodeId => node !== undefined),
@@ -148,13 +181,17 @@ export const openRuns = (db: RunDatabase): RunStore => {
     get: (runId) => {
       const stored = db.runs.get(runId);
       if (stored === undefined) return undefined;
+      // One read of the log, two projections off it.
+      const events = db.events.of(runId);
+      const running = runningLeaf(events);
       return {
         runId: stored.runId,
         workflowId: stored.workflowId,
         status: statusOf(stored.status),
         input: stored.input,
-        trace: traceOf(runId),
+        trace: traceOf(events),
         attempts: db.attempts.of(runId),
+        ...(running === undefined ? {} : { running }),
         ...(stored.suspension === undefined
           ? {}
           : { suspension: stored.suspension as unknown as Suspension }),
@@ -169,10 +206,11 @@ export const openRuns = (db: RunDatabase): RunStore => {
     list: () =>
       db.runs.all().map((stored): RunSummary => {
         // A summary counts rather than materialises: a list of a hundred runs
-        // must not read a hundred traces and a hundred attempt sets.
-        const visited = db.events
-          .of(stored.runId)
-          .filter((event) => event.kind === "node-entered").length;
+        // must not read a hundred traces and a hundred attempt sets. The log
+        // is read once either way, so the running leaf comes off the same read.
+        const events = db.events.of(stored.runId);
+        const visited = events.filter((event) => event.kind === "node-entered").length;
+        const running = runningLeaf(events);
         return {
           runId: stored.runId,
           workflowId: stored.workflowId,
@@ -185,6 +223,7 @@ export const openRuns = (db: RunDatabase): RunStore => {
             : { terminal: stored.terminal as unknown as RunRecord["terminal"] }),
           ...(stored.error === undefined ? {} : { error: stored.error }),
           ...(stored.engineRunId === undefined ? {} : { engineRunId: stored.engineRunId }),
+          ...(running === undefined ? {} : { running }),
           visited,
           attempts: db.attempts.countOf(stored.runId),
         };

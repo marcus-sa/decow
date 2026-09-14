@@ -32,7 +32,7 @@ import {
   type Workflow,
 } from "@des/core/workflow";
 import type { RunWatcher, WorkflowRuntime } from "@des/core/compile";
-import type { StepAttempt } from "@des/core/step";
+import type { StepObserver } from "@des/core/step";
 import type { EventBus } from "./events.ts";
 import { asJson } from "./json.ts";
 import { parkedAt, resumeOptionsOf } from "./projection.ts";
@@ -80,13 +80,24 @@ export const openRunner = (options: RunnerOptions): Runner => {
   /** Everything in flight, so a caller can wait for quiet. */
   const inFlight = new Set<Promise<void>>();
 
-  /** The leaf observer for one run: the target's sink first, then ours. */
+  /**
+   * The leaf observer for one run: the target's sink first, then ours.
+   *
+   * A `started` observation is published and NOT recorded on the run: the
+   * row holds what a run decided and what it cost, and a call that has not
+   * come back has said neither. What it does have is a place in the event
+   * log, which is what the run's record projects "the leaf it is on" out of.
+   */
   const observerFor =
-    (registration: AnyWorkflowRegistration, runId: string) =>
-    (attempt: StepAttempt): void => {
-      registration.observe?.(attempt);
-      runs.record(runId, attempt);
-      events.emit({ type: "leaf-attempt", runId, attempt });
+    (registration: AnyWorkflowRegistration, runId: string): StepObserver =>
+    (observation): void => {
+      registration.observe?.(observation);
+      if (observation.phase === "started") {
+        events.emit({ type: "leaf-started", runId, started: observation.started });
+        return;
+      }
+      runs.record(runId, observation.attempt);
+      events.emit({ type: "leaf-attempt", runId, attempt: observation.attempt });
     };
 
   /**

@@ -10,7 +10,7 @@ nothing depends back.
 | Subpath | What it is |
 |---|---|
 | `@des/core/workflow` | The contract: `Node`, `Workflow`, `Terminal`, the four constructors (`branch`, `suspend`, `loop`, `leaf`), `run` and `resume`. |
-| `@des/core/step` | `StepDef` with its mandatory validator, `runStep` and its six guardrails, `ModelBinding`, the attempt observer. |
+| `@des/core/step` | `StepDef` with its mandatory validator, `runStep` and its six guardrails, `ModelBinding`, the phased observer (`started` before a worker call, `attempt` after one settles). |
 | `@des/core/strict-schema` | Whether a schema is one a strict structured-output endpoint can answer, and the refusal `stepOutput` and `stepDef` make from it. |
 | `@des/core/effects` | The `Effect` / `EffectResult` unions, the in-memory executor, the oracle measurement and the command result. |
 | `@des/core/commands` | The consumer's `Commands` contract, and the one process runner behind every command the framework runs. |
@@ -21,7 +21,7 @@ nothing depends back.
 | `@des/core/artifacts` | Typed rows on `bun:sqlite`: one version column, one append-only event log, one time-travel read. |
 | `@des/core/vcs` | The agent-native VCS: symbol inventory, identity registry, leases, the write path and its verification gate. |
 | `@des/core/harness` | `inspectGraph`, `enumeratePaths`, `scriptedExecutor`, and the trace matchers. |
-| `@des/core/harness/scripted-binding` | The ONE way a test stubs a leaf: a `ModelBinding` that answers from a script. |
+| `@des/core/harness/scripted-binding` | The ONE way a test stubs a leaf: a `ModelBinding` that answers from a script, optionally held open for a fixed `delayMs`. |
 | `@des/core/harness/no-replay` | A journal that answers nothing and keeps nothing, for a walk that must not replay. |
 | `@des/core/bindings/mastra` | One model call, through a Mastra Agent at temperature 0, against a router id or an OpenAI-compatible endpoint. |
 | `@des/core/bindings/claude-code` | A Claude Code subagent, in the opaque or the proposal shape. |
@@ -74,6 +74,23 @@ Keyword restrictions OpenAI has relaxed over time (`maxLength`, `pattern`,
 `minItems`, …) are **not** checked: nothing available offline says which of
 them a strict endpoint rejects today, and guessing would refuse
 `z.string().max(600)`.
+
+## A leaf is visible while it runs
+
+`StepObserver` is handed a `StepObservation`, not a bare `StepAttempt`:
+`{ phase: "started", started: StepStarted }` immediately before a worker call,
+`{ phase: "attempt", attempt: StepAttempt }` after one settles. `StepStarted`
+is `{ stepId, version, key, attempt, model }` — everything `StepAttempt`
+carries except what only exists once the call has come back: no decision, no
+cause, no cost. The validator's own call inside a standing attempt is not
+announced separately.
+
+A `started` observation is reported but never persisted the way an attempt
+is: what happened is a fact about the trail, what is HAPPENING is a fact
+about the process, and the server derives it off the same event log the
+trace comes off rather than storing it beside the run. See the root
+README's [A leaf is visible while it runs](../../README.md#a-leaf-is-visible-while-it-runs)
+for how it reaches the run page.
 
 ## A model is a router id or an OpenAI-compatible endpoint
 

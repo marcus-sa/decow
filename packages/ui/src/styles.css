@@ -293,6 +293,13 @@ button:disabled {
   border-color: var(--red);
 }
 
+/* A call that has not come back yet. No decision, no cause — it is not an
+   Attempt at all, only a StepStarted — so it gets its own border rather than
+   borrowing "refused"'s. */
+.attempt.running {
+  border-color: var(--accent);
+}
+
 /* Why an attempt did not stand. `schema` is the one that ENDED the step. */
 .cause {
   font-variant: small-caps;

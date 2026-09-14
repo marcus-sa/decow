@@ -22,6 +22,7 @@ const TYPES = [
   "run-started",
   "node-entered",
   "node-left",
+  "leaf-started",
   "leaf-attempt",
   "suspended",
   "resumed",

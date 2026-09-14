@@ -40,6 +40,33 @@ function RunPage(): React.ReactElement {
     [run.runId, router],
   );
 
+  // A running leaf, identified. The server carries no clock — see `runs.ts`
+  // — so "how long" is the browser's own count, from the moment IT first saw
+  // this particular call running, not from when the call actually began.
+  const runningKey =
+    run.running === undefined
+      ? undefined
+      : `${run.running.stepId}@${run.running.version}:${run.running.key}:${run.running.attempt}`;
+
+  const [since, setSince] = useState<{ key: string; at: number } | undefined>();
+  useEffect(() => {
+    if (runningKey === undefined) return;
+    setSince((prev) => (prev?.key === runningKey ? prev : { key: runningKey, at: Date.now() }));
+  }, [runningKey]);
+
+  // Ticks once a second so the elapsed count moves while nothing else has.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (runningKey === undefined) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [runningKey]);
+
+  const elapsedSeconds =
+    runningKey !== undefined && since?.key === runningKey
+      ? Math.max(0, Math.floor((now - since.at) / 1000))
+      : 0;
+
   const states = useMemo((): Record<string, NodeState> => {
     const painted: Record<string, NodeState> = {};
     for (const entry of run.trace) painted[entry.node] = "visited";
@@ -101,6 +128,19 @@ function RunPage(): React.ReactElement {
 
         <h2>Leaf attempts</h2>
         <div className="attempts">
+          {run.running === undefined ? null : (
+            // The call this run is in the middle of. It has no decision, no
+            // cause, no violations yet — it has not come back — so it is
+            // rendered from `StepStarted` rather than as an `Attempt`.
+            <div className="attempt running" data-testid="running-leaf">
+              <div>
+                <code>{run.running.stepId}</code> · attempt {run.running.attempt} · running
+              </div>
+              <div className="meta">
+                {run.running.model} · {elapsedSeconds}s
+              </div>
+            </div>
+          )}
           {run.attempts.map((attempt, i) => (
             <div key={i} className={`attempt ${attempt.accepted ? "" : "refused"}`}>
               <div>
@@ -137,9 +177,14 @@ function RunPage(): React.ReactElement {
               {attempt.error === undefined ? null : <div className="error">{attempt.error}</div>}
             </div>
           ))}
-          {run.attempts.length === 0 ? (
+          {run.attempts.length === 0 && run.running === undefined ? (
             <p className="meta">
-              No model was called: every leaf was a journal hit, or none has run yet.
+              {run.status === "running"
+                ? // The run is going; it just has not announced a leaf yet —
+                  // distinct from a settled run that never called a model at
+                  // all, so this does not read as "nothing will happen".
+                  "Running: no leaf has started yet."
+                : "No model was called: every leaf was a journal hit, or none has run yet."}
             </p>
           ) : null}
         </div>

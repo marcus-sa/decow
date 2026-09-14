@@ -296,8 +296,46 @@ export type StepAttempt = {
   validatorTokens?: Tokens;
 };
 
-/** Where attempts are reported. Optional; the framework never reads one back. */
-export type StepObserver = (attempt: StepAttempt) => void;
+/**
+ * A worker call that is ABOUT to be made.
+ *
+ * The attempt record answers "what did this cost and what did it decide",
+ * which it can only do once the call has come back. Nothing answered "what is
+ * happening right now", so a run whose frontier leaf was a minute into a
+ * frontier-class call looked identical to one that had not started: status
+ * `RUNNING`, a trace two nodes long, and a panel saying no model was called.
+ * This is that missing fact, and it is reported before the call rather than
+ * after it because that is the only moment at which it is news.
+ */
+export type StepStarted = {
+  stepId: string;
+  version: number;
+  /** The journal key this call is being made under. */
+  key: string;
+  /** 1-based. An escalation is the last worker attempt. */
+  attempt: number;
+  /** The binding about to be called. */
+  model: string;
+};
+
+/**
+ * What an observer is told, and when.
+ *
+ * One callback with a phase rather than two callbacks, because every consumer
+ * of it — the runner, the registration's own sink, the no-op the projection
+ * builds — passes it straight through, and a pair would make each of them
+ * carry two things where it carries one.
+ *
+ * `started` is the VALIDATOR's call too? No: only the worker's. A validator
+ * runs inside an attempt the worker already started, so announcing it again
+ * would report two beginnings for one event.
+ */
+export type StepObservation =
+  | { phase: "started"; started: StepStarted }
+  | { phase: "attempt"; attempt: StepAttempt };
+
+/** Where observations are reported. Optional; the framework never reads one back. */
+export type StepObserver = (observation: StepObservation) => void;
 
 const VALIDATOR_SYSTEM =
   "You are an adversarial reviewer. Your job is to REFUTE the output against the requirements. " +
@@ -349,7 +387,14 @@ export async function runStep<I, O>(
 
   /** One attempt, reported. `attempt` is `trail.length + 1` at the call site. */
   const report = (attempt: Omit<StepAttempt, "stepId" | "version" | "key">): void =>
-    observe?.({ stepId: def.id, version: def.version, key, ...attempt });
+    observe?.({ phase: "attempt", attempt: { stepId: def.id, version: def.version, key, ...attempt } });
+
+  /** One worker call, announced before it is made. */
+  const announce = (attempt: number, model: string): void =>
+    observe?.({
+      phase: "started",
+      started: { stepId: def.id, version: def.version, key, attempt, model },
+    });
 
   for (const model of models) {
     const feedback = trail.at(-1)?.violations ?? [];
@@ -363,6 +408,8 @@ export async function runStep<I, O>(
     let validatorTokens: Tokens | undefined;
 
     let output: O;
+    // Before the call, because that is the only moment at which it is news.
+    announce(attempt, model.id);
     try {
       // guardrail 3: the output space is the schema
       output = await model.generate({

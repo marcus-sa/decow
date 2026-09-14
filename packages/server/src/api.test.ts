@@ -228,6 +228,9 @@ describe("the graphs, and one run of one", () => {
       "leaf-attempt",
       "run-started",
       "node-entered",
+      // The call is announced BEFORE it is made, so the export carries the
+      // beginning of the leaf as well as what it settled at.
+      "leaf-started",
       "leaf-attempt",
       "node-left",
       "node-entered",

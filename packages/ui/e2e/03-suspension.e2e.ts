@@ -30,6 +30,14 @@ test("a roadmap run parks at human-review, and approve carries it to accepted", 
 
   await page.waitForURL(/\/runs\//);
 
+  // `decompose`'s scripted call is held open — `fixture/boot.ts` gives it a
+  // delay — so the leaf that is about to be announced can be caught running
+  // rather than already settled: the model id shows before its attempt does.
+  const running = page.locator('[data-testid="running-leaf"]');
+  await expect(running).toBeVisible();
+  await expect(running).toContainText("roadmap.decompose");
+  await expect(running).toContainText("fake-decompose");
+
   // It parks, and the dialog says why.
   const dialog = page.locator('[data-testid="suspension"]');
   await expect(dialog).toBeVisible();

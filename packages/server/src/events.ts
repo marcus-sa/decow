@@ -18,7 +18,7 @@
  * removing the endpoint changes no trajectory.
  */
 
-import type { StepAttempt } from "@des/core/step";
+import type { StepAttempt, StepStarted } from "@des/core/step";
 import type { StepStatus } from "@des/core/scheduler";
 import type { NodeId } from "@des/core/workflow";
 import { asJson, type Json } from "./json.ts";
@@ -29,6 +29,12 @@ export type ServerEvent =
   | { type: "run-started"; runId: string; workflowId: string }
   | { type: "node-entered"; runId: string; node: NodeId; iteration: number }
   | { type: "node-left"; runId: string; node: NodeId }
+  /**
+   * A worker call is about to be made. Published BEFORE it, because that is
+   * the only moment at which it is news: `leaf-attempt` cannot arrive until
+   * the call comes back, and a frontier-class call is minutes of silence.
+   */
+  | { type: "leaf-started"; runId: string; started: StepStarted }
   | { type: "leaf-attempt"; runId: string; attempt: StepAttempt }
   | { type: "suspended"; runId: string; suspension: Suspension }
   | { type: "resumed"; runId: string; answer: unknown }
@@ -55,11 +61,12 @@ export type ServerEvent =
       input?: Json;
     };
 
-/** The eight kinds, as one closed list. The table stores every one of them. */
+/** The nine kinds, as one closed list. The table stores every one of them. */
 export const EVENT_KINDS = [
   "run-started",
   "node-entered",
   "node-left",
+  "leaf-started",
   "leaf-attempt",
   "suspended",
   "resumed",

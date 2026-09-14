@@ -11,7 +11,13 @@
 import { describe, expect, test } from "bun:test";
 import { z } from "zod";
 import { memoryJournal } from "../core/journal.ts";
-import { runStep, stepOutput, type StepAttempt, type StepDef } from "../core/step.ts";
+import {
+  runStep,
+  stepOutput,
+  type StepAttempt,
+  type StepDef,
+  type StepObservation,
+} from "../core/step.ts";
 import type { Requirement } from "../core/requirement.ts";
 import { noReplayJournal } from "./no-replay.ts";
 import { says, scriptedBinding, throws } from "./scripted-binding.ts";
@@ -47,7 +53,9 @@ const def = (model: ReturnType<typeof scriptedBinding>): StepDef<Input, Output> 
 
 const fire = async (model: ReturnType<typeof scriptedBinding>, text = "the quick brown fox") => {
   const attempts: StepAttempt[] = [];
-  const result = await runStep(def(model), { text }, noReplayJournal(), (a) => attempts.push(a));
+  const result = await runStep(def(model), { text }, noReplayJournal(), (o) => {
+    if (o.phase === "attempt") attempts.push(o.attempt);
+  });
   return { result, attempts };
 };
 
@@ -142,8 +150,11 @@ describe("scriptedBinding", () => {
     const journal = memoryJournal();
     const calls: StepAttempt[] = [];
 
-    await runStep(def(binding), { text: "the quick brown fox" }, journal, (a) => calls.push(a));
-    await runStep(def(binding), { text: "the quick brown fox" }, journal, (a) => calls.push(a));
+    const collect = (o: StepObservation): void => {
+      if (o.phase === "attempt") calls.push(o.attempt);
+    };
+    await runStep(def(binding), { text: "the quick brown fox" }, journal, collect);
+    await runStep(def(binding), { text: "the quick brown fox" }, journal, collect);
 
     expect(calls).toHaveLength(1);
   });
