@@ -26,14 +26,14 @@
 import { z } from "zod";
 import { verbatim } from "@des/core/checks/verbatim";
 import type { Requirement } from "@des/core/requirement";
-import { stepOutput, type ModelBinding, type StepDef } from "@des/core/step";
+import { stepDef, stepOutput, type ModelBinding, type StepDef } from "@des/core/step";
 import {
   describeDefect,
   firstDefectOfKind,
   MINIMUM_OBSERVATION_CHARACTERS,
   type ShapeDefect,
 } from "./shape.ts";
-import { Roadmap, stepById, type RoadmapStep } from "./schema.ts";
+import { ProposedRoadmap, Roadmap, stepById, type RoadmapStep } from "./schema.ts";
 
 /* ------------------------------------------------------------------ leaves */
 
@@ -75,8 +75,14 @@ export const DecomposeInput = z.object({
 });
 export type DecomposeInput = z.infer<typeof DecomposeInput>;
 
+/**
+ * A PROPOSAL, not a roadmap. `ProposedRoadmap` carries the five fields ROADMAP
+ * owns and has nowhere to put DISTILL's three, so the wave boundary is the
+ * output space rather than a rule the decomposer is held to. See
+ * `./schema.ts`.
+ */
 export const DecomposeOutput = stepOutput(DECOMPOSE_OUTCOMES, {
-  roadmap: Roadmap,
+  roadmap: ProposedRoadmap,
   rationale: z.string().max(600),
 });
 export type DecomposeOutput = z.infer<typeof DecomposeOutput>;
@@ -127,36 +133,6 @@ export const observationsSayEnough = shapeRule(
     "what will be observably true. \"It works\" is not an observation; it is a hope with a full stop.",
   "observation-too-short",
 );
-
-/**
- * The wave boundary, as a rule the decomposer is held to.
- *
- * Deciding what a value must be OBSERVED to do is DISTILL's act. A decomposer
- * that filled in obligations, an oracle or a support list would be answering a
- * question nobody asked it, and the answer would be persisted as though a
- * wave had produced it.
- */
-export const acceptanceIsDistills = (decisions: readonly string[]): Requirement<DecomposeCtx> => ({
-  id: "roadmap.acceptance-facts-are-distills",
-  sourceId: "des.distill.acceptance-facts",
-  text:
-    "Leave `acceptance`, `oracle` and `supports` empty on every step. What a value must be " +
-    "observed to do, which oracle measures it, and what that oracle depends on are DISTILL's to " +
-    "decide. Propose the decomposition, not its acceptance.",
-  decisions,
-  check: ({ output }) => {
-    if (output.decision !== "proposed") return null;
-    const filled = output.payload.roadmap.steps.find(
-      (step) => step.acceptance.length > 0 || step.supports.length > 0 || step.oracle !== undefined,
-    );
-    return filled === undefined
-      ? null
-      : {
-          requirementId: "roadmap.acceptance-facts-are-distills",
-          evidence: `step ${filled.id} declares acceptance facts a decomposition does not decide`,
-        };
-  },
-});
 
 export const stepIdsAreUnique = shapeRule(
   "roadmap.step-ids-are-unique",
@@ -317,10 +293,8 @@ const DECOMPOSE_SYSTEM =
   "Every step names an authority — a locator into the design source it implements — states an " +
   `observation of at least ${MINIMUM_OBSERVATION_CHARACTERS} characters saying what will be ` +
   "observably true when it is done, lists the steps it depends on, and predicts the symbols it " +
-  "will write. Step ids are unique. Leave `acceptance`, `oracle` and `supports` EMPTY: what a " +
-  "value must be observed to do is decided in a later wave, not here. If the design source does " +
-  "not support a decomposition, report cannot-decompose with an empty step list; do not invent " +
-  "an authority.";
+  "will write. Step ids are unique. If the design source does not support a decomposition, " +
+  "report cannot-decompose with an empty step list; do not invent an authority.";
 
 const SLICES_SYSTEM =
   "You judge, for every step of one roadmap, whether it is a production-drivable vertical slice " +
@@ -385,7 +359,7 @@ export type RoadmapDefs = {
 };
 
 export const roadmapDefs = (models: RoadmapModels): RoadmapDefs => ({
-  decompose: {
+  decompose: stepDef({
     id: leafStepId("decompose"),
     version: 1,
     input: DecomposeInput,
@@ -393,7 +367,6 @@ export const roadmapDefs = (models: RoadmapModels): RoadmapDefs => ({
     requirements: [
       everyStepNamesAnAuthority,
       observationsSayEnough,
-      acceptanceIsDistills,
       stepIdsAreUnique,
       slicesAreProductionDrivable,
       cannotDecomposeIsAnHonestAnswer,
@@ -406,9 +379,9 @@ export const roadmapDefs = (models: RoadmapModels): RoadmapDefs => ({
     validator: { model: models.validator },
     maxAttempts: 2,
     ...(models.escalateTo === undefined ? {} : { escalateTo: models.escalateTo }),
-  },
+  }),
 
-  "validate-slices": {
+  "validate-slices": stepDef({
     id: leafStepId("validate-slices"),
     version: 1,
     input: SlicesInput,
@@ -423,5 +396,5 @@ export const roadmapDefs = (models: RoadmapModels): RoadmapDefs => ({
     validator: { model: models.validator },
     maxAttempts: 2,
     ...(models.escalateTo === undefined ? {} : { escalateTo: models.escalateTo }),
-  },
+  }),
 });

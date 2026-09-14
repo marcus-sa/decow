@@ -7,6 +7,7 @@
   "exports": {
     "./workflow": "./src/core/workflow.ts",
     "./step": "./src/core/step.ts",
+    "./strict-schema": "./src/core/strict-schema.ts",
     "./effects": "./src/core/effects.ts",
     "./commands": "./src/core/commands.ts",
     "./journal": "./src/core/journal.ts",

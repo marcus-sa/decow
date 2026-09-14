@@ -315,6 +315,32 @@ rather than order-based.
 
 **Structured output is that `response_format` field**, not a tool call and not a prompt-engineered instruction — so an endpoint that ignores `response_format` will answer with something the step's schema rejects. Two caveats follow, and both are the reason a local model is worth trying rather than a reason not to. **Structured output depends on the endpoint honouring the schema.** Every leaf asks for one object against a zod schema and the step re-parses the answer with that schema, so an endpoint that returns prose, or an object of a different shape, fails the parse — and that failure is visible: `runStep` records it in the trail and the leaf exhausts, so the run parks as `validator-exhausted` with the parse error in it rather than proceeding on a wrong answer. **Token usage may be absent**, because not every OpenAI-compatible server reports it; the attempt then records no counts at all rather than zeros, since "nobody said" and "it cost nothing" are different claims.
 
+### A schema is valid for strict structured output, or it is refused
+
+`strict: true` is not "the schema, but enforced". It is a **narrower schema language**, and a schema outside it is not rejected as a schema: the provider falls back to unconstrained JSON and answers with whatever it felt like. The failure then surfaces at the step's own zod re-parse, three layers from its cause, and reads as a bad model.
+
+So the defects are named where the schema is. [`packages/core/src/core/strict-schema.ts`](./packages/core/src/core/strict-schema.ts) converts a zod schema exactly as the wire does — zod's own draft-7 conversion at Mastra's target, plus the object closure Mastra applies before it goes out — and walks the result. `stepOutput` refuses a schema with defects and names them; `stepDef` catches the ones `stepOutput` did not build, which is what the deliver leaves need because they pick one of four shapes at run time and cast. A leaf whose output could not be asked for strictly **fails at import**, not in a run.
+
+The rules checked, and where each comes from:
+
+| Defect | Rule |
+|---|---|
+| `root-is-not-an-object` | strict mode's root must be an object |
+| `optional-property` | every key in `properties` must be in `required`. Absence is `z.string().nullable()` — a nullable union — never `.optional()` |
+| `open-object` | every object must carry `additionalProperties: false` |
+| `object-without-properties` | an object that is closed and declares no properties can only ever be `{}`; a `z.record(...)` becomes exactly that |
+| `untyped` | a subschema naming no type, enum, union or reference constrains nothing |
+| `unrepresentable` | zod itself refuses to convert it. `z.custom()` is the one that happens here |
+
+Keyword restrictions OpenAI has relaxed over time — `maxLength`, `pattern`, `minItems` and the rest — are **not** checked. Nothing available offline says which of them a strict endpoint rejects today, and a checker that guessed would refuse `z.string().max(600)`, which every `rationale` in this repository uses.
+
+**This is the test that would have caught it.** [`examples/nwave/strict-schema.test.ts`](./examples/nwave/strict-schema.test.ts) walks every leaf of all four graphs and asserts zero defects. It found two, and neither was visible from a test that scripted its bindings — a scripted binding parses with zod and never converts:
+
+- **`roadmap.decompose`.** `RoadmapStep.oracle` was `z.string().optional()`, so the strict schema declared a property it did not require. The first real run against a live endpoint came back a bare array of steps with invented field names (`dependsOn`, `acceptance: ""`) and Mastra refused it with `STRUCTURED_OUTPUT_SCHEMA_VALIDATION_FAILED: expected object, received array`. Fixed by [splitting the schema](#a-decomposition-decides-five-fields): `DecomposeOutput` carries a `ProposedRoadmap` with only the five fields ROADMAP owns.
+- **`distill.author-oracle`.** `proposal: z.array(z.custom<Effect>()).optional()` — a field a *binding* injects. `z.custom` has no JSON Schema at all, so the conversion **threw**: no run of that leaf against an endpoint could ever have started, and the todo target binds it to one. Fixed by [removing the field](#opaque-and-proposal).
+
+`strictJsonSchema` is also asserted **against the wire**: `mastra.endpoint.test.ts` drives a real `Agent` at a real loopback endpoint with the decompose leaf's schema and asserts the captured `json_schema.schema` is byte-identical to what the checker computes, and carries zero defects. The checker cannot pass a schema the binding then sends differently.
+
 ### Opaque and proposal
 
 Two shapes, and the binding's `proposal` option selects between them.
@@ -327,7 +353,9 @@ Three properties of the proposal shape are worth stating, because each is a deci
 
 - **A byte outside the allowed paths refuses the WHOLE turn**, before any effect is emitted. Not "most of what it did": a turn that wrote where it may not proposes nothing, and the refusal is what the next attempt is told.
 - **A deletion is refused rather than dropped.** `Effect` has no way to remove a file, so a turn that deleted one proposed something the framework cannot commit, and saying so beats committing the rest.
-- **The effects land on `payload.proposal`.** `stepOutput` fixes the output shape at `{ decision, payload }`, which makes that the one unambiguous place for them; the agent never produces the field and the binding always overwrites it. A step that wants a proposal declares it optional, which is also what keeps the JSON Schema handed to the SDK satisfiable.
+- **The effects land on `payload.proposal`.** `stepOutput` fixes the output shape at `{ decision, payload }`, which makes that the one unambiguous place for them; the agent never produces the field and the binding always overwrites it.
+
+**A step bound to a strict structured-output endpoint cannot declare that field**, and `distill.author-oracle` no longer does. Both halves of `z.array(z.custom<Effect>()).optional()` are outside strict mode: `.optional()` is not expressible, and `z.custom` has no JSON Schema at all. Making it strict-expressible instead would have been worse — an effects channel in the output space is an effects channel a *model* can fill, and `write-oracle` preferred it over `files` without either of the leaf's mechanical checks seeing it. A binding-injected field is the binding speaking, and a strict schema has no room for a field the model must never fill. So the oracle leaf's `AuthorOutput` carries `files` and `reason`, the proposal shape's derived effects are dropped by the zod parse, and what gets committed is the bodies the turn **answered** — the ones `everyPathIsTestSubstrate` and `authoredNamesEveryDeclaredPath` checked. The scratch copy still earns its keep: it is what keeps the agent's own edits off the real tree, and a byte written outside the allowed paths still refuses the whole turn. `claudeCode` itself is unchanged, and a step built with a plain `z.object` rather than `stepOutput` may still declare the field.
 
 `bun run smoke:oracle` runs it against a real acceptance designer.
 
@@ -651,25 +679,33 @@ So this graph is fixed and hand-written like the other two, and what it produces
 Modelled on nWave's own `handover.json`, with our naming. A `StoredHandover` there is a request plus an ordered tuple of `HandoverValue`s; these are the same facts, as zod schemas, in `examples/nwave/roadmap/schema.ts`:
 
 ```ts
-RoadmapStep = {
+ProposedStep = {                       // what `decompose` returns
   id: string;                          // stable, unique within the roadmap
   observation: string;                 // what will be observably true when it is done
   dependencies: string[];              // step ids that must be accepted first
   authority: string;                   // a locator into the design source it implements
   predictedTouches: string[];          // symbol ids or paths it expects to write
-
-  // DISTILL's to fill. ROADMAP leaves all three empty.
+}
+RoadmapStep = ProposedStep & {         // what the table holds
+  // DISTILL's to fill. A proposal has no field for any of them.
   acceptance: AcceptanceObligation[];
   oracle?: string;                     // `path::selector`, exactly one per value
   supports: string[];                  // whole-file test substrate the oracle needs
 }
 AcceptanceObligation = { id: string; stimulus: string; expected: string }
+ProposedRoadmap = { request: string; steps: ProposedStep[] }
 Roadmap = { request: string; steps: RoadmapStep[] }
 ```
 
 `predictedTouches` is the one field beyond the handover's own, and it is there because the disjointness check needs an axis to measure. `steps` is deliberately allowed to be empty by the schema: that is what `decompose` returns when it answers `cannot-decompose`, and an empty roadmap is refused by `validate-shape` as a *named defect* rather than by the parser, so the refusal reaches the graph as data.
 
-**The last three fields are the wave boundary.** What a value must be observed to do is [DISTILL's act](#distill-is-two-graphs), not the decomposer's, and `acceptanceIsDistills` is a mechanical check on `decompose`'s own output that refuses a proposal which filled them in.
+#### A decomposition decides five fields
+
+**The split between the two step types is the wave boundary.** What a value must be observed to do is [DISTILL's act](#distill-is-two-graphs), not the decomposer's; a decomposer that answered it would have its answer persisted as though a wave had produced it.
+
+That used to be a *rule* — `roadmap.acceptance-facts-are-distills`, a mechanical check on `decompose`'s own output that refused a proposal which filled the three fields in. It is a **type** now. `DecomposeOutput` carries a `ProposedRoadmap`, which has nowhere to put them, so the check has nothing left to catch and is gone. A rule enforced by a shape needs no rule.
+
+The change came out of [the strict-schema check](#a-schema-is-valid-for-strict-structured-output-or-it-is-refused), and it is the same defect read two ways: `RoadmapStep.oracle` was `z.string().optional()` so that DISTILL could fill it later, which made the decompose leaf's strict schema declare a property it did not require — the exact thing a strict endpoint refuses. `RoadmapStep` keeps the optional field, because a **table row** is not a model output and nothing converts one to JSON Schema. `adoptProposal` is where a proposal becomes a roadmap with DISTILL's three fields empty, and it is the only place they start.
 
 Declaration order is significant. It is the total order the disjointness resolution uses to decide which way a new dependency edge points, and nWave's handover relies on the same order for the same reason.
 
@@ -1351,6 +1387,12 @@ The document's code sketches are sketches. Where one of them is underspecified o
 88. **The edge labels are dagre's to place, over a multigraph.** The layout graph was simple, so two edges between one pair became one; and a label went at its edge's midpoint, which for edges sharing an endpoint is the same coordinate. Both were visible in the committed screenshots as `exhausted`, `cannot-decompose` and `invalid` painted on top of one another. `labelSize` estimates the label box rather than measuring it, because this module has no DOM — it rounds up, since too wide costs a little space and too narrow costs a collision.
 
 89. **`mastraAgent` gained an injected `agent` factory, and the credential guard moved into the binding.** The binding constructed its `Agent` itself, so a test of it could not avoid constructing a real one — the same gap `claudeCode`'s injected `query` closed, and closed the same way: `agent?: AgentFactory` defaults to a real Mastra `Agent`, and `mastra.test.ts` supplies a factory that keeps the config it was handed and answers from a fixture. The guard moved because the rule it now applies is about the MODEL CONFIG — an endpoint carrying its own `apiKey` needs nothing — and the model config is the binding's. `targets/todo/.des/models.ts` lost its `credentialed` wrapper and the hardcoded `ANTHROPIC_API_KEY` with it; deviation 74's account of where a credential is refused is unchanged, and now literally true of the binding.
+
+90. **A leaf's output schema is refused at the definition when a strict endpoint could not answer it.** `strict: true` is a narrower schema language, and a provider handed a malformed strict schema does not refuse it — it stops constraining the answer. `stepOutput` and the new `stepDef` therefore refuse one and name the defects, so the failure is at import rather than three layers downstream at the zod re-parse. New surface beyond what was asked for — `packages/core/src/core/strict-schema.ts`, `stepDef`, and a sweep over every leaf of all four graphs — named here for that reason. Two schemas were invalid and both were shipped: `roadmap.decompose` carried `RoadmapStep.oracle` as `z.string().optional()` and produced the failure that started this; `distill.author-oracle` carried `z.custom<Effect>()`, which has no JSON Schema at all, so its conversion threw and no run of that leaf against an endpoint could ever have started. Keyword restrictions OpenAI has relaxed over time are deliberately not checked — nothing offline says which a strict endpoint rejects today, and guessing would refuse `z.string().max(600)`.
+
+91. **`DecomposeOutput` carries a `ProposedRoadmap`, and `roadmap.acceptance-facts-are-distills` is gone with the field it guarded.** The wave boundary — `acceptance`, `oracle` and `supports` are DISTILL's — was a mechanical check on `decompose`'s own output. It is the output SPACE now: a proposal has the five fields ROADMAP owns and no field for any of the three, so there is nothing left to check. `RoadmapStep` keeps `oracle?`, because a table row is not a model output and nothing converts one to JSON Schema; `adoptProposal` is where a proposal becomes a roadmap with DISTILL's fields empty. Deviation 87's note about `pipeline.test.ts` pre-filling them stands, for the shape rather than for the rule.
+
+92. **The oracle leaf's `payload.proposal` is gone, and the proposal-shape binding is not.** It was `z.array(z.custom<Effect>()).optional()`, and both halves are outside strict mode. Making it strict-expressible would have been worse than removing it: an effects channel in the output space is one a MODEL can fill, and `write-oracle` preferred it over `files` without `everyPathIsTestSubstrate` or `authoredNamesEveryDeclaredPath` seeing it. So `AuthorOutput` carries `files` and `reason`, the binding's derived effects are dropped by the zod parse, and what is committed is the bodies the turn answered. `claudeCode` itself is unchanged and a step built with a plain `z.object` may still declare the field — which is what `claude-code.test.ts` now does. The scratch copy still keeps the agent's own edits off the real tree, and a byte outside the allowed paths still refuses the whole turn.
 
 Source is ~31,330 lines: ~18,660 of implementation and ~12,670 of tests. The VCS module is ~7,410 of that; DELIVER is ~3,570; DISTILL is ~3,065; the server is ~3,470, split ~2,535 implementation and ~935 tests; the UI is ~2,700, of which ~700 are the browser tests and their fixture; the roadmap example is ~2,520; the todo composition is ~1,515, split ~840 and ~675; the artifact store is ~415.
 

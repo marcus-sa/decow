@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { z } from "zod";
 import { filterKnown } from "../checks/id-in-set.ts";
 import type { Requirement, Violation } from "./requirement.ts";
+import { refuseUnlessStrict } from "./strict-schema.ts";
 
 /**
  * Which call a binding is being asked to make.
@@ -107,21 +108,40 @@ export const readTokens = (usage: unknown): Tokens => {
 /**
  * The fixed output shape. `decision` is the only field the graph reads;
  * `payload` is free text the graph carries but never branches on.
+ *
+ * REFUSED HERE IF IT COULD NOT BE ASKED FOR. A binding puts this schema to an
+ * endpoint as `response_format: { type: "json_schema", strict: true }`, and a
+ * schema outside strict mode's narrower language is not rejected as a schema:
+ * the provider falls back to unconstrained JSON and answers with whatever it
+ * felt like. So the defects are named at DEFINITION time, where the schema is,
+ * rather than at the first call, three layers from the cause. See
+ * `./strict-schema.ts` for the rules and where each comes from.
  */
 export const stepOutput = <D extends readonly [string, ...string[]], P extends z.ZodRawShape>(
   decision: D,
   payload: P,
-) => z.object({ decision: z.enum(decision), payload: z.object(payload) });
+) =>
+  refuseUnlessStrict(
+    z.object({ decision: z.enum(decision), payload: z.object(payload) }),
+    `a step output over [${decision.join(" | ")}]`,
+  );
 
-export const Verdict = z.object({
-  verdict: z.enum(["pass", "fail"]),
-  violations: z.array(
-    z.object({
-      requirementId: z.string(),
-      evidence: z.string().describe("Verbatim quote from the output that breaks the rule"),
-    }),
-  ),
-});
+/**
+ * The validator's own answer, and it goes to a model exactly as a step's
+ * output does — so it is held to the same rule.
+ */
+export const Verdict = refuseUnlessStrict(
+  z.object({
+    verdict: z.enum(["pass", "fail"]),
+    violations: z.array(
+      z.object({
+        requirementId: z.string(),
+        evidence: z.string().describe("Verbatim quote from the output that breaks the rule"),
+      }),
+    ),
+  }),
+  "the validator's verdict schema",
+);
 export type Verdict = z.infer<typeof Verdict>;
 
 export type StepDef<I, O> = {
@@ -136,6 +156,22 @@ export type StepDef<I, O> = {
   validator: { model: ModelBinding };
   maxAttempts: number;
   escalateTo?: ModelBinding;
+};
+
+/**
+ * A step definition, checked.
+ *
+ * `stepOutput` catches the schemas it built; this catches the rest. A leaf may
+ * assemble its output some other way — `deliver/steps.ts` picks one of four
+ * shapes per leaf and casts the result — and the thing that reaches a model is
+ * `def.output` whatever built it. So every definition goes through here, and a
+ * leaf whose output could not be asked for strictly fails at import.
+ *
+ * Identity at run time. It exists to refuse, not to transform.
+ */
+export const stepDef = <I, O>(def: StepDef<I, O>): StepDef<I, O> => {
+  refuseUnlessStrict(def.output, `${def.id}@${def.version}'s output schema`);
+  return def;
 };
 
 export type Attempt<O> = {

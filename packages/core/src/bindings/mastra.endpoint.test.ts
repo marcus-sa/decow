@@ -31,6 +31,8 @@ import { Agent } from "@mastra/core/agent";
 import { noopLogger } from "@mastra/core/logger";
 import { z } from "zod";
 import { stepOutput } from "../core/step.ts";
+import { jsonSchemaDefects, strictJsonSchema } from "../core/strict-schema.ts";
+import { DecomposeOutput } from "../../../../examples/nwave/roadmap/steps.ts";
 import { mastraAgent, type AgentFactory } from "./mastra.ts";
 
 const Answer = stepOutput(["yes", "no"] as const, { anchor: z.string() });
@@ -211,6 +213,35 @@ describe("an OpenAI-compatible endpoint whose provider Mastra does not know", ()
         },
       },
     });
+  });
+
+  test("a real leaf's schema arrives strict-clean, and is the one this repository computes", async () => {
+    // The toy schema above is too small to say anything: the failure that made
+    // `strict-schema.ts` exist was two levels down a nested array, in the
+    // decompose leaf. So the assertion is made against THAT schema, and
+    // against the body a real `Agent` actually sent rather than against a
+    // conversion this file performed.
+    answer = {
+      object: {
+        decision: "cannot-decompose",
+        payload: { roadmap: { request: "r", steps: [] }, rationale: "no authority for it" },
+      },
+    };
+    await mastraAgent({
+      model: { providerId: "acme-local", modelId: "test-model", url: baseUrl, apiKey: "unused" },
+    }).generate({
+      ...REQ,
+      schema: DecomposeOutput,
+      prompt: "Decompose it.",
+    });
+
+    const sent = (received[0]?.body.response_format as { json_schema?: { schema?: unknown } })
+      ?.json_schema?.schema;
+    // Nothing in it a strict endpoint would refuse.
+    expect(jsonSchemaDefects(sent)).toEqual([]);
+    // And it is byte-for-byte what `strictJsonSchema` says the wire carries,
+    // so the checker cannot pass a schema the binding then sends differently.
+    expect(sent).toEqual(strictJsonSchema(DecomposeOutput));
   });
 
   test("reports what the endpoint said the call cost", async () => {

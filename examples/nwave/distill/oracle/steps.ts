@@ -12,12 +12,25 @@
  * `rejected { by: "contract" }` whatever the turn believed it was allowed
  * (`src/vcs/writes.ts`).
  *
- * `src/bindings/claude-code.ts` is the OTHER way to fill this leaf: in its
- * proposal shape a subagent reads and edits a scratch copy of the run
- * directory, the diff afterwards becomes the effects, and they arrive on
- * `AuthorOutput.proposal` instead of on `files`. `../smoke.ts` fills the leaf
- * that way; the todo target does not. The node reads whichever arrived, so the
- * two shapes reach `write-oracle` with the same meaning.
+ * `src/bindings/claude-code.ts` is the OTHER way to fill this leaf: a subagent
+ * reads and edits a scratch copy of the run directory, and `../smoke.ts` fills
+ * it that way. WHAT IT WROTE IS NOT WHAT GETS COMMITTED, and that is a
+ * consequence of the output schema rather than a choice about agents. The
+ * binding's proposal shape derives effects from the scratch diff and lands
+ * them on `payload.proposal`; this schema declares no such field, so the zod
+ * parse drops them and `write-oracle` writes `files` — the bodies the turn
+ * ANSWERED, which are the ones `everyPathIsTestSubstrate` and
+ * `authoredNamesEveryDeclaredPath` checked.
+ *
+ * The field could not stay. It was `z.custom<Effect>().optional()`, and both
+ * halves of that are refused now: `.optional()` is not expressible in strict
+ * mode, and `z.custom` cannot be converted to JSON Schema at all — so this
+ * leaf's schema THREW on the way to any endpoint, and the todo target binds
+ * this leaf to one. Making it strict-expressible instead would have been
+ * worse: an effects channel in the output space is an effects channel a model
+ * can fill, and `write-oracle` preferred it over `files` without either check
+ * seeing it. A binding-injected field is the binding speaking, and a strict
+ * schema has no room for a field the model must never fill.
  *
  * The decision space is two words, and `cannot-express` is the interesting
  * one: the constructive chain cannot be expressed through the declared public
@@ -40,9 +53,8 @@
  */
 
 import { z } from "zod";
-import type { Effect } from "@des/core/effects";
 import type { Requirement } from "@des/core/requirement";
-import { stepOutput, type ModelBinding, type StepDef } from "@des/core/step";
+import { stepDef, stepOutput, type ModelBinding, type StepDef } from "@des/core/step";
 import { AcceptanceObligation } from "../../roadmap/schema.ts";
 
 export const ORACLE_LEAF_IDS = ["author-oracle"] as const;
@@ -109,12 +121,6 @@ export const AuthorOutput = stepOutput(AUTHOR_OUTCOMES, {
    * why the oracle observes what it observes.
    */
   reason: z.string().max(800),
-  /**
-   * The effects a PROPOSAL-shape binding derived from the turn's own writes,
-   * injected by the binding rather than answered by the model. Absent under a
-   * structured-output binding, which returns the bodies directly.
-   */
-  proposal: z.array(z.custom<Effect>(() => true)).optional(),
 });
 export type AuthorOutput = z.infer<typeof AuthorOutput>;
 
@@ -292,7 +298,7 @@ export type OracleModels = {
 export type OracleDefs = { "author-oracle": StepDef<AuthorInput, AuthorOutput> };
 
 export const oracleDefs = (models: OracleModels): OracleDefs => ({
-  "author-oracle": {
+  "author-oracle": stepDef({
     id: leafStepId("author-oracle"),
     version: 1,
     input: AuthorInput,
@@ -309,5 +315,5 @@ export const oracleDefs = (models: OracleModels): OracleDefs => ({
     validator: { model: models.validator },
     maxAttempts: 2,
     ...(models.escalateTo === undefined ? {} : { escalateTo: models.escalateTo }),
-  },
+  }),
 });

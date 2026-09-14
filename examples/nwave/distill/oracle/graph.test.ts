@@ -303,36 +303,6 @@ describe("the oracle graph", () => {
     expect(done.kind === "terminal" && done.terminal.kind).toBe("rejected");
   });
 
-  test("a proposal-shape binding's effects are preferred over file bodies", async () => {
-    // The two binding shapes reach the same node with the same meaning: a
-    // structured-output turn returns bodies, a proposal turn returns the
-    // effects it derived from its own writes, and `write-oracle` takes
-    // whichever arrived.
-    const asked: Effect[] = [];
-    const proposing = scriptedBinding({
-      [AUTHOR]: [
-        {
-          decision: "authored",
-          payload: {
-            ...AUTHORED,
-            proposal: [{ type: "write-file", path: "test/from-a-proposal.ts", body: "// proposed\n" }],
-          },
-        },
-      ],
-    });
-    await run<State>(
-      oracleGraph(noReplayJournal(), defsFor(proposing)),
-      seed({ value: VALUE, design: DESIGN, testPaths: TEST_PATHS }),
-      async (effects) => {
-        asked.push(...effects);
-        return measuresLike(["red"])(effects);
-      },
-    );
-
-    expect(asked.filter((e) => e.type === "write-file")).toEqual([
-      { type: "write-file", path: "test/from-a-proposal.ts", body: "// proposed\n" },
-    ]);
-  });
 });
 
 describe("the write verdict, as the pure function it is", () => {

@@ -136,13 +136,6 @@ export type State = {
   leaf: { "author-oracle"?: AuthorOutcome };
   /** The files the author proposed. Payload; the graph never branches on them. */
   files: AuthoredFile[];
-  /**
-   * The effects a PROPOSAL-shape binding derived from the turn's own writes.
-   * Payload, and the graph never branches on it either: `write-oracle` prefers
-   * it over `files` when it is there, so the two binding shapes reach the same
-   * node with the same meaning.
-   */
-  proposal?: Effect[];
   /** Why the author could not express it, on `cannot-express`. Payload. */
   reason?: string;
   /** How the writes landed. Cleared when a new turn writes. */
@@ -320,14 +313,18 @@ export const writeFinding = (results: readonly EffectResult[]): string => {
 };
 
 /**
- * The files as effects. One `write-file` per path the author returned — or the
- * proposal a proposal-shape binding derived from the turn's own writes, which
- * arrives as effects rather than as bodies.
+ * The files as effects. One `write-file` per path the author RETURNED, which
+ * is the only thing this node writes.
+ *
+ * A proposal-shape binding also derives effects from the scratch copy it ran
+ * the turn in, and they do not arrive here: `AuthorOutput` declares no field
+ * for them, so the zod parse drops them. That is the schema's decision and it
+ * is deliberate — an effects channel a model could fill would reach the write
+ * path without `everyPathIsTestSubstrate` or `authoredNamesEveryDeclaredPath`
+ * ever seeing it. See `./steps.ts`.
  */
-export const writeEffects = (s: State, proposal: readonly Effect[] | undefined): Effect[] =>
-  proposal !== undefined && proposal.length > 0
-    ? [...proposal]
-    : s.files.map((file): Effect => ({ type: "write-file", path: file.path, body: file.body }));
+export const writeEffects = (s: State): Effect[] =>
+  s.files.map((file): Effect => ({ type: "write-file", path: file.path, body: file.body }));
 
 const absorbLoop = (s: State, exit: LoopExit): State => ({
   ...s,
@@ -356,10 +353,7 @@ export const oracleGraph = (
      * than a failure of the turn.
      *
      * A new turn invalidates the writes and the measurement of the one before
-     * it, which is what the reset in `absorb` is for. `proposal` is carried
-     * out of the payload here rather than re-derived, because a proposal-shape
-     * binding produces effects and a structured-output one produces bodies,
-     * and the node reads whichever arrived.
+     * it, which is what the reset in `absorb` is for.
      */
     "author-oracle": leaf<State, AuthorInput, AuthorOutput>({
       id: "author-oracle",
@@ -377,7 +371,6 @@ export const oracleGraph = (
           writes: undefined,
           measured: undefined,
           files: [],
-          proposal: undefined,
           reason: undefined,
         };
         return r.decision === "ok"
@@ -385,7 +378,6 @@ export const oracleGraph = (
               ...base,
               leaf: { "author-oracle": r.output.decision },
               files: r.output.payload.files,
-              ...(r.output.payload.proposal === undefined ? {} : { proposal: r.output.payload.proposal }),
               reason: r.output.payload.reason,
             }
           : { ...base, leaf: {}, exhausted: "author-oracle" };
@@ -412,7 +404,7 @@ export const oracleGraph = (
       type: "step",
       run: async (s) => ({
         state: { ...s, writes: undefined, measured: undefined },
-        effects: writeEffects(s, s.proposal),
+        effects: writeEffects(s),
       }),
       absorb: (s, results) => {
         const verdict = writeVerdictOf(results);

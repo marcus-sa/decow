@@ -11,6 +11,7 @@ nothing depends back.
 |---|---|
 | `@des/core/workflow` | The contract: `Node`, `Workflow`, `Terminal`, the four constructors (`branch`, `suspend`, `loop`, `leaf`), `run` and `resume`. |
 | `@des/core/step` | `StepDef` with its mandatory validator, `runStep` and its six guardrails, `ModelBinding`, the attempt observer. |
+| `@des/core/strict-schema` | Whether a schema is one a strict structured-output endpoint can answer, and the refusal `stepOutput` and `stepDef` make from it. |
 | `@des/core/effects` | The `Effect` / `EffectResult` unions, the in-memory executor, the oracle measurement and the command result. |
 | `@des/core/commands` | The consumer's `Commands` contract, and the one process runner behind every command the framework runs. |
 | `@des/core/journal` | Keyed by `(step id, version, input hash)`. In memory, or on `bun:sqlite`. |
@@ -25,6 +26,34 @@ nothing depends back.
 | `@des/core/bindings/mastra` | One model call, through a Mastra Agent at temperature 0, against a router id or an OpenAI-compatible endpoint. |
 | `@des/core/bindings/claude-code` | A Claude Code subagent, in the opaque or the proposal shape. |
 | `@des/core/checks/*` | The mechanical checks: `verbatim`, `enum-member`, `id-in-set`. |
+
+## A schema is valid for strict structured output, or it is refused
+
+A binding puts a step's output schema to an endpoint as
+`response_format: { type: "json_schema", strict: true, schema }`. Strict mode is
+a **narrower schema language**, not the same language enforced — and a schema
+outside it is not refused as a schema: the provider stops constraining the
+answer and returns whatever it felt like, which surfaces at the step's own zod
+re-parse three layers from the cause.
+
+So `stepOutput` refuses one, and names every defect: a property not in
+`required` (`.optional()` is what leaves one out — write `.nullable()`), an
+object without `additionalProperties: false`, an object with no properties at
+all, a subschema that constrains nothing, a root that is not an object, and a
+construct zod cannot convert (`z.custom()`). `stepDef` catches the schemas
+`stepOutput` did not build, which is what a leaf picking one of four shapes at
+run time and casting needs. Either way the failure is at **import**, where the
+schema is.
+
+`strictJsonSchema` is the conversion the wire actually carries — zod's draft-7
+conversion at Mastra's target, plus the object closure Mastra applies on the
+way out — and `bindings/mastra.endpoint.test.ts` asserts a real `Agent` sends
+exactly that, for a real leaf's schema, against a real loopback endpoint.
+
+Keyword restrictions OpenAI has relaxed over time (`maxLength`, `pattern`,
+`minItems`, …) are **not** checked: nothing available offline says which of
+them a strict endpoint rejects today, and guessing would refuse
+`z.string().max(600)`.
 
 ## A model is a router id or an OpenAI-compatible endpoint
 

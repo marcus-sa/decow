@@ -220,11 +220,33 @@ describe("claudeCode inside runStep", () => {
  * which is exactly what an agent with `Edit` does. That is the whole seam: the
  * binding never trusts what the turn SAYS it wrote, it reads what is there.
  */
-describe("claudeCode, the proposal shape", () => {
-  const Authored = stepOutput(["authored", "cannot-express"] as const, {
-    reason: z.string(),
-    proposal: z.array(z.custom<Effect>(() => true)).optional(),
+/**
+ * A `{ decision, payload }` output carrying the field the proposal shape
+ * injects. `stepOutput` cannot build this one; see the note in the describe
+ * below.
+ */
+const proposalOutput = <D extends readonly [string, ...string[]]>(decisions: D) =>
+  z.object({
+    decision: z.enum(decisions),
+    payload: z.object({
+      reason: z.string(),
+      proposal: z.array(z.custom<Effect>(() => true)).optional(),
+    }),
   });
+
+describe("claudeCode, the proposal shape", () => {
+  /**
+   * Built by hand rather than by `stepOutput`, and the reason is the whole
+   * boundary between the two bindings. `stepOutput` refuses a schema a STRICT
+   * structured-output endpoint could not answer, and a binding-injected field
+   * is exactly that: `z.custom` has no JSON Schema at all and `.optional()` is
+   * not expressible in strict mode. This binding is the other end — the SDK is
+   * handed `z.toJSONSchema(..., { unrepresentable: "any" })` and the zod
+   * re-parse is the real gate — so a step bound to it may declare a field the
+   * agent never produces and the binding always overwrites. A step bound to
+   * `mastraAgent` may not, which is why `AuthorOutput` no longer does.
+   */
+  const Authored = proposalOutput(["authored", "cannot-express"] as const);
   const AUTHOR_REQ = { step: CALL, system: "Write the oracle.", prompt: "value 01-01", schema: Authored };
 
   /** A source tree with one production file and one existing test. */
@@ -389,10 +411,7 @@ describe("the proposal diff, as the pure function it is", () => {
         step: CALL,
         system: "s",
         prompt: "p",
-        schema: stepOutput(["authored"] as const, {
-          reason: z.string(),
-          proposal: z.array(z.custom<Effect>(() => true)).optional(),
-        }),
+        schema: proposalOutput(["authored"] as const),
       }),
     ).rejects.toThrow(/was emptied or removed/);
     rmSync(root, { recursive: true, force: true });

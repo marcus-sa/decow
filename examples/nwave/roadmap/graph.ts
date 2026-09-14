@@ -89,7 +89,7 @@ import {
   type DisjointnessVerdict,
   type Drift,
 } from "./disjointness.ts";
-import { noSteps, roadmapId, type Roadmap } from "./schema.ts";
+import { adoptProposal, noSteps, roadmapId, type Roadmap } from "./schema.ts";
 import { shapeDefects, shapeVerdict, type ShapeDefect, type ShapeVerdict } from "./shape.ts";
 import {
   DECOMPOSE_OUTCOMES,
@@ -452,7 +452,10 @@ export const roadmapGraph = (
           ? {
               ...base,
               leaf: { decompose: r.output.decision },
-              roadmap: r.output.payload.roadmap,
+              // A proposal carries the five fields ROADMAP owns; the roadmap
+              // the state holds has three more that DISTILL fills. `adopt` is
+              // where they start empty, and it is the only place they do.
+              roadmap: adoptProposal(r.output.payload.roadmap),
             }
           : { ...base, exhausted: "decompose" };
       },

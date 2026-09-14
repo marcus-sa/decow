@@ -61,9 +61,9 @@ import {
   type ReviewAnswer,
   type State,
 } from "./graph.ts";
-import type { Roadmap, RoadmapStep } from "./schema.ts";
+import { adoptProposal, type Roadmap, type RoadmapStep } from "./schema.ts";
 import {
-  acceptanceIsDistills,
+  DecomposeOutput,
   observationsSayEnough,
   roadmapDefs,
   SLICE_VERDICTS,
@@ -440,44 +440,8 @@ describe("decompose's mechanical guardrails", () => {
     output: unknown,
   ) => row(["proposed", "cannot-decompose"]).check?.({ output } as never);
 
-  test("a proposal that fills in acceptance facts is refused at the model boundary", () => {
-    // The wave boundary, mechanical. What a value must be observed to do is
-    // DISTILL's act; a decomposer that answered it would have its answer
-    // persisted as though a wave had produced it.
-    const filled = {
-      decision: "proposed",
-      payload: {
-        roadmap: {
-          ...KNOWN_GOOD,
-          steps: [
-            {
-              ...(stepAt(KNOWN_GOOD, 0)),
-              acceptance: [{ id: "x", stimulus: "do it", expected: "it happened" }],
-            },
-            ...KNOWN_GOOD.steps.slice(1),
-          ],
-        },
-      },
-    };
-    expect(check(acceptanceIsDistills, filled)).toMatchObject({
-      requirementId: "roadmap.acceptance-facts-are-distills",
-    });
-    // An oracle and a support list are the same finding by the same rule.
-    const oracled = {
-      decision: "proposed",
-      payload: {
-        roadmap: {
-          ...KNOWN_GOOD,
-          steps: [{ ...(stepAt(KNOWN_GOOD, 0)), oracle: "test/a.test.ts::x" }, ...KNOWN_GOOD.steps.slice(1)],
-        },
-      },
-    };
-    expect(check(acceptanceIsDistills, oracled)).not.toBeNull();
-  });
-
   test("the known-good proposal passes every guardrail", () => {
     const proposed = { decision: "proposed", payload: { roadmap: KNOWN_GOOD } };
-    expect(check(acceptanceIsDistills, proposed)).toBeNull();
     expect(check(observationsSayEnough, proposed)).toBeNull();
   });
 
@@ -486,8 +450,55 @@ describe("decompose's mechanical guardrails", () => {
       decision: "cannot-decompose",
       payload: { roadmap: { request: REQUEST, steps: [] } },
     };
-    expect(check(acceptanceIsDistills, refused)).toBeNull();
     expect(check(observationsSayEnough, refused)).toBeNull();
+  });
+});
+
+/**
+ * The wave boundary, as the OUTPUT SPACE rather than as a rule.
+ *
+ * What a value must be observed to do is DISTILL's act, and a decomposer that
+ * answered it would have its answer persisted as though a wave had produced
+ * it. That used to be `roadmap.acceptance-facts-are-distills`, a mechanical
+ * check on `decompose`'s own output. `DecomposeOutput` carries a
+ * `ProposedRoadmap` now, which has no field for any of the three — so the rule
+ * has nothing left to catch and the shape is what holds the boundary.
+ */
+describe("what a decomposition may decide", () => {
+  test("a decomposition has nowhere to put acceptance, an oracle or a support", () => {
+    const answered = DecomposeOutput.parse({
+      decision: "proposed",
+      payload: {
+        roadmap: {
+          request: REQUEST,
+          steps: [
+            {
+              ...(stepAt(KNOWN_GOOD, 0)),
+              acceptance: [{ id: "x", stimulus: "do it", expected: "it happened" }],
+              oracle: "test/a.test.ts::x",
+              supports: ["test/support.ts"],
+            },
+          ],
+        },
+        rationale: "one slice",
+      },
+    });
+
+    const step = answered.payload.roadmap.steps[0] as Record<string, unknown>;
+    expect(Object.keys(step).sort()).toEqual([
+      "authority",
+      "dependencies",
+      "id",
+      "observation",
+      "predictedTouches",
+    ]);
+  });
+
+  test("the roadmap a proposal is adopted as starts DISTILL's fields empty", () => {
+    const adopted = adoptProposal({ request: REQUEST, steps: [stepAt(KNOWN_GOOD, 0)] });
+    expect(adopted.steps[0]?.acceptance).toEqual([]);
+    expect(adopted.steps[0]?.supports).toEqual([]);
+    expect(adopted.steps[0]?.oracle).toBeUndefined();
   });
 });
 

@@ -35,7 +35,15 @@
  * new Date. src/harness/no-nondeterminism.test.ts enforces that mechanically.
  */
 
-import type { Roadmap } from "./schema.ts";
+/**
+ * A PROPOSAL rather than a `Roadmap`, because both are checked here and a
+ * proposal is the narrower one: `decompose` returns a `ProposedRoadmap` and
+ * its own guardrails read this file, while the graph's gate reads it over the
+ * roadmap that proposal was adopted as. Every field these checks touch — id,
+ * observation, dependencies, authority — is one the proposal already carries,
+ * so one signature covers both and a `Roadmap` passes unchanged.
+ */
+import type { ProposedRoadmap } from "./schema.ts";
 
 export const SHAPE_DEFECT_KINDS = [
   "no-steps",
@@ -103,7 +111,7 @@ export const describeDefect = (defect: ShapeDefect): string => {
  * defect list that reordered itself would send a different prompt to
  * `decompose` for the same roadmap.
  */
-const findCycle = (roadmap: Roadmap): string[] | undefined => {
+const findCycle = (roadmap: ProposedRoadmap): string[] | undefined => {
   const edges = new Map(roadmap.steps.map((s) => [s.id, s.dependencies] as const));
   const settled = new Set<string>();
   const path: string[] = [];
@@ -136,7 +144,7 @@ const findCycle = (roadmap: Roadmap): string[] | undefined => {
  * Every named defect in a proposed roadmap, in a stable order. Empty means the
  * shape is valid, which is the only thing `shapeVerdict` reads.
  */
-export const shapeDefects = (roadmap: Roadmap): ShapeDefect[] => {
+export const shapeDefects = (roadmap: ProposedRoadmap): ShapeDefect[] => {
   const defects: ShapeDefect[] = [];
   if (roadmap.steps.length === 0) return [{ kind: "no-steps" }];
 
@@ -179,7 +187,7 @@ export const shapeDefects = (roadmap: Roadmap): ShapeDefect[] => {
  * consumers read it.
  */
 export const firstDefectOfKind = (
-  roadmap: Roadmap,
+  roadmap: ProposedRoadmap,
   kind: ShapeDefectKind,
 ): ShapeDefect | undefined => shapeDefects(roadmap).find((d) => d.kind === kind);
 

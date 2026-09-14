@@ -50,11 +50,19 @@ export const AcceptanceObligation = z.object({
 export type AcceptanceObligation = z.infer<typeof AcceptanceObligation>;
 
 /**
- * One roadmap step. Every field is an input: nothing here is derived from
- * anything else, which is what lets the pure validators below be re-run
- * against a changed policy without a migration.
+ * The five fields ROADMAP owns, and the whole of what a decomposition
+ * DECIDES.
+ *
+ * THE WAVE BOUNDARY IS THIS SHAPE. What a value must be observed to do, which
+ * oracle measures it, and what that oracle depends on are DISTILL's; a
+ * decomposer that answered them would have its answer persisted as though a
+ * wave had produced it. That used to be a mechanical check on `decompose`'s
+ * output — `roadmap.acceptance-facts-are-distills`, which refused a proposal
+ * that filled the three fields in. It is a TYPE now: `DecomposeOutput` carries
+ * `ProposedRoadmap`, which has nowhere to put them, so there is nothing left
+ * to check. A rule enforced by a shape needs no rule.
  */
-export const RoadmapStep = z.object({
+const proposedStep = {
   /** Stable, and unique within the roadmap. */
   id: z.string(),
   /** What will be observably true when the step is done. */
@@ -65,14 +73,26 @@ export const RoadmapStep = z.object({
   authority: z.string(),
   /** Symbol ids or paths the step expects to write. */
   predictedTouches: z.array(z.string()),
+};
+
+/** One step as ROADMAP proposes it. This is what `decompose` returns. */
+export const ProposedStep = z.object(proposedStep);
+export type ProposedStep = z.infer<typeof ProposedStep>;
+
+/**
+ * One roadmap step as the TABLE holds it: the proposal plus the three fields
+ * DISTILL fills. Every field is an input: nothing here is derived from
+ * anything else, which is what lets the pure validators below be re-run
+ * against a changed policy without a migration.
+ */
+export const RoadmapStep = z.object({
+  ...proposedStep,
 
   /* ---- the three fields DISTILL fills, and ROADMAP leaves empty --------- */
 
   /**
-   * What the step must satisfy to be accepted. Empty as ROADMAP proposes it:
-   * deciding what a value must be observed to do is DISTILL's act, not the
-   * decomposer's, and a decomposer that filled these in would be answering a
-   * question nobody asked it.
+   * What the step must satisfy to be accepted. Empty as ROADMAP proposes it,
+   * because a proposal has no field for it at all.
    */
   acceptance: z.array(AcceptanceObligation),
   /**
@@ -107,6 +127,29 @@ export const Roadmap = z.object({
   steps: z.array(RoadmapStep),
 });
 export type Roadmap = z.infer<typeof Roadmap>;
+
+/**
+ * The roadmap as ROADMAP proposes it. `DecomposeOutput` carries this one, and
+ * it is the only schema in this wave a model is ever asked for.
+ */
+export const ProposedRoadmap = z.object({
+  request: z.string(),
+  steps: z.array(ProposedStep),
+});
+export type ProposedRoadmap = z.infer<typeof ProposedRoadmap>;
+
+/**
+ * A proposal, as the roadmap that holds it: DISTILL's three fields, empty.
+ *
+ * Not derived state. `acceptance` and `supports` are empty because nothing has
+ * decided them yet and `oracle` is absent for the same reason — this is the
+ * initial value of three fields a later wave writes, not a computation over
+ * the proposal.
+ */
+export const adoptProposal = (proposal: ProposedRoadmap): Roadmap => ({
+  request: proposal.request,
+  steps: proposal.steps.map((step) => ({ ...step, acceptance: [], supports: [] })),
+});
 
 /** The roadmap's own row key. nwave keys a handover by its request; so do we. */
 export const roadmapId = (roadmap: Roadmap): string => roadmap.request;

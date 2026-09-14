@@ -17,7 +17,7 @@
 
 import { z } from "zod";
 import type { Requirement } from "@des/core/requirement";
-import { stepOutput, type ModelBinding, type StepDef } from "@des/core/step";
+import { stepDef, stepOutput, type ModelBinding, type StepDef } from "@des/core/step";
 import { AcceptanceObligation, Roadmap } from "../../roadmap/schema.ts";
 import {
   describeManifestDefect,
@@ -258,7 +258,7 @@ export type ObligationsDefs = {
 };
 
 export const obligationsDefs = (models: ObligationsModels): ObligationsDefs => ({
-  "propose-obligations": {
+  "propose-obligations": stepDef({
     id: leafStepId("propose-obligations"),
     version: 1,
     input: ProposeInput,
@@ -279,5 +279,5 @@ export const obligationsDefs = (models: ObligationsModels): ObligationsDefs => (
     validator: { model: models.validator },
     maxAttempts: 2,
     ...(models.escalateTo === undefined ? {} : { escalateTo: models.escalateTo }),
-  },
+  }),
 });

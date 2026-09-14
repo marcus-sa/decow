@@ -44,7 +44,7 @@
 import { z } from "zod";
 import { verbatim } from "@des/core/checks/verbatim";
 import type { Requirement } from "@des/core/requirement";
-import { stepOutput, type ModelBinding, type StepDef } from "@des/core/step";
+import { stepDef, stepOutput, type ModelBinding, type StepDef } from "@des/core/step";
 
 /**
  * One acceptance obligation of the step, as DISTILL left it: a stimulus and the
@@ -459,7 +459,10 @@ export type LeafDef<K extends LeafId> = StepDef<LeafInput, LeafOutputFor<K>>;
 
 export const leafDef = <K extends LeafId>(leaf: K, models: DeliverModels): LeafDef<K> => {
   const decisions = LEAF_DECISIONS[leaf];
-  return {
+  // Through `stepDef`, because the schema below is chosen at run time out of
+  // four and cast: `stepOutput` checked each of the four where it was built,
+  // and this checks the one that actually reached `output`.
+  return stepDef({
     id: leafStepId(leaf),
     version: 1,
     input: LeafInput,
@@ -485,7 +488,7 @@ export const leafDef = <K extends LeafId>(leaf: K, models: DeliverModels): LeafD
     validator: { model: models.validator },
     maxAttempts: 2,
     escalateTo: models.escalateTo,
-  };
+  });
 };
 
 export type DeliverDefs = { [K in LeafId]: LeafDef<K> };

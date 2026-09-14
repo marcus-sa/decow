@@ -99,9 +99,10 @@ done a later wave's job. What ROADMAP *can* ask is whether the observation says
 enough to be worked from at all, so `observation-too-short` sits there instead,
 with nwave's own `MINIMUM_OBSERVATION_CHARACTERS` of 40 — measured rather than
 chosen, from the shortest real accepted-turn diagnostic in the shipped runner.
-The boundary is enforced twice: `acceptanceIsDistills` is a mechanical check on
-`decompose`'s own output, so a proposal that filled the three fields in is
-refused before a validator is spent.
+The boundary is the OUTPUT SPACE rather than a rule: `DecomposeOutput` carries a
+`ProposedRoadmap`, whose steps have the five fields ROADMAP owns and no field
+for any of DISTILL's three, so a decomposer has nowhere to put them.
+`adoptProposal` is where a proposal becomes a roadmap with those three empty.
 
 176 paths, about 0.68 s. The walk draws from five proposals, and the fifth is
 there to keep the gate's `invalid` edge reachable: `MALFORMED` breaks three
@@ -174,10 +175,16 @@ tool grant, so a byte outside the scope is `rejected { by: "contract" }`. Then
 **software executes the oracle** and reads a verdict off it.
 
 The `claudeCode` binding is the other way to fill that leaf: a subagent reads
-and edits a scratch copy, the diff afterwards becomes the effects, and they
-arrive on `payload.proposal` instead of on `files`. `smoke.ts` fills it that
-way; the todo target does not. The node reads whichever arrived, so both shapes
-reach the write with the same meaning.
+and edits a scratch copy. `smoke.ts` fills it that way; the todo target does
+not. WHAT IT WROTE IS NOT WHAT GETS COMMITTED. The binding derives effects from
+the scratch diff and lands them on `payload.proposal`, and `AuthorOutput`
+declares no such field — so the zod parse drops them and `write-oracle` writes
+the bodies the turn ANSWERED, which are the ones the leaf's own mechanical
+checks read. The field could not stay: `z.array(z.custom<Effect>()).optional()`
+is outside strict structured output twice over, and an effects channel a model
+could fill would reach the write path with neither check seeing it. The scratch
+copy still earns its keep — it is what keeps the agent's edits off the real
+tree, and a byte outside the allowed paths still refuses the whole turn.
 
 What executes it is the consumer's declared `commands.oracle` — the framework
 knows the job and the target names the runner — and the verdict is read off the
