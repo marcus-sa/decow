@@ -106,6 +106,18 @@ function RunPage(): React.ReactElement {
               <div>
                 <code>{attempt.stepId}</code> · attempt {attempt.attempt} ·{" "}
                 {attempt.accepted ? "accepted" : "refused"}
+                {/* WHY it was refused, not just that it was. `schema` is the
+                    one that ended the step rather than spending its budget:
+                    the model answered outside the output space, and the next
+                    attempt would ask the same endpoint the same question. */}
+                {attempt.cause === undefined ? null : (
+                  <>
+                    {" · "}
+                    <span className="cause" data-cause={attempt.cause}>
+                      {attempt.cause}
+                    </span>
+                  </>
+                )}
               </div>
               <div className="meta">
                 {attempt.model}

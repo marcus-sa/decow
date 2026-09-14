@@ -14,7 +14,7 @@
 import { Agent } from "@mastra/core/agent";
 import { getProviderConfig, parseModelString, type OpenAICompatibleConfig } from "@mastra/core/llm";
 import type { z } from "zod";
-import type { GenerateRequest, ModelBinding } from "../core/step.ts";
+import { SchemaFailure, type GenerateRequest, type ModelBinding } from "../core/step.ts";
 
 /**
  * The agent's standing instructions. Every call overrides them with the step's
@@ -176,6 +176,14 @@ export type MastraAgentOptions = {
  * the call needs is `requiredCredential`'s to say: an endpoint carrying its
  * own `apiKey`, or one named by `url`, needs nothing and is not refused.
  *
+ * A SCHEMA FAILURE IS NAMED RATHER THAN LEFT TO BE READ OFF A MESSAGE. Two
+ * routes reach the same state — Mastra refusing the answer against the schema
+ * (`STRUCTURED_OUTPUT_SCHEMA_VALIDATION_FAILED`), and the re-parse below
+ * failing — and both throw `SchemaFailure`. That is what tells `runStep` the
+ * attempt budget buys nothing: the next attempt asks the same endpoint the
+ * same question with the same schema. Everything else throws unchanged and
+ * keeps its retries.
+ *
  * WHAT A CALL COST IS REPORTED THROUGH THE REQUEST, verbatim and unshaped.
  * The shape is not ours and has more than one version in the dependency graph:
  * `@mastra/core`'s own `TokenUsage` is flat, the AI SDK's nests. `runStep`
@@ -185,6 +193,22 @@ export type MastraAgentOptions = {
  * An endpoint that reports no usage at all yields an EMPTY object rather than
  * a zero, because "nobody said" and "it was free" are different claims.
  */
+/**
+ * Mastra's own name for the provider layer refusing an answer against the
+ * schema. Matched on the message because that is where it arrives.
+ */
+const MASTRA_SCHEMA_REFUSAL = "STRUCTURED_OUTPUT_SCHEMA_VALIDATION_FAILED";
+
+/**
+ * A provider-layer schema refusal, named as one. Anything else is returned
+ * unchanged, so a socket, a rate limit or a missing credential stays the
+ * transport error it is and keeps the step's retry budget.
+ */
+const wrapIfSchema = (id: string, error: unknown): unknown =>
+  String(error).includes(MASTRA_SCHEMA_REFUSAL)
+    ? new SchemaFailure(`${id}: ${String(error)}`, { cause: error })
+    : error;
+
 export const mastraAgent = (options: MastraAgentOptions): ModelBinding => {
   const name = modelId(options.model);
   const id = options.id ?? name;
@@ -206,19 +230,34 @@ export const mastraAgent = (options: MastraAgentOptions): ModelBinding => {
         );
       }
 
-      const response = await agent.generate(req.prompt, {
-        // Per-call override: the step, not the agent, owns the system prompt.
-        instructions: req.system,
-        structuredOutput: { schema: req.schema },
-        modelSettings: { temperature: 0 },
-      });
+      let response: { object?: unknown; usage?: unknown };
+      try {
+        response = await agent.generate(req.prompt, {
+          // Per-call override: the step, not the agent, owns the system prompt.
+          instructions: req.system,
+          structuredOutput: { schema: req.schema },
+          modelSettings: { temperature: 0 },
+        });
+      } catch (error) {
+        // Mastra can refuse the answer against the schema before the re-parse
+        // below ever runs — `STRUCTURED_OUTPUT_SCHEMA_VALIDATION_FAILED` — and
+        // that is a different kind of failure from a socket or a rate limit.
+        // Saying which is the binding's job; what `runStep` does with it is
+        // the step's. Everything else is rethrown unchanged.
+        throw wrapIfSchema(id, error);
+      }
       // Before the parse, so a call whose output fails the schema still
       // reports what it cost. A refused attempt is spent money too.
       req.onUsage?.(response.usage);
       // Mastra validates against the schema, but the step's guarantee is that
       // the output space IS the schema, so re-parse rather than trust the
-      // provider layer. A failure throws and runStep records it in the trail.
-      return req.schema.parse(response.object);
+      // provider layer.
+      const parsed = req.schema.safeParse(response.object);
+      if (parsed.success) return parsed.data;
+      throw new SchemaFailure(
+        `${id}: the endpoint answered outside the step's output space: ${parsed.error.message}`,
+        { cause: parsed.error },
+      );
     },
   };
 };

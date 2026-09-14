@@ -69,7 +69,15 @@ describe("the run database", () => {
 
   test("attempts are appended in the order they were made, tokens and all", () => {
     const db = openRunDatabase();
-    db.attempts.append("r1", attempt({ accepted: false, workerTokens: { input: 10, output: 1 } }));
+    db.attempts.append(
+      "r1",
+      attempt({
+        accepted: false,
+        cause: "schema",
+        error: "the endpoint answered a bare array",
+        workerTokens: { input: 10, output: 1 },
+      }),
+    );
     db.attempts.append(
       "r1",
       attempt({
@@ -83,6 +91,11 @@ describe("the run database", () => {
     const rows = db.attempts.of("r1");
     expect(rows.map((r) => `${r.attempt}:${r.accepted}`)).toEqual(["1:false", "2:true"]);
     expect(rows[0]?.validatorTokens).toBeUndefined();
+    // Why it did not stand, on the row that did not stand — and absent on the
+    // one that did, because an attempt that was accepted has no cause.
+    expect(rows[0]?.cause).toBe("schema");
+    expect(rows[0]?.error).toBe("the endpoint answered a bare array");
+    expect(rows[1]?.cause).toBeUndefined();
     expect(rows[1]?.validatorTokens).toEqual({ input: 30, output: 3 });
     expect(db.attempts.countOf("r1")).toBe(2);
     expect(db.attempts.countOf("r2")).toBe(0);

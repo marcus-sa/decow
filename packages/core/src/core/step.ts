@@ -174,6 +174,67 @@ export const stepDef = <I, O>(def: StepDef<I, O>): StepDef<I, O> => {
   return def;
 };
 
+/**
+ * Why an attempt did not stand. Absent on the one that did.
+ *
+ * Three, and the split between the first two is the one that decides whether
+ * the step keeps going. `schema` is the model answering outside the step's
+ * output space — a retry asks the same endpoint the same question, so the
+ * budget buys nothing and the step ends. `transport` is everything else that
+ * threw: a socket, a rate limit, a credential the environment does not have,
+ * an agent that ran out of its own turns. Those are worth the budget.
+ * `validator` is no throw at all — a mechanical check or the adversarial
+ * reviewer refused the answer, which IS what the attempts are for.
+ */
+export const ATTEMPT_CAUSES = ["schema", "transport", "validator"] as const;
+export type AttemptCause = (typeof ATTEMPT_CAUSES)[number];
+
+/**
+ * What a binding throws when the model answered and the answer was not in the
+ * step's output space.
+ *
+ * Typed rather than sniffed, so a binding SAYS which of the two kinds of
+ * failure it had rather than leaving `runStep` to read a message. `mastra.ts`
+ * throws it for both of its own routes into that state: the provider layer
+ * refusing the answer against the schema, and the binding's own zod re-parse.
+ */
+export class SchemaFailure extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "SchemaFailure";
+  }
+}
+
+/**
+ * Mastra's name for it. Read as well as the type, because the provider layer
+ * can refuse an answer before a binding's own re-parse ever runs, and a
+ * binding that has not been taught to wrap it still throws it verbatim.
+ */
+const MASTRA_SCHEMA_REFUSAL = "STRUCTURED_OUTPUT_SCHEMA_VALIDATION_FAILED";
+
+/**
+ * THE RULE, and it is deliberately narrow: a throw is a schema failure when it
+ * says so.
+ *
+ *   1. a `SchemaFailure`, which is a binding naming it;
+ *   2. a zod parse error, which is a binding re-parsing and not wrapping. It
+ *      is matched by `name` rather than by `instanceof`, because two copies of
+ *      zod in one module graph would make `instanceof` answer no for an error
+ *      the other copy raised;
+ *   3. Mastra's marker anywhere in the message.
+ *
+ * EVERYTHING ELSE IS TRANSPORT, including a message that merely mentions a
+ * schema. `claudeCode` throws `produced no schema-conforming output in N
+ * attempts` after exhausting its OWN retries, and that is transport on
+ * purpose: the call is reporting that it could not get an answer, not that
+ * this answer broke the schema, and the binding has already spent the budget
+ * that would have told them apart.
+ */
+export const isSchemaFailure = (error: unknown): boolean =>
+  error instanceof SchemaFailure ||
+  (error !== null && typeof error === "object" && (error as { name?: unknown }).name === "ZodError") ||
+  String(error).includes(MASTRA_SCHEMA_REFUSAL);
+
 export type Attempt<O> = {
   model: string;
   /** Absent when the model call itself failed before producing an output. */
@@ -181,6 +242,8 @@ export type Attempt<O> = {
   violations: Violation[];
   /** Set when the provider call threw. Kept so the trail stays complete. */
   error?: string;
+  /** Why it did not stand. Absent on the attempt that did. */
+  cause?: AttemptCause;
 };
 
 export type StepResult<O> =
@@ -220,6 +283,8 @@ export type StepAttempt = {
   violations: Violation[];
   /** Set when a provider call threw. */
   error?: string;
+  /** Why it did not stand. Absent on the attempt that did. */
+  cause?: AttemptCause;
   /** True when this attempt's output was the one accepted and journaled. */
   accepted: boolean;
   /**
@@ -310,16 +375,24 @@ export async function runStep<I, O>(
         },
       });
     } catch (err) {
-      trail.push({ model: model.id, violations: [], error: String(err) });
+      // guardrail 3a: a schema failure ENDS the step. The model answered and
+      // the answer was outside the output space; the next attempt asks the
+      // same endpoint the same question with the same schema, so the budget
+      // buys nothing and an escalation buys a more expensive nothing. A
+      // transport error is the opposite and keeps its attempts.
+      const cause: AttemptCause = isSchemaFailure(err) ? "schema" : "transport";
+      trail.push({ model: model.id, violations: [], error: String(err), cause });
       report({
         attempt,
         model: model.id,
         mechanical: [],
         violations: [],
         error: String(err),
+        cause,
         accepted: false,
         ...(workerTokens === undefined ? {} : { workerTokens }),
       });
+      if (cause === "schema") return { decision: "validator-exhausted", trail };
       continue;
     }
 
@@ -330,13 +403,14 @@ export async function runStep<I, O>(
       .map((r) => r.check?.({ input, output }) ?? null)
       .filter((v): v is Violation => v !== null);
     if (mechanical.length) {
-      trail.push({ model: model.id, output, violations: mechanical });
+      trail.push({ model: model.id, output, violations: mechanical, cause: "validator" });
       report({
         attempt,
         model: model.id,
         ...decision,
         mechanical,
         violations: [],
+        cause: "validator",
         accepted: false,
         ...(workerTokens === undefined ? {} : { workerTokens }),
       });
@@ -360,7 +434,10 @@ export async function runStep<I, O>(
         },
       });
     } catch (err) {
-      trail.push({ model: model.id, output, violations: [], error: String(err) });
+      // The same rule one call over. A validator that cannot answer `Verdict`
+      // is a schema failure too, and re-asking it is the same nothing.
+      const cause: AttemptCause = isSchemaFailure(err) ? "schema" : "transport";
+      trail.push({ model: model.id, output, violations: [], error: String(err), cause });
       report({
         attempt,
         model: model.id,
@@ -368,10 +445,12 @@ export async function runStep<I, O>(
         mechanical: [],
         violations: [],
         error: String(err),
+        cause,
         accepted: false,
         ...(workerTokens === undefined ? {} : { workerTokens }),
         ...(validatorTokens === undefined ? {} : { validatorTokens }),
       });
+      if (cause === "schema") return { decision: "validator-exhausted", trail };
       continue;
     }
 
@@ -396,7 +475,7 @@ export async function runStep<I, O>(
       });
       return result;
     }
-    trail.push({ model: model.id, output, violations });
+    trail.push({ model: model.id, output, violations, cause: "validator" });
     report({
       attempt,
       model: model.id,
@@ -404,6 +483,7 @@ export async function runStep<I, O>(
       mechanical: [],
       verdict: verdict.verdict,
       violations,
+      cause: "validator",
       accepted: false,
       ...(workerTokens === undefined ? {} : { workerTokens }),
       ...(validatorTokens === undefined ? {} : { validatorTokens }),

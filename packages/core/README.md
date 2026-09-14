@@ -27,6 +27,26 @@ nothing depends back.
 | `@des/core/bindings/claude-code` | A Claude Code subagent, in the opaque or the proposal shape. |
 | `@des/core/checks/*` | The mechanical checks: `verbatim`, `enum-member`, `id-in-set`. |
 
+## A schema failure ends the step
+
+A retry is worth its cost when the next attempt might answer differently. A
+model that answered outside the step's output space will not — same endpoint,
+same question, same schema — so `runStep` ends the step on one: no second
+attempt, no escalation, and `validator-exhausted` with that attempt on the
+trail. A **transport** error keeps its attempts, because a socket, a rate
+limit or a missing credential is exactly what the budget is for.
+
+A throw is a schema failure when it is a `SchemaFailure`, when it is a zod
+parse error (matched by `name`, so two copies of zod in one module graph still
+agree), or when it carries Mastra's `STRUCTURED_OUTPUT_SCHEMA_VALIDATION_
+FAILED`. Everything else is transport, including a message that merely
+mentions a schema: `claudeCode`'s `produced no schema-conforming output in N
+attempts` is a call reporting it could not get an answer, after spending its
+own budget.
+
+`Attempt.cause` and `StepAttempt.cause` say which — `schema | transport |
+validator`, absent on the attempt that stood.
+
 ## A schema is valid for strict structured output, or it is refused
 
 A binding puts a step's output schema to an endpoint as

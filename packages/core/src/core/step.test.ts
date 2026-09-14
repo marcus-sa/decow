@@ -9,9 +9,11 @@ import { memoryJournal, sqliteJournal } from "./journal.ts";
 import type { Requirement } from "./requirement.ts";
 import {
   canonicalJson,
+  isSchemaFailure,
   journalKey,
   readTokens,
   runStep,
+  SchemaFailure,
   stepOutput,
   type GenerateRequest,
   type ModelBinding,
@@ -214,7 +216,157 @@ describe("runStep", () => {
     if (result.decision !== "validator-exhausted") return;
     expect(result.trail).toHaveLength(2);
     expect(result.trail.every((a) => a.error?.includes("provider 503"))).toBe(true);
+    // A provider that fell over is TRANSPORT, so the budget was spent on it.
+    expect(result.trail.map((a) => a.cause)).toEqual(["transport", "transport"]);
     expect(models.prompts).toHaveLength(0);
+  });
+
+  /**
+   * A schema failure ends the step; a transport error keeps its attempts.
+   *
+   * The distinction is the whole of it. A model that answered outside the
+   * output space will answer the same way again — same endpoint, same
+   * question, same schema — so the attempt budget buys nothing and an
+   * escalation buys a more expensive nothing. A socket that dropped is the
+   * opposite, and that is what the budget is for.
+   */
+  describe("a schema failure ends the step", () => {
+    const throwing = (id: string, error: () => unknown): ModelBinding => ({
+      id,
+      generate: async () => {
+        throw error();
+      },
+    });
+
+    /** A step with every retry a def can have: two attempts plus an escalation. */
+    const withBudget = (worker: ModelBinding, validator: ModelBinding) =>
+      def({ worker, validator, escalateTo: worker });
+
+    test("the step ends after one attempt, with that attempt on the trail", async () => {
+      const models = scripted({ outputs: [], verdicts: [] });
+      const result = await runStep(
+        withBudget(
+          throwing("refusing", () => new SchemaFailure("the endpoint answered a bare array")),
+          models.validator,
+        ),
+        { text: "the quick brown fox" },
+        memoryJournal(),
+      );
+
+      expect(result.decision).toBe("validator-exhausted");
+      if (result.decision !== "validator-exhausted") return;
+      // One entry, not three: no second attempt and no escalation.
+      expect(result.trail).toHaveLength(1);
+      expect(result.trail[0]?.cause).toBe("schema");
+      // Verbatim, so a person reads what the endpoint said rather than a
+      // paraphrase of it.
+      expect(result.trail[0]?.error).toContain("the endpoint answered a bare array");
+      // And no validator was spent on an answer that never existed.
+      expect(models.prompts).toHaveLength(0);
+    });
+
+    test("a transport error spends the whole budget instead", async () => {
+      const models = scripted({ outputs: [], verdicts: [] });
+      const result = await runStep(
+        withBudget(
+          throwing("dropping", () => new Error("socket hang up")),
+          models.validator,
+        ),
+        { text: "the quick brown fox" },
+        memoryJournal(),
+      );
+
+      expect(result.decision).toBe("validator-exhausted");
+      if (result.decision !== "validator-exhausted") return;
+      expect(result.trail).toHaveLength(3);
+      expect(result.trail.map((a) => a.cause)).toEqual(["transport", "transport", "transport"]);
+    });
+
+    test("a bare zod error is a schema failure, whichever copy of zod raised it", async () => {
+      // Matched by `name`, because two copies of zod in one module graph make
+      // `instanceof` answer no for an error the other copy raised — which is a
+      // real shape here: a binding re-parses with the STEP's schema, and the
+      // step's schema came from the consumer's zod.
+      const models = scripted({ outputs: [], verdicts: [] });
+      const result = await runStep(
+        withBudget(
+          throwing("reparsing", () => z.object({ a: z.string() }).safeParse({}).error),
+          models.validator,
+        ),
+        { text: "the quick brown fox" },
+        memoryJournal(),
+      );
+
+      expect(result.decision === "validator-exhausted" && result.trail).toHaveLength(1);
+    });
+
+    test("Mastra's own refusal is recognised even from a binding that did not wrap it", async () => {
+      const models = scripted({ outputs: [], verdicts: [] });
+      const result = await runStep(
+        withBudget(
+          throwing(
+            "mastra",
+            () =>
+              new Error(
+                "STRUCTURED_OUTPUT_SCHEMA_VALIDATION_FAILED: expected object, received array",
+              ),
+          ),
+          models.validator,
+        ),
+        { text: "the quick brown fox" },
+        memoryJournal(),
+      );
+
+      expect(result.decision === "validator-exhausted" && result.trail).toHaveLength(1);
+    });
+
+    test("a message that merely mentions a schema is transport", async () => {
+      // `claudeCode` throws `produced no schema-conforming output in N
+      // attempts` after spending its OWN budget, and that is a call reporting
+      // it could not get an answer rather than this answer breaking a schema.
+      expect(
+        isSchemaFailure(new Error("claude-code:x produced no schema-conforming output in 2 attempts")),
+      ).toBe(false);
+      expect(isSchemaFailure(new SchemaFailure("outside the output space"))).toBe(true);
+    });
+
+    test("a validator that cannot answer Verdict ends the step too", async () => {
+      const models = scripted({ outputs: [out("yes", "quick brown")], verdicts: [] });
+      const result = await runStep(
+        withBudget(
+          models.worker,
+          throwing("refusing", () => new SchemaFailure("the endpoint answered prose")),
+        ),
+        { text: "the quick brown fox" },
+        memoryJournal(),
+      );
+
+      expect(result.decision).toBe("validator-exhausted");
+      if (result.decision !== "validator-exhausted") return;
+      expect(result.trail).toHaveLength(1);
+      expect(result.trail[0]?.cause).toBe("schema");
+      // The worker DID answer, so its output is on the trail beside the cause.
+      expect(result.trail[0]?.output?.payload.anchor).toBe("quick brown");
+    });
+
+    test("a refusal nothing threw for is named validator, and keeps its attempts", async () => {
+      const models = scripted({
+        outputs: [out("yes", "NOT IN THE INPUT"), out("yes", "quick brown")],
+        verdicts: [PASS],
+      });
+      const seen: StepAttempt[] = [];
+      const result = await runStep(
+        def(models),
+        { text: "the quick brown fox" },
+        memoryJournal(),
+        (a) => seen.push(a),
+      );
+
+      expect(result.decision).toBe("ok");
+      // The mechanical check refused the first; the second stood, and an
+      // attempt that stood has no cause at all.
+      expect(seen.map((a) => a.cause)).toEqual(["validator", undefined]);
+    });
   });
 
   test("a journal hit never calls the model", async () => {

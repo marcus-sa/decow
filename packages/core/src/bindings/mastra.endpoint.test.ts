@@ -30,7 +30,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test
 import { Agent } from "@mastra/core/agent";
 import { noopLogger } from "@mastra/core/logger";
 import { z } from "zod";
-import { stepOutput } from "../core/step.ts";
+import { SchemaFailure, stepOutput } from "../core/step.ts";
 import { jsonSchemaDefects, strictJsonSchema } from "../core/strict-schema.ts";
 import { DecomposeOutput } from "../../../../examples/nwave/roadmap/steps.ts";
 import { mastraAgent, type AgentFactory } from "./mastra.ts";
@@ -267,9 +267,14 @@ describe("an OpenAI-compatible endpoint whose provider Mastra does not know", ()
     }).generate(REQ);
 
     // The endpoint answered, and the answer was not in the output space — so
-    // the call throws, `runStep` records it in the trail, and the leaf
-    // exhausts rather than the graph routing on a decision nobody made. This
-    // is the failure a reader pointing at their own server will meet first.
+    // the call throws, `runStep` records it in the trail, and the leaf ENDS
+    // rather than the graph routing on a decision nobody made. This is the
+    // failure a reader pointing at their own server will meet first.
+    //
+    // It is a `SchemaFailure` rather than a bare throw, and that is what tells
+    // `runStep` the attempt budget buys nothing: the next attempt would ask
+    // this endpoint the same question with the same schema.
+    await expect(refused).rejects.toThrow(SchemaFailure);
     await expect(refused).rejects.toThrow(/decision/);
     expect(received).toHaveLength(1);
   });

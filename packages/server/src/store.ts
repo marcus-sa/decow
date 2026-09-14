@@ -144,6 +144,7 @@ type AttemptRow = {
   violations: string;
   mechanical: string;
   error: string | null;
+  cause: string | null;
   worker_tokens: string | null;
   validator_tokens: string | null;
 };
@@ -199,6 +200,7 @@ export const openRunDatabase = (options: RunDatabaseOptions = {}): RunDatabase =
     violations       TEXT NOT NULL,
     mechanical       TEXT NOT NULL,
     error            TEXT,
+    cause            TEXT,
     worker_tokens    TEXT,
     validator_tokens TEXT
   )`);
@@ -239,12 +241,13 @@ export const openRunDatabase = (options: RunDatabaseOptions = {}): RunDatabase =
         string | null,
         string | null,
         string | null,
+        string | null,
       ]
     >(
       `INSERT INTO leaf_attempts
          (run_id, step_id, version, journal_key, attempt, model_id, decision, accepted,
-          verdict, violations, mechanical, error, worker_tokens, validator_tokens)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          verdict, violations, mechanical, error, cause, worker_tokens, validator_tokens)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ),
     attemptsOf: db.query<AttemptRow, [string]>(
       "SELECT * FROM leaf_attempts WHERE run_id = ? ORDER BY seq",
@@ -285,6 +288,7 @@ export const openRunDatabase = (options: RunDatabaseOptions = {}): RunDatabase =
     ...(row.verdict === null ? {} : { verdict: row.verdict as "pass" | "fail" }),
     violations: JSON.parse(row.violations) as StepAttempt["violations"],
     ...(row.error === null ? {} : { error: row.error }),
+    ...(row.cause === null ? {} : { cause: row.cause as StepAttempt["cause"] }),
     accepted: row.accepted === 1,
     ...(row.worker_tokens === null
       ? {}
@@ -355,6 +359,7 @@ export const openRunDatabase = (options: RunDatabaseOptions = {}): RunDatabase =
           JSON.stringify(attempt.violations),
           JSON.stringify(attempt.mechanical),
           attempt.error ?? null,
+          attempt.cause ?? null,
           attempt.workerTokens === undefined ? null : JSON.stringify(attempt.workerTokens),
           attempt.validatorTokens === undefined ? null : JSON.stringify(attempt.validatorTokens),
         );

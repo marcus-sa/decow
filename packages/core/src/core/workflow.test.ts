@@ -13,7 +13,7 @@ import { noReplayJournal } from "../harness/no-replay.ts";
 import { says, scriptedBinding, throws } from "../harness/scripted-binding.ts";
 import { compileWorkflow, workflowRuntime } from "./compile.ts";
 import type { Effect, EffectResult } from "./effects.ts";
-import { stepOutput, type ModelBinding, type StepDef, type StepResult } from "./step.ts";
+import { stepOutput, type Attempt, type ModelBinding, type StepDef, type StepResult } from "./step.ts";
 import { branch, leaf, loop, resume, run, suspend, type Node, type Workflow } from "./workflow.ts";
 
 type S = { n: number; note?: string; answer?: "left" | "right" };
@@ -534,7 +534,12 @@ describe("leaf", () => {
    * constructor only has to carry it — so it is read back rather than
    * supplied, which is what makes the assertion about the constructor.
    */
-  const TRAIL = [{ model: "scripted", violations: [], error: `Error: ${REFUSED}` }];
+  // `transport`, because a scripted worker that throws a plain Error is a call
+  // that failed rather than an answer outside the schema — so the leaf spends
+  // its budget and exhausts, which is what these tests are about.
+  const TRAIL: Attempt<Answer>[] = [
+    { model: "scripted", violations: [], error: `Error: ${REFUSED}`, cause: "transport" },
+  ];
 
   /** Run one leaf node in isolation and report what it produced. */
   const fire = async (node: Node<LeafState>, state: LeafState) => {

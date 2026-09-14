@@ -44,6 +44,20 @@ export const SuspensionDialog = (props: SuspensionDialogProps): React.ReactEleme
   }, [suspension, props.run.workflowId]);
 
   if (suspension === undefined) return null;
+
+  /**
+   * The refusal the run stopped on, if it stopped on one.
+   *
+   * The reason alone says `validator-exhausted`, which is the same word for a
+   * worker that never satisfied its validator and for a model that answered
+   * outside the output space — and only the second is a thing a person can
+   * fix. So the last attempt is read, and it counts only when it was REFUSED:
+   * a run that parked at `human-review` after a leaf recovered on its second
+   * attempt is not sitting on a refusal and gets no banner.
+   */
+  const last = props.run.attempts.at(-1);
+  const refusal = last !== undefined && !last.accepted ? last : undefined;
+
   const field = suspension.resume?.field ?? "decision";
   const options = suspension.resume?.options ?? [];
   const takesNotes =
@@ -59,6 +73,18 @@ export const SuspensionDialog = (props: SuspensionDialogProps): React.ReactEleme
           <code>{props.run.runId}</code> parked at <code>{suspension.node ?? "?"}</code>. The run
           continues from here when you answer; it is not a new run.
         </p>
+
+        {refusal === undefined ? null : (
+          <p className="meta" data-testid="suspension-cause">
+            <code>{refusal.stepId}</code> attempt {refusal.attempt} was refused ·{" "}
+            <span className="cause" data-cause={refusal.cause}>
+              {refusal.cause ?? "unnamed"}
+            </span>
+            {refusal.cause === "schema"
+              ? " — the model answered outside the step's output space, so the step ended here rather than spending the rest of its attempts on the same question."
+              : null}
+          </p>
+        )}
 
         <pre>{JSON.stringify(suspension.trail, null, 2)}</pre>
 

@@ -293,6 +293,16 @@ button:disabled {
   border-color: var(--red);
 }
 
+/* Why an attempt did not stand. `schema` is the one that ENDED the step. */
+.cause {
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+}
+
+.cause[data-cause="schema"] {
+  color: var(--red);
+}
+
 /* The suspension dialog: the one place a person answers. */
 .backdrop {
   position: fixed;
