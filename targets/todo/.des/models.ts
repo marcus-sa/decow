@@ -43,24 +43,18 @@ import { obligationsDefs, type ObligationsDefs } from "../../../examples/nwave/d
 import { oracleDefs, type OracleDefs } from "../../../examples/nwave/distill/oracle/steps.ts";
 import { roadmapDefs, type RoadmapDefs } from "../../../examples/nwave/roadmap/steps.ts";
 
-/**
- * Mastra model-router ids: `provider/model`. No provider package needed.
- *
- * These are the DEFAULTS. `DES_OPENAI_COMPATIBLE_URL` below replaces all five
- * at once with one endpoint of the reader's own.
- */
-export const DECOMPOSE_MODEL = "anthropic/claude-opus-5";
-/**
- * `author-oracle` runs on the same class as `implement`, and the reason is the
- * same one: the output is genuinely open. Writing an executable oracle that
- * falsifies every obligation through a declared port is code generation, not a
- * closed-enum decision, and the framework validates it narrowly instead — a
- * mechanical path check, a total-relation rule, and a real measurement.
- */
-export const ORACLE_MODEL = "anthropic/claude-sonnet-5";
-export const IMPLEMENT_MODEL = "anthropic/claude-sonnet-5";
-export const WORKER_MODEL = "anthropic/claude-haiku-4-5";
-export const VALIDATOR_MODEL = "anthropic/claude-haiku-4-5";
+const deepseek = (modelId: string) => ({
+  providerId: "deepseek",
+  modelId,
+  url: `https://${process.env.LLM_INFERENCE_ENDPOINT}/v1`,
+  apiKey: process.env.LLM_INFERENCE_API_KEY ?? "",
+});
+
+export const DECOMPOSE_MODEL = deepseek("deepseek-v4-pro-260425");
+export const ORACLE_MODEL = deepseek("deepseek-v4-pro-260425");
+export const IMPLEMENT_MODEL = deepseek("deepseek-v4-flash-260425");
+export const WORKER_MODEL = deepseek("deepseek-v4-flash-260425");
+export const VALIDATOR_MODEL = deepseek("deepseek-v4-flash-260425");
 
 /**
  * Which binding runs which leaf. THE ONLY INJECTION POINT THIS COMPOSITION
